@@ -95,7 +95,7 @@ CellState HexState::PlayerAndActionToState(Player player, Action move) const {
   // We know the colour from the argument player
   // For connectedness to the edges, we check if the move is in first/last
   // row/column, or if any of the neighbours are the same colour and connected.
-  if (player == 0) {
+  if (player == kBlackPlayerId) {
     bool north_connected = false;
     bool south_connected = false;
     if (move < num_cols_) {  // First row
@@ -119,7 +119,7 @@ CellState HexState::PlayerAndActionToState(Player player, Action move) const {
     } else {
       return CellState::kBlack;
     }
-  } else if (player == 1) {
+  } else if (player == kWhitePlayerId) {
     bool west_connected = false;
     bool east_connected = false;
     if (move % num_cols_ == 0) {  // First column

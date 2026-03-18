@@ -36,8 +36,7 @@
 #include "open_spiel/observer.h"
 #include "open_spiel/pybind11_json/include/pybind11_json/pybind11_json.hpp"
 #include "open_spiel/python/pybind11/algorithms_corr_dist.h"
-// Disabled while tests aren't passing. See GitHub issue #1502.
-// #include "open_spiel/python/pybind11/algorithms_infostate_tree.h"
+#include "open_spiel/python/pybind11/algorithms_infostate_tree.h"
 #include "open_spiel/python/pybind11/algorithms_trajectories.h"
 #include "open_spiel/python/pybind11/bots.h"
 #include "open_spiel/python/pybind11/evaluation_elo.h"
@@ -847,9 +846,8 @@ PYBIND11_MODULE(pyspiel, m) {
   bind_repeated_pokerkit_state_struct(m);  // C++ struct for a Python game.
   init_pyspiel_observer(m);                 // Observers and observations.
   init_pyspiel_utils(m);                    // Utilities.
-  // Disabled while tests aren't passing. See GitHub issue #1502.
-  // init_pyspiel_infostate_tree(
-  //     m);  // Infostate-Tree and associated classes (Id etc.)
+  init_pyspiel_infostate_tree(
+      m);  // Infostate-Tree and associated classes (Id etc.)
 
   // List of optional python submodules.
 #if OPEN_SPIEL_BUILD_WITH_GAMUT

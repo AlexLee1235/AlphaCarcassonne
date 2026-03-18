@@ -51,6 +51,9 @@ inline constexpr int kMinValueCellState = -4;
 inline constexpr const char* kDefaultStringRep = "standard";
 inline constexpr bool kDefaultSwap = false;
 
+inline constexpr int kBlackPlayerId = 0;
+inline constexpr int kWhitePlayerId = 1;
+
 // State of a cell.
 // Describes if a cell is
 //   - empty, black or white
@@ -113,7 +116,7 @@ class HexState : public State {
  private:
   CellState PlayerAndActionToState(Player player, Action move) const;
 
-  Player current_player_ = 0;                      // Player zero goes first
+  Player current_player_ = kBlackPlayerId;         // Black goes first
   double result_black_perspective_ = 0;            // 1 if Black (player 0) wins
   std::vector<int> AdjacentCells(int cell) const;  // Cells adjacent to cell
 

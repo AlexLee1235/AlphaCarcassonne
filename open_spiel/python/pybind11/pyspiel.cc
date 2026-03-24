@@ -807,8 +807,10 @@ PYBIND11_MODULE(pyspiel, m) {
     throw SpielException(string);
   });
   py::register_exception<SpielException>(m, "SpielError", PyExc_RuntimeError);
-  py::register_exception<ForbiddenException>(m, "ForbiddenError",
-                                             PyExc_RuntimeError);
+  // Disabled while tests aren't passing. See GitHub issue #1502.
+  // This exception is part of the infoset_tree bindings.
+  // py::register_exception<ForbiddenException>(m, "ForbiddenError",
+  //                                           PyExc_RuntimeError);
 
   // Register other bits of the API.
   init_pyspiel_bots(m);                     // Bots and bot-related algorithms.

@@ -60,25 +60,17 @@ SIMULTANEOUS_PLAYER_ID = pyspiel.PlayerId.SIMULTANEOUS
 class RLEnvironmentError(Exception):
   """Base exception for RL environment errors."""
 
-  pass
-
 
 class IllegalActionError(RLEnvironmentError):
   """Raised when an illegal action is attempted."""
-
-  pass
 
 
 class InvalidStateError(RLEnvironmentError):
   """Raised when the environment is in an invalid state."""
 
-  pass
-
 
 class InvalidParameterError(RLEnvironmentError):
   """Raised when invalid parameters are provided."""
-
-  pass
 
 
 class TimeStep(

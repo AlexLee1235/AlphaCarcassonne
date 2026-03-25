@@ -20,6 +20,17 @@ import pyspiel
 
 class RLEnvironmentTest(absltest.TestCase):
 
+  def setUp(self):
+    super().setUp()
+    self._env_ttt1 = rl_environment.Environment("tic_tac_toe")
+    self._env_ttt2 = rl_environment.Environment("tic_tac_toe")
+    self._env_kuhn_2p = rl_environment.Environment("kuhn_poker", players=2)
+    self._env_kuhn_3p = rl_environment.Environment("kuhn_poker", players=3)
+    self._env_ttt1.reset()
+    self._env_ttt2.reset()
+    self._env_kuhn_2p.reset()
+    self._env_kuhn_3p.reset()
+
   def test_create_game(self):
     env = rl_environment.Environment("tic_tac_toe")
     self.assertEqual(env.is_turn_based, True)
@@ -109,52 +120,33 @@ class RLEnvironmentTest(absltest.TestCase):
       actions = [act[0] for act in time_step.observations["legal_actions"]]
       time_step = env.step(actions)
 
-  def setup_set_and_get_state(self):
-    env_ttt1 = rl_environment.Environment("tic_tac_toe")
-    env_ttt2 = rl_environment.Environment("tic_tac_toe")
-    env_kuhn1 = rl_environment.Environment("kuhn_poker", players=2)
-    env_kuhn2 = rl_environment.Environment("kuhn_poker", players=3)
-    env_ttt1.reset()
-    env_ttt2.reset()
-    env_kuhn1.reset()
-    env_kuhn2.reset()
+  def test_transfer_state_between_identical_games(self):
+    self._env_ttt1.set_state(self._env_ttt2.get_state)
+    self._env_ttt2.set_state(self._env_ttt1.get_state)
 
-    # Transfering states between identical games should work.
-    env_ttt1.set_state(env_ttt2.get_state)
-    env_ttt2.set_state(env_ttt1.get_state)
-    return env_ttt1, env_ttt2, env_kuhn1, env_kuhn2
-
-  def test_set_and_get_state_kuhn1_get_state_fail(self):
-    env_ttt1, _, env_kuhn1, _ = self.setup_set_and_get_state()
-
+  def test_set_and_get_state_kuhn_get_state_fail(self):
     # Transfering states between different games or games with different
     # parameters should fail.
     with self.assertRaises(rl_environment.InvalidStateError):
-      self.fail(env_ttt1.set_state(env_kuhn1.get_state))
+      self.fail(self._env_ttt1.set_state(self._env_kuhn_2p.get_state))
 
-  def test_set_and_get_state_ttt1_get_state_fail(self):
-    env_ttt1, _, env_kuhn1, _ = self.setup_set_and_get_state()
-
+  def test_set_and_get_state_ttt_get_state_fail(self):
     # Transfering states between different games or games with different
     # parameters should fail.
     with self.assertRaises(rl_environment.InvalidStateError):
-      self.fail(env_kuhn1.set_state(env_ttt1.get_state))
+      self.fail(self._env_kuhn_2p.set_state(self._env_ttt1.get_state))
 
   def test_set_and_get_state_kuhn2_get_state_fail(self):
-    _, _, env_kuhn1, env_kuhn2 = self.setup_set_and_get_state()
-
     # Transfering states between different games or games with different
     # parameters should fail.
     with self.assertRaises(rl_environment.InvalidStateError):
-      self.fail(env_kuhn1.set_state(env_kuhn2.get_state))
+      self.fail(self._env_kuhn_2p.set_state(self._env_kuhn_3p.get_state))
 
   def test_set_and_get_state_ttt2_get_state_fail(self):
-    _, env_ttt2, env_kuhn1, _ = self.setup_set_and_get_state()
-
     # Transfering states between different games or games with different
     # parameters should fail.
     with self.assertRaises(rl_environment.InvalidStateError):
-      self.fail(env_ttt2.set_state(env_kuhn1.get_state))
+      self.fail(self._env_ttt2.set_state(self._env_kuhn_2p.get_state))
 
 
 if __name__ == "__main__":

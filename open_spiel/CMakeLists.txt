@@ -248,16 +248,28 @@ if (OPEN_SPIEL_BUILD_WITH_ROSHAMBO)
   set(OPEN_SPIEL_OBJECTS ${OPEN_SPIEL_OBJECTS} $<TARGET_OBJECTS:roshambo>)
 endif()
 if (OPEN_SPIEL_BUILD_WITH_LIBNOP)
-  include_directories(libnop/libnop/include)
-  add_subdirectory(libnop)
+  if (EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/libnop/libnop/include")
+    include_directories(libnop/libnop/include)
+  else()
+    message(FATAL_ERROR
+      "OPEN_SPIEL_BUILD_WITH_LIBNOP is ON, but the libnop headers were not found "
+      "under open_spiel/libnop/libnop/include. Run the dependency install step "
+      "or disable OPEN_SPIEL_BUILD_WITH_LIBNOP.")
+  endif()
 endif()
 if (OPEN_SPIEL_BUILD_WITH_LIBTORCH)
   list(APPEND CMAKE_PREFIX_PATH "${CMAKE_CURRENT_SOURCE_DIR}/libtorch/libtorch")
-  find_package(Torch REQUIRED)
-  add_subdirectory(libtorch)
-  include_directories(${TORCH_INCLUDE_DIRS})
-  # Use following to link your_target_executable with torch libraries:
-  # target_link_libraries(your_target_executable ${TORCH_LIBRARIES})
+  if (EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/libtorch/libtorch/share/cmake/Torch/TorchConfig.cmake")
+    find_package(Torch REQUIRED)
+    include_directories(${TORCH_INCLUDE_DIRS})
+    # Use following to link your_target_executable with torch libraries:
+    # target_link_libraries(your_target_executable ${TORCH_LIBRARIES})
+  else()
+    message(FATAL_ERROR
+      "OPEN_SPIEL_BUILD_WITH_LIBTORCH is ON, but libtorch was not found under "
+      "open_spiel/libtorch/libtorch. Run the dependency install step or disable "
+      "OPEN_SPIEL_BUILD_WITH_LIBTORCH.")
+  endif()
 endif()
 if (OPEN_SPIEL_BUILD_WITH_GAMUT)
   set(OPEN_SPIEL_OBJECTS ${OPEN_SPIEL_OBJECTS} $<TARGET_OBJECTS:gamut>)

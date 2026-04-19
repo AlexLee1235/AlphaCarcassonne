@@ -2,7 +2,7 @@
 #include <cassert>
 #include <cstdint>
 
-template <typename T, size_t N>
+template <typename T, std::size_t N>
 class FixedVector {
     std::array<T, N> data_ = {};
     int size_ = 0;

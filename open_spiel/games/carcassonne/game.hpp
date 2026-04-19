@@ -11,13 +11,14 @@
 #include <utility>
 #include <vector>
 
-
 constexpr int BOARD_SIZE = 15;
 constexpr int TOTAL_TILE_COUNT = PHYSICAL_TILE_COUNT;
 constexpr int MAX_FRONTIER_CELLS = TOTAL_TILE_COUNT * 2 + 2;
 constexpr int EDGE_SLOT_COUNT = TOTAL_TILE_COUNT * 4;
 
 enum GamePhase { PHASE_CHANCE = 0, PHASE_TILE = 1, PHASE_MEEPLE = 2, PHASE_TERMINAL = 3 };
+
+inline bool isInside(int x, int y) { return x >= 0 && x < BOARD_SIZE && y >= 0 && y < BOARD_SIZE; }
 
 struct TileMove {
     uint8_t x = 0;
@@ -47,7 +48,6 @@ struct MonasteryTracker {
     int y = 0;
     int tile_count = 0;
     int owner = 0;
-    int token_id = 0;
 };
 
 class Feature {
@@ -55,7 +55,7 @@ class Feature {
     EdgeType type = NONE;
     std::bitset<73> tile_mask;
     uint8_t opens = 0;
-    uint8_t meeple_mask[2] = {};
+    uint8_t meeple_mask[2] = {}; //todo
 
     Feature() = default;
     Feature(EdgeType type, int id);
@@ -70,49 +70,75 @@ class Feature {
     int getScore() const;
 };
 
-class Carcassonne {
-  private:
-    bool frontier[BOARD_SIZE][BOARD_SIZE] = {};
-    FixedVector<std::pair<uint8_t, uint8_t>, MAX_FRONTIER_CELLS> frontier_cells;
-    DisjointSet<Feature, std::plus<Feature>, EDGE_SLOT_COUNT> featureMap;
-    FixedVector<MonasteryTracker, 6> active_monasteries;
-    uint8_t free_meeple_ids[2][7] = {};
-    uint8_t free_meeple_count[2] = {7, 7};
-
-    int edgeIndex(int tile_id, int side) const;
-    bool isInside(int x, int y) const;
-    void addFrontierCell(int x, int y);
-    void removeFrontierCell(int x, int y);
-    int count3x3(int x, int y) const;
-    bool canPlaceTileAt(int x, int y, const Tile &tile) const;
-    bool hasValidMove(int tile_id) const;
-    int acquireMeepleToken(int player);
-    void releaseMeepleToken(int player, int token_id);
-    void releaseFeatureMeeples(Feature &feature);
-    void settleCompletedFeatures(int x, int y);
-    void settleCompletedMonasteries();
-    void settleScore(int x, int y);
-    void resolveEndGameScore();
-    void resolveNoMoreDraws();
-    int consumeType(int type_id);
-    void initializeTypeCounts();
-    void placeTileOnBoard(int tile_id, int x, int y, int rot);
-
+class BoardModule {
   public:
     Placement board[BOARD_SIZE][BOARD_SIZE] = {};
     EdgeType edge[BOARD_SIZE][BOARD_SIZE][4] = {};
-    MeepleTokenState meeple_tokens[2][7] = {};
+    int count3x3(int x, int y) const;
+    bool canPlaceTileAt(int x, int y, const Tile &tile) const;
+    void placeTileOnBoard(int tile_id, int x, int y, int rot, const Tile &tile);
+};
+
+class FeatureModule {
+    int edgeIndex(int tile_id, int side) const;
+  public:
+    DisjointSet<Feature, std::plus<Feature>, EDGE_SLOT_COUNT> featureMap;
+    FeatureModule();
+    void settleCompletedFeatures(int tile_id, int side, int *player_scores);
+    void resolveEndGameScore(int *player_scores);
+    void placeTileOnBoard(int tile_id, int x, int y, int rot, const Tile &tile, const BoardModule &board);
+    void getLegalMeepleMoves(FixedVector<int, 6> &ret, int x, int y, const BoardModule &board, const Tile &tile) const;
+};
+
+class MonasteryModule {
+  public:
+    FixedVector<MonasteryTracker, 6> active_monasteries;
+    void placeTileOnBoard(int tile_id, int x, int y, int rot);
+    void settleCompletedMonasteries(int *player_scores);
+    void resolveEndGameScore(int *player_scores);
+};
+
+class FrontierModule {
+    void addFrontierCell(int x, int y, const BoardModule &board);
+    void removeFrontierCell(int x, int y);
+  public:
+    bool frontier[BOARD_SIZE][BOARD_SIZE] = {};
+    FixedVector<std::pair<uint8_t, uint8_t>, MAX_FRONTIER_CELLS> frontier_cells;
+    void placeTileOnBoard(int tile_id, int x, int y, int rot, const BoardModule &board);
+};
+
+class DeckModule {
+  public:
     int total_remaining = 0;
     int current_tile_in_hand = 0;
     int type_counts[CANONICAL_TILE_TYPE_COUNT + 1] = {};
+    int consumeType(int type_id);
+    void initializeTypeCounts();
+    void getAvailableDraws(ChanceBranch *out, int &count) const;
+};
+
+class Carcassonne {
+  private:
+    FeatureModule features;
+    MonasteryModule monasteries;
+    FrontierModule frontier;
+    BoardModule board;
+    DeckModule deck;
+
+    void placeTileOnBoard(int tile_id, int x, int y, int rot);
+    bool hasValidMove(int tile_id) const;
+    void settleScore(int x, int y);
+    void resolveEndGameScore();
+    void resolveNoMoreDraws();
+
+  public:
     int last_x = -1;
     int last_y = -1;
     GamePhase current_phase = PHASE_CHANCE;
     bool is_game_over = false;
-    int holding_meeples[2] = {7, 7};
     int player_scores[2] = {0, 0};
+    int holding_meeples[2] = {0, 0};
     int currentPlayer = 0;
-    
 
     Carcassonne();
     int currentTileType() const;

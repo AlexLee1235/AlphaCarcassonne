@@ -1,6 +1,5 @@
 #include "game.hpp"
-#include "games/bridge/double_dummy_solver/include/dll.h"
-#include "games/carcassonne/tile.hpp"
+#include "tile.hpp"
 
 #include <array>
 #include <bitset>
@@ -34,13 +33,6 @@ bool Carcassonne::hasValidMove(int tile_id) const {
     return false;
 }
 
-void Carcassonne::settleScore(int x, int y) {
-    for (int i = 0; i < 4; ++i) 
-        if (board.edge[y][x][i] != GRASS)
-            features.settleCompletedFeatures(board.board[y][x].id, i, player_scores);
-    monasteries.settleCompletedMonasteries(player_scores);
-}
-
 void Carcassonne::resolveEndGameScore() {
     features.resolveEndGameScore(player_scores);
     monasteries.resolveEndGameScore(player_scores);
@@ -49,11 +41,8 @@ void Carcassonne::resolveEndGameScore() {
 void Carcassonne::resolveNoMoreDraws() {
     deck.current_tile_in_hand = 0;
     current_phase = PHASE_TERMINAL;
-    is_game_over = true;
     resolveEndGameScore();
 }
-
-
 
 void Carcassonne::placeTileOnBoard(int tile_id, int x, int y, int rot) {
     const Tile &tile = full_deck[tile_id][rot];
@@ -74,19 +63,6 @@ Carcassonne::Carcassonne() {
 
 int Carcassonne::currentTileType() const {
     return deck.current_tile_in_hand == 0 ? 0 : PHYSICAL_TO_CANONICAL_TYPE[deck.current_tile_in_hand];
-}
-
-float Carcassonne::terminalValue() const {
-    if (current_phase != PHASE_TERMINAL) {
-        return 0.0f;
-    }
-    if (player_scores[currentPlayer] > player_scores[1 - currentPlayer]) {
-        return 1.0f;
-    }
-    if (player_scores[currentPlayer] < player_scores[1 - currentPlayer]) {
-        return -1.0f;
-    }
-    return 0.0f;
 }
 
 void Carcassonne::getAvailableDraws(ChanceBranch *out, int &count) const {
@@ -140,17 +116,14 @@ FixedVector<int, 6> Carcassonne::getLegalMeepleMoves() const {
     if (current_phase != PHASE_MEEPLE) {
         return ret;
     }
-
     ret.push_back(-1);
     if (holding_meeples[currentPlayer] == 0) {
         return ret;
     }
-
     int x = last_x;
     int y = last_y;
     const Tile &tile = full_deck[board.board[y][x].id][board.board[y][x].rotation];
     features.getLegalMeepleMoves(ret, x, y, board, tile);
-
     if (tile.monastery) {
         ret.push_back(4);
     }
@@ -163,19 +136,31 @@ void Carcassonne::placeMeeple(int pos) {
     if (pos != -1) {
         holding_meeples[currentPlayer]--;
         if (pos == 4) {
-            monasteries.active_monasteries.push_back({x, y, board.count3x3(x, y), currentPlayer});
+            monasteries.placeMeeple(x, y, pos, currentPlayer, board, player_scores, holding_meeples);
         } else {
-            features.featureMap.getSetData(edgeIndex(board[y][x].id, pos)).meeple_mask[currentPlayer]++;
+            features.placeMeeple(x, y, pos, currentPlayer, board, player_scores, holding_meeples);
         }
     }
 
-    settleScore(x, y);
     currentPlayer = 1 - currentPlayer;
     if (deck.total_remaining == 0) {
         resolveNoMoreDraws();
         return;
     }
     current_phase = PHASE_CHANCE;
+}
+
+float Carcassonne::terminalValue() const {
+    if (current_phase != PHASE_TERMINAL) {
+        return 0.0f;
+    }
+    if (player_scores[currentPlayer] > player_scores[1 - currentPlayer]) {
+        return 1.0f;
+    }
+    if (player_scores[currentPlayer] < player_scores[1 - currentPlayer]) {
+        return -1.0f;
+    }
+    return 0.0f;
 }
 
 Carcassonne Carcassonne::clone() const { return *this; }

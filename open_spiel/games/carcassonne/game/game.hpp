@@ -81,26 +81,31 @@ class BoardModule {
 
 class FeatureModule {
     int edgeIndex(int tile_id, int side) const;
+    void settleCompletedFeatures(int tile_id, int side, int *player_scores, int *holding_meeples);
+
   public:
     DisjointSet<Feature, std::plus<Feature>, EDGE_SLOT_COUNT> featureMap;
     FeatureModule();
-    void settleCompletedFeatures(int tile_id, int side, int *player_scores);
     void resolveEndGameScore(int *player_scores);
     void placeTileOnBoard(int tile_id, int x, int y, int rot, const Tile &tile, const BoardModule &board);
     void getLegalMeepleMoves(FixedVector<int, 6> &ret, int x, int y, const BoardModule &board, const Tile &tile) const;
+    void placeMeeple(int x, int y, int pos, int player, const BoardModule &board, int *player_scores, int *holding_meeples);
 };
 
 class MonasteryModule {
+    void settleCompletedMonasteries(int *player_scores, int *holding_meeples);
+
   public:
     FixedVector<MonasteryTracker, 6> active_monasteries;
     void placeTileOnBoard(int tile_id, int x, int y, int rot);
-    void settleCompletedMonasteries(int *player_scores);
     void resolveEndGameScore(int *player_scores);
+    void placeMeeple(int x, int y, int pos, int player, const BoardModule &board, int *player_scores, int *holding_meeples);
 };
 
 class FrontierModule {
     void addFrontierCell(int x, int y, const BoardModule &board);
     void removeFrontierCell(int x, int y);
+
   public:
     bool frontier[BOARD_SIZE][BOARD_SIZE] = {};
     FixedVector<std::pair<uint8_t, uint8_t>, MAX_FRONTIER_CELLS> frontier_cells;
@@ -127,7 +132,6 @@ class Carcassonne {
 
     void placeTileOnBoard(int tile_id, int x, int y, int rot);
     bool hasValidMove(int tile_id) const;
-    void settleScore(int x, int y);
     void resolveEndGameScore();
     void resolveNoMoreDraws();
 
@@ -135,7 +139,6 @@ class Carcassonne {
     int last_x = -1;
     int last_y = -1;
     GamePhase current_phase = PHASE_CHANCE;
-    bool is_game_over = false;
     int player_scores[2] = {0, 0};
     int holding_meeples[2] = {0, 0};
     int currentPlayer = 0;

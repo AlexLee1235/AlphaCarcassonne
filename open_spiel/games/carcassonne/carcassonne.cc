@@ -88,23 +88,6 @@ int DecodeMeepleAction(Action action) {
   return action - kMeepleActionOffset - 1;
 }
 
-bool IsFrontierCell(const ::Carcassonne& state, int board_x, int board_y) {
-  if (state.board[board_y][board_x].id != 0) {
-    return false;
-  }
-  constexpr int dx[4] = {0, 1, 0, -1};
-  constexpr int dy[4] = {-1, 0, 1, 0};
-  for (int dir = 0; dir < 4; ++dir) {
-    const int nx = board_x + dx[dir];
-    const int ny = board_y + dy[dir];
-    if (nx >= 0 && nx < BOARD_SIZE && ny >= 0 && ny < BOARD_SIZE &&
-        state.board[ny][nx].id != 0) {
-      return true;
-    }
-  }
-  return false;
-}
-
 std::string PhaseToString(GamePhase phase) {
   switch (phase) {
     case PHASE_CHANCE:

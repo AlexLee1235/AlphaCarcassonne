@@ -11,7 +11,7 @@
 #include "open_spiel/spiel.h"
 #include "open_spiel/spiel_utils.h"
 
-#include "carcassonne/game.hpp"
+#include "game/game.hpp"
 
 namespace open_spiel {
 namespace carcassonne {

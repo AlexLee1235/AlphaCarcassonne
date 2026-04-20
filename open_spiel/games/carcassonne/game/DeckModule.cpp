@@ -1,6 +1,6 @@
 #include "game.hpp"
 #include "games/bridge/double_dummy_solver/include/dll.h"
-#include "games/carcassonne/tile.hpp"
+#include "tile.hpp"
 
 #include <array>
 #include <bitset>
@@ -8,18 +8,6 @@
 #include <utility>
 #include <vector>
 
-namespace {
-
-constexpr int U = 0;
-constexpr int R = 1;
-constexpr int D = 2;
-constexpr int L = 3;
-
-constexpr std::array<int, 4> dx = {0, 1, 0, -1};
-constexpr std::array<int, 4> dy = {-1, 0, 1, 0};
-constexpr std::array<int, 4> op = {D, L, U, R};
-
-} // namespace
 
 
 int DeckModule::consumeType(int type_id) {

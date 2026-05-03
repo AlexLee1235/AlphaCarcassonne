@@ -34,5 +34,4 @@ void MonasteryModule::placeTileOnBoard(int tile_id, int x, int y, int rot) {
 void MonasteryModule::placeMeeple(int x, int y, int pos, int player, const BoardModule &board, int *player_scores,
                                   int *holding_meeples) {
     active_monasteries.push_back({x, y, board.count3x3(x, y), player});
-    settleCompletedMonasteries(player_scores, holding_meeples);
 }

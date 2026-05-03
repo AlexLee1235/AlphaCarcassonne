@@ -87,16 +87,16 @@ class FeatureModule {
     void placeTileOnBoard(int tile_id, int x, int y, int rot, const Tile &tile, const BoardModule &board);
     void getLegalMeepleMoves(FixedVector<int, 6> &ret, int x, int y, const BoardModule &board, const Tile &tile) const;
     void placeMeeple(int x, int y, int pos, int player, const BoardModule &board, int *player_scores, int *holding_meeples);
+    void settleAfterPlaceMeeple(int x, int y, const BoardModule &board, int *player_scores, int *holding_meeples);
 };
 
 class MonasteryModule {
-    void settleCompletedMonasteries(int *player_scores, int *holding_meeples);
-
   public:
     FixedVector<MonasteryTracker, 6> active_monasteries;
     void placeTileOnBoard(int tile_id, int x, int y, int rot);
     void resolveEndGameScore(int *player_scores);
     void placeMeeple(int x, int y, int pos, int player, const BoardModule &board, int *player_scores, int *holding_meeples);
+    void settleCompletedMonasteries(int *player_scores, int *holding_meeples);
 };
 
 class FrontierModule {
@@ -120,17 +120,17 @@ class DeckModule {
 
 class LogModule {
   public:
-    int tile_x[72], tile_y[72];
+    int tile_x[73], tile_y[73];
     LogModule() {
-        fill(tile_x, tile_x + 72, -1);
-        fill(tile_y, tile_y + 72, -1);
+        fill(tile_x, tile_x + 73, -1);
+        fill(tile_y, tile_y + 73, -1);
     }
     void placeTileOnBoard(int tile_id, int x, int y, int rot) {
         tile_x[tile_id] = x;
         tile_y[tile_id] = y;
     }
     void getMeepleMap(FeatureModule &features, MonasteryModule &monasteries, float *span) {
-        for (int i = 0; i < 72; i++) {
+        for (int i = 1; i < 73; i++) {
             int x = tile_x[i], y = tile_y[i];
             if (x == -1 || y == -1)
                 continue;
@@ -158,6 +158,7 @@ class Carcassonne {
     FrontierModule frontier;
     BoardModule board;
     DeckModule deck;
+    LogModule logs;
 
     void placeTileOnBoard(int tile_id, int x, int y, int rot);
     bool hasValidMove(int tile_id) const;
@@ -169,7 +170,7 @@ class Carcassonne {
     int last_y = -1;
     GamePhase current_phase = PHASE_CHANCE;
     int player_scores[2] = {0, 0};
-    int holding_meeples[2] = {0, 0};
+    int holding_meeples[2] = {7, 7};
     int currentPlayer = 0;
     int current_tile_in_hand = 0;
 

@@ -41,6 +41,8 @@ void FeatureModule::settleCompletedFeatures(int tile_id, int side, int *player_s
     if (m1 >= m0) {
         player_scores[1] += score;
     }
+    feature.meeple_count[0] = 0;
+    feature.meeple_count[1] = 0;
     holding_meeples[0] += m0;
     holding_meeples[1] += m1;
 }
@@ -122,6 +124,9 @@ void FeatureModule::getLegalMeepleMoves(FixedVector<int, 6> &ret, int x, int y, 
 void FeatureModule::placeMeeple(int x, int y, int pos, int player, const BoardModule &board, int *player_scores,
                                 int *holding_meeples) {
     featureMap.getSetData(edgeIndex(board.board[y][x].id, pos)).meeple_count[player]++;
+}
+
+void FeatureModule::settleAfterPlaceMeeple(int x, int y, const BoardModule &board, int *player_scores, int *holding_meeples){
     for (int i = 0; i < 4; ++i) {
         if (board.edge[y][x][i] != GRASS) {
             settleCompletedFeatures(board.board[y][x].id, i, player_scores, holding_meeples);

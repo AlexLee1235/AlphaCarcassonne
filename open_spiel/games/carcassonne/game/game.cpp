@@ -52,6 +52,7 @@ void Carcassonne::placeTileOnBoard(int tile_id, int x, int y, int rot) {
     board.placeTileOnBoard(tile_id, x, y, rot, tile);
     features.placeTileOnBoard(tile_id, x, y, rot, tile, board);
     monasteries.placeTileOnBoard(tile_id, x, y, rot);
+    logs.placeTileOnBoard(tile_id, x, y, rot);
 }
 
 Carcassonne::Carcassonne() {
@@ -141,6 +142,8 @@ void Carcassonne::placeMeeple(int pos) {
             features.placeMeeple(x, y, pos, currentPlayer, board, player_scores, holding_meeples);
         }
     }
+    features.settleAfterPlaceMeeple(x, y, board, player_scores, holding_meeples);
+    monasteries.settleCompletedMonasteries(player_scores, holding_meeples);
 
     currentPlayer = 1 - currentPlayer;
     if (deck.total_remaining == 0) {

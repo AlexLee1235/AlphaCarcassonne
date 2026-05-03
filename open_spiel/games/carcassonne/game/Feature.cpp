@@ -24,32 +24,22 @@ Feature::Feature(EdgeType feature_type, int id) {
     type = feature_type;
     tile_mask.set(id);
     opens = 1;
-    meeple_mask[0] = 0;
-    meeple_mask[1] = 0;
+    meeple_count[0] = 0;
+    meeple_count[1] = 0;
 }
 
 Feature Feature::operator+(const Feature &other) const {
     Feature res;
     res.type = type;
     res.tile_mask = tile_mask | other.tile_mask;
-    res.meeple_mask[0] = meeple_mask[0] | other.meeple_mask[0];
-    res.meeple_mask[1] = meeple_mask[1] | other.meeple_mask[1];
+    res.meeple_count[0] = meeple_count[0] + other.meeple_count[0];
+    res.meeple_count[1] = meeple_count[1] + other.meeple_count[1];
     res.opens = opens + other.opens;
     return res;
 }
 
-int Feature::countMeeples(uint8_t mask) {
-    int count = 0;
-    while (mask != 0) {
-        count += mask & 1;
-        mask >>= 1;
-    }
-    return count;
-}
 
-int Feature::meepleCount(int player) const { return countMeeples(meeple_mask[player]); }
-
-bool Feature::hasMeeples() const { return meeple_mask[0] != 0 || meeple_mask[1] != 0; }
+bool Feature::hasMeeples() const { return meeple_count[0] != 0 || meeple_count[1] != 0; }
 
 int Feature::getTileCount() const { return static_cast<int>(tile_mask.count()); }
 

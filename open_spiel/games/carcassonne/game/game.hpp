@@ -55,16 +55,13 @@ class Feature {
     EdgeType type = NONE;
     std::bitset<73> tile_mask;
     uint8_t opens = 0;
-    uint8_t meeple_mask[2] = {}; //todo
+    uint8_t meeple_count[2] = {};
 
     Feature() = default;
     Feature(EdgeType type, int id);
 
     Feature operator+(const Feature &other) const;
 
-    static int countMeeples(uint8_t mask);
-
-    int meepleCount(int player) const;
     bool hasMeeples() const;
     int getTileCount() const;
     int getScore() const;
@@ -80,12 +77,12 @@ class BoardModule {
 };
 
 class FeatureModule {
-    int edgeIndex(int tile_id, int side) const;
     void settleCompletedFeatures(int tile_id, int side, int *player_scores, int *holding_meeples);
 
   public:
     DisjointSet<Feature, std::plus<Feature>, EDGE_SLOT_COUNT> featureMap;
     FeatureModule();
+    int edgeIndex(int tile_id, int side) const;
     void resolveEndGameScore(int *player_scores);
     void placeTileOnBoard(int tile_id, int x, int y, int rot, const Tile &tile, const BoardModule &board);
     void getLegalMeepleMoves(FixedVector<int, 6> &ret, int x, int y, const BoardModule &board, const Tile &tile) const;
@@ -115,11 +112,43 @@ class FrontierModule {
 class DeckModule {
   public:
     int total_remaining = 0;
-    int current_tile_in_hand = 0;
     int type_counts[CANONICAL_TILE_TYPE_COUNT + 1] = {};
     int consumeType(int type_id);
     void initializeTypeCounts();
     void getAvailableDraws(ChanceBranch *out, int &count) const;
+};
+
+class LogModule {
+  public:
+    int tile_x[72], tile_y[72];
+    LogModule() {
+        fill(tile_x, tile_x + 72, -1);
+        fill(tile_y, tile_y + 72, -1);
+    }
+    void placeTileOnBoard(int tile_id, int x, int y, int rot) {
+        tile_x[tile_id] = x;
+        tile_y[tile_id] = y;
+    }
+    void getMeepleMap(FeatureModule &features, MonasteryModule &monasteries, float *span) {
+        for (int i = 0; i < 72; i++) {
+            int x = tile_x[i], y = tile_y[i];
+            if (x == -1 || y == -1)
+                continue;
+            for (int j = 0; j < 4; j++) {
+                int index0 = (j * BOARD_SIZE + y) * BOARD_SIZE + x;
+                int index1 = ((5 + j) * BOARD_SIZE + y) * BOARD_SIZE + x;
+                Feature &f = features.featureMap.getSetData(features.edgeIndex(i, j));
+                int m0 = f.meeple_count[0], m1 = f.meeple_count[1];
+                span[index0] = 1.0f / 7.0f * m0;
+                span[index1] = 1.0f / 7.0f * m1;
+            }
+        }
+        for (MonasteryTracker &tr : monasteries.active_monasteries) {
+            int x = tr.x, y = tr.y;
+            int index = ((tr.owner * 5 + 4) * BOARD_SIZE + y) * BOARD_SIZE + x;
+            span[index] = 1.0f;
+        }
+    }
 };
 
 class Carcassonne {
@@ -142,11 +171,15 @@ class Carcassonne {
     int player_scores[2] = {0, 0};
     int holding_meeples[2] = {0, 0};
     int currentPlayer = 0;
+    int current_tile_in_hand = 0;
 
     Carcassonne();
     int currentTileType() const;
     float terminalValue() const;
     Carcassonne clone() const;
+
+    Placement getPlacement(int x, int y) const { return board.board[y][x]; }
+    int getTotalRemaining() const { return deck.total_remaining; }
 
     void getAvailableDraws(ChanceBranch *out, int &count) const;
     void drawTile(int type_id);

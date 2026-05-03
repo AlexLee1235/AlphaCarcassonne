@@ -39,7 +39,7 @@ void Carcassonne::resolveEndGameScore() {
 }
 
 void Carcassonne::resolveNoMoreDraws() {
-    deck.current_tile_in_hand = 0;
+    current_tile_in_hand = 0;
     current_phase = PHASE_TERMINAL;
     resolveEndGameScore();
 }
@@ -62,7 +62,7 @@ Carcassonne::Carcassonne() {
 }
 
 int Carcassonne::currentTileType() const {
-    return deck.current_tile_in_hand == 0 ? 0 : PHYSICAL_TO_CANONICAL_TYPE[deck.current_tile_in_hand];
+    return current_tile_in_hand == 0 ? 0 : PHYSICAL_TO_CANONICAL_TYPE[current_tile_in_hand];
 }
 
 void Carcassonne::getAvailableDraws(ChanceBranch *out, int &count) const {
@@ -74,9 +74,9 @@ void Carcassonne::getAvailableDraws(ChanceBranch *out, int &count) const {
 
 void Carcassonne::drawTile(int type_id) {
     int physical_id = deck.consumeType(type_id);
-    deck.current_tile_in_hand = 0;
+    current_tile_in_hand = 0;
     if (hasValidMove(physical_id)) {
-        deck.current_tile_in_hand = physical_id;
+        current_tile_in_hand = physical_id;
         current_phase = PHASE_TILE;
         return;
     }
@@ -89,7 +89,7 @@ void Carcassonne::drawTile(int type_id) {
 
 void Carcassonne::getLegalTileMoves(TileMove *out, int &count) const {
     count = 0;
-    if (current_phase != PHASE_TILE || deck.current_tile_in_hand == 0) {
+    if (current_phase != PHASE_TILE || current_tile_in_hand == 0) {
         return;
     }
 
@@ -97,7 +97,7 @@ void Carcassonne::getLegalTileMoves(TileMove *out, int &count) const {
         int x = frontier.frontier_cells[i].first;
         int y = frontier.frontier_cells[i].second;
         for (int rot = 0; rot < 4; ++rot) {
-            if (board.canPlaceTileAt(x, y, full_deck[deck.current_tile_in_hand][rot])) {
+            if (board.canPlaceTileAt(x, y, full_deck[current_tile_in_hand][rot])) {
                 out[count++] = {static_cast<uint8_t>(x), static_cast<uint8_t>(y), static_cast<uint8_t>(rot)};
             }
         }
@@ -105,9 +105,9 @@ void Carcassonne::getLegalTileMoves(TileMove *out, int &count) const {
 }
 
 void Carcassonne::placeTile(int x, int y, int rot) {
-    int tile_id = deck.current_tile_in_hand;
+    int tile_id = current_tile_in_hand;
     placeTileOnBoard(tile_id, x, y, rot);
-    deck.current_tile_in_hand = 0;
+    current_tile_in_hand = 0;
     current_phase = PHASE_MEEPLE;
 }
 

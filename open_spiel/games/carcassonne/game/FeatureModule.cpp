@@ -29,8 +29,8 @@ void FeatureModule::settleCompletedFeatures(int tile_id, int side, int *player_s
     if (feature.opens != 0) {
         return;
     }
-    int m0 = feature.meepleCount(0);
-    int m1 = feature.meepleCount(1);
+    int m0 = feature.meeple_count[0];
+    int m1 = feature.meeple_count[1];
     if (m0 == 0 && m1 == 0) {
         return;
     }
@@ -51,8 +51,8 @@ void FeatureModule::resolveEndGameScore(int *player_scores) {
         if (feature.opens == 0 || feature.type == GRASS) {
             continue;
         }
-        int m0 = feature.meepleCount(0);
-        int m1 = feature.meepleCount(1);
+        int m0 = feature.meeple_count[0];
+        int m1 = feature.meeple_count[1];
         if (m0 == 0 && m1 == 0) {
             continue;
         }
@@ -121,7 +121,7 @@ void FeatureModule::getLegalMeepleMoves(FixedVector<int, 6> &ret, int x, int y, 
 
 void FeatureModule::placeMeeple(int x, int y, int pos, int player, const BoardModule &board, int *player_scores,
                                 int *holding_meeples) {
-    featureMap.getSetData(edgeIndex(board.board[y][x].id, pos)).meeple_mask[player]++;
+    featureMap.getSetData(edgeIndex(board.board[y][x].id, pos)).meeple_count[player]++;
     for (int i = 0; i < 4; ++i) {
         if (board.edge[y][x][i] != GRASS) {
             settleCompletedFeatures(board.board[y][x].id, i, player_scores, holding_meeples);

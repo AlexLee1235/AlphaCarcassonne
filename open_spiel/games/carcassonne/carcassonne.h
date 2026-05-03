@@ -37,8 +37,10 @@ inline constexpr int kSouthTerrainPlane = 6;
 inline constexpr int kWestTerrainPlane = 9;
 inline constexpr int kShieldPlane = 12;
 inline constexpr int kMonasteryPlane = 13;
+//city connectivity
 //information
 inline constexpr int kLastPlacedPlane = 14;
+//legal positions
 //meeple map
 inline constexpr int kMyMeeplePlane = 15;
 inline constexpr int kOpponentMeeplePlane = 20;
@@ -49,6 +51,7 @@ inline constexpr int kCurrentTileSouthPlane = 31;
 inline constexpr int kCurrentTileWestPlane = 34;
 inline constexpr int kCurrentTileShieldPlane = 37;
 inline constexpr int kCurrentTileMonasteryPlane = 38;
+//city connectivity
 //information
 inline constexpr int kMyHoldingMeeplesPlane = 39;
 inline constexpr int kOpponentHoldingMeeplesPlane = 40;

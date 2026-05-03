@@ -149,6 +149,8 @@ void SetTileTerrainPlanes(absl::Span<float> values, const Tile &tile, int north_
     SetPlaneValue(values, west_plane + TerrainIndex(tile.edge[3]), x, y, 1.0f);
 }
 
+bool HasCityConnectivityPlane(int canonical_type) { return canonical_type == 14 || canonical_type == 15; }
+
 } // namespace
 
 CarcassonneState::CarcassonneState(std::shared_ptr<const Game> game) : State(std::move(game)), game_state_() {}
@@ -252,29 +254,21 @@ void CarcassonneState::ObservationTensor(Player player, absl::Span<float> values
             if (tile.monastery) {
                 SetPlaneValue(values, kMonasteryPlane, x, y, 1.0f);
             }
+            if (HasCityConnectivityPlane(PHYSICAL_TO_CANONICAL_TYPE[placement.id])) {
+                SetPlaneValue(values, kCityConnectivityPlane, x, y, 1.0f);
+            }
             if (game_state_.last_x == x && game_state_.last_y == y) {
                 SetPlaneValue(values, kLastPlacedPlane, x, y, 1.0f);
             }
         }
     }
 
-    /*for (int owner = 0; owner < kNumPlayers; ++owner) {
-        const int base_plane = (owner == player) ? kMyMeeplePlane : kOpponentMeeplePlane;
-        for (int token_id = 0; token_id < 7; ++token_id) {
-            const MeepleTokenState &token = game_state_.meeple_tokens[owner][token_id];
-            if (!token.active) {
-                continue;
-            }
-            SPIEL_CHECK_GE(token.x, 0);
-            SPIEL_CHECK_GE(token.y, 0);
-            SPIEL_CHECK_GE(token.pos, 0);
-            SPIEL_CHECK_LE(token.pos, 4);
-            SetPlaneValue(values, base_plane + token.pos, token.x, token.y, 1.0f);
-        }
-    }*/
+    game_state_.WriteMeepleMap(player, values.data() + kMyMeeplePlane * BOARD_SIZE * BOARD_SIZE);
 
     if (game_state_.current_tile_in_hand != 0) {
         const Tile &current_tile = full_deck[game_state_.current_tile_in_hand][0];
+        const bool has_current_city_connectivity =
+            HasCityConnectivityPlane(PHYSICAL_TO_CANONICAL_TYPE[game_state_.current_tile_in_hand]);
         for (int y = 0; y < BOARD_SIZE; ++y) {
             for (int x = 0; x < BOARD_SIZE; ++x) {
                 SetTileTerrainPlanes(values, current_tile, kCurrentTileNorthPlane, kCurrentTileEastPlane, kCurrentTileSouthPlane,
@@ -285,7 +279,19 @@ void CarcassonneState::ObservationTensor(Player player, absl::Span<float> values
                 if (current_tile.monastery) {
                     SetPlaneValue(values, kCurrentTileMonasteryPlane, x, y, 1.0f);
                 }
+                if (has_current_city_connectivity) {
+                    SetPlaneValue(values, kCurrentTileCityConnectivityPlane, x, y, 1.0f);
+                }
             }
+        }
+    }
+
+    if (game_state_.current_phase == PHASE_TILE && game_state_.current_tile_in_hand != 0) {
+        std::array<TileMove, kTileActionCount> tile_moves{};
+        int count = 0;
+        game_state_.getLegalTileMoves(tile_moves.data(), count);
+        for (int i = 0; i < count; ++i) {
+            SetPlaneValue(values, kLegalPlacementPlane + tile_moves[i].rot, tile_moves[i].x, tile_moves[i].y, 1.0f);
         }
     }
 

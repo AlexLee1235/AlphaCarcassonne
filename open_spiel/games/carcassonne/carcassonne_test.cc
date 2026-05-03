@@ -43,6 +43,30 @@ void CheckBroadcastPlane(const std::vector<float>& tensor, int plane,
   }
 }
 
+void CheckZeroPlanes(const std::vector<float>& tensor, int first_plane,
+                     int plane_count) {
+  for (int plane = first_plane; plane < first_plane + plane_count; ++plane) {
+    CheckBroadcastPlane(tensor, plane, 0.0f);
+  }
+}
+
+void CheckPlanesEqual(const std::vector<float>& left, int left_plane,
+                      const std::vector<float>& right, int right_plane) {
+  for (int y = 0; y < BOARD_SIZE; ++y) {
+    for (int x = 0; x < BOARD_SIZE; ++x) {
+      SPIEL_CHECK_TRUE(std::abs(PlaneValue(left, left_plane, x, y) -
+                                PlaneValue(right, right_plane, x, y)) < 1e-6f);
+    }
+  }
+}
+
+void DecodeTileActionForTest(Action action, int* x, int* y, int* rot) {
+  *rot = action % 4;
+  action /= 4;
+  *x = action % BOARD_SIZE;
+  *y = action / BOARD_SIZE;
+}
+
 void AdvanceUntilMeeplePlaced(std::unique_ptr<State>* state) {
   constexpr Action kSkipMeepleAction = kMeepleActionOffset;
   for (int step = 0; step < 20; ++step) {
@@ -85,7 +109,10 @@ void ObservationTensorSmokeTest() {
                  1.0f);
   SPIEL_CHECK_EQ(PlaneValue(initial_obs, kWestTerrainPlane + 2, center, center),
                  1.0f);
+  SPIEL_CHECK_EQ(PlaneValue(initial_obs, kCityConnectivityPlane, center, center),
+                 0.0f);
   SPIEL_CHECK_EQ(PlaneValue(initial_obs, kLastPlacedPlane, center, center), 1.0f);
+  CheckZeroPlanes(initial_obs, kLegalPlacementPlane, kLegalPlacementPlanes);
   CheckBroadcastPlane(initial_obs, kMyHoldingMeeplesPlane, 1.0f);
   CheckBroadcastPlane(initial_obs, kOpponentHoldingMeeplesPlane, 1.0f);
   CheckBroadcastPlane(initial_obs, kRemainingTilesPlane, 71.0f / 72.0f);
@@ -99,8 +126,9 @@ void ObservationTensorSmokeTest() {
   SPIEL_CHECK_EQ(state->ObservationTensor(0).size(), kObservationTensorSize);
   auto* chance_done = dynamic_cast<CarcassonneState*>(state.get());
   SPIEL_CHECK_TRUE(chance_done != nullptr);
+  const int hand_tile_id = chance_done->UnderlyingState().current_tile_in_hand;
   const Tile& hand_tile =
-      full_deck[chance_done->UnderlyingState().current_tile_in_hand][0];
+      full_deck[hand_tile_id][0];
   std::vector<float> tile_phase_obs = state->ObservationTensor(0);
   SPIEL_CHECK_EQ(PlaneValue(tile_phase_obs,
                             kCurrentTileNorthPlane + TestTerrainIndex(hand_tile.edge[0]),
@@ -118,6 +146,23 @@ void ObservationTensorSmokeTest() {
                             kCurrentTileWestPlane + TestTerrainIndex(hand_tile.edge[3]),
                             0, 0),
                  1.0f);
+  SPIEL_CHECK_EQ(PlaneValue(tile_phase_obs, kCurrentTileShieldPlane, 0, 0),
+                 hand_tile.shield ? 1.0f : 0.0f);
+  SPIEL_CHECK_EQ(PlaneValue(tile_phase_obs, kCurrentTileMonasteryPlane, 0, 0),
+                 hand_tile.monastery ? 1.0f : 0.0f);
+  const bool hand_has_city_connectivity =
+      PHYSICAL_TO_CANONICAL_TYPE[hand_tile_id] == 14 ||
+      PHYSICAL_TO_CANONICAL_TYPE[hand_tile_id] == 15;
+  CheckBroadcastPlane(tile_phase_obs, kCurrentTileCityConnectivityPlane,
+                      hand_has_city_connectivity ? 1.0f : 0.0f);
+  for (Action action : state->LegalActions()) {
+    int tile_x;
+    int tile_y;
+    int rot;
+    DecodeTileActionForTest(action, &tile_x, &tile_y, &rot);
+    SPIEL_CHECK_EQ(PlaneValue(tile_phase_obs, kLegalPlacementPlane + rot, tile_x, tile_y),
+                   1.0f);
+  }
   CheckBroadcastPlane(tile_phase_obs, kIsMeeplePhasePlane, 0.0f);
 
   state->ApplyAction(state->LegalActions()[0]);
@@ -130,6 +175,8 @@ void ObservationTensorSmokeTest() {
   CheckBroadcastPlane(meeple_phase_obs, kCurrentTileWestPlane, 0.0f);
   CheckBroadcastPlane(meeple_phase_obs, kCurrentTileShieldPlane, 0.0f);
   CheckBroadcastPlane(meeple_phase_obs, kCurrentTileMonasteryPlane, 0.0f);
+  CheckBroadcastPlane(meeple_phase_obs, kCurrentTileCityConnectivityPlane, 0.0f);
+  CheckZeroPlanes(meeple_phase_obs, kLegalPlacementPlane, kLegalPlacementPlanes);
   CheckBroadcastPlane(meeple_phase_obs, kIsMeeplePhasePlane, 1.0f);
 
   state->ApplyAction(state->LegalActions()[0]);
@@ -148,31 +195,10 @@ void RelativePerspectiveTest() {
   std::vector<float> obs0 = state->ObservationTensor(0);
   std::vector<float> obs1 = state->ObservationTensor(1);
 
-  bool found = false;
-  for (int owner = 0; owner < 2 && !found; ++owner) {
-    for (int token_id = 0; token_id < 7 && !found; ++token_id) {
-      const MeepleTokenState& token = core.meeple_tokens[owner][token_id];
-      if (!token.active) {
-        continue;
-      }
-      const int my_plane_for_owner = kMyMeeplePlane + token.pos;
-      const int opp_plane_for_owner = kOpponentMeeplePlane + token.pos;
-
-      if (owner == 0) {
-        SPIEL_CHECK_EQ(PlaneValue(obs0, my_plane_for_owner, token.x, token.y),
-                       1.0f);
-        SPIEL_CHECK_EQ(PlaneValue(obs1, opp_plane_for_owner, token.x, token.y),
-                       1.0f);
-      } else {
-        SPIEL_CHECK_EQ(PlaneValue(obs0, opp_plane_for_owner, token.x, token.y),
-                       1.0f);
-        SPIEL_CHECK_EQ(PlaneValue(obs1, my_plane_for_owner, token.x, token.y),
-                       1.0f);
-      }
-      found = true;
-    }
+  for (int offset = 0; offset < 5; ++offset) {
+    CheckPlanesEqual(obs0, kMyMeeplePlane + offset, obs1, kOpponentMeeplePlane + offset);
+    CheckPlanesEqual(obs0, kOpponentMeeplePlane + offset, obs1, kMyMeeplePlane + offset);
   }
-  SPIEL_CHECK_TRUE(found);
 
   CheckBroadcastPlane(obs0, kMyHoldingMeeplesPlane,
                       core.holding_meeples[0] / 7.0f);

@@ -66,6 +66,8 @@ int Carcassonne::currentTileType() const {
     return current_tile_in_hand == 0 ? 0 : PHYSICAL_TO_CANONICAL_TYPE[current_tile_in_hand];
 }
 
+void Carcassonne::WriteMeepleMap(int player, float *span) const { logs.getMeepleMap(features, monasteries, player, span); }
+
 void Carcassonne::getAvailableDraws(ChanceBranch *out, int &count) const {
     count = 0;
     if (current_phase != PHASE_CHANCE)
@@ -151,19 +153,6 @@ void Carcassonne::placeMeeple(int pos) {
         return;
     }
     current_phase = PHASE_CHANCE;
-}
-
-float Carcassonne::terminalValue() const {
-    if (current_phase != PHASE_TERMINAL) {
-        return 0.0f;
-    }
-    if (player_scores[currentPlayer] > player_scores[1 - currentPlayer]) {
-        return 1.0f;
-    }
-    if (player_scores[currentPlayer] < player_scores[1 - currentPlayer]) {
-        return -1.0f;
-    }
-    return 0.0f;
 }
 
 Carcassonne Carcassonne::clone() const { return *this; }

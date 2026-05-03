@@ -26,10 +26,12 @@ inline constexpr int kNumDistinctPlayerActions = kTileActionCount + kMeepleActio
 inline constexpr int kTerrainTypes = 3; // grass, city, road
 inline constexpr int kBoardFeaturePlanes = 4 * kTerrainTypes + 3;
 inline constexpr int kMeepleFeaturePlanes = 10;
-inline constexpr int kCurrentTileFeaturePlanes = 4 * kTerrainTypes + 2;
+inline constexpr int kCurrentTileFeaturePlanes = 4 * kTerrainTypes + 3;
+inline constexpr int kLastPlacedFeaturePlanes = 1;
+inline constexpr int kLegalPlacementPlanes = 4;
 inline constexpr int kGlobalFeaturePlanes = 5;
-inline constexpr int kObservationPlanes =
-    kBoardFeaturePlanes + kMeepleFeaturePlanes + kCurrentTileFeaturePlanes + kGlobalFeaturePlanes;
+inline constexpr int kObservationPlanes = kBoardFeaturePlanes + kMeepleFeaturePlanes + kCurrentTileFeaturePlanes +
+                                          kLastPlacedFeaturePlanes + kLegalPlacementPlanes + kGlobalFeaturePlanes;
 //map
 inline constexpr int kNorthTerrainPlane = 0;
 inline constexpr int kEastTerrainPlane = 3;
@@ -38,9 +40,7 @@ inline constexpr int kWestTerrainPlane = 9;
 inline constexpr int kShieldPlane = 12;
 inline constexpr int kMonasteryPlane = 13;
 //city connectivity
-//information
-inline constexpr int kLastPlacedPlane = 14;
-//legal positions
+inline constexpr int kCityConnectivityPlane = 14;
 //meeple map
 inline constexpr int kMyMeeplePlane = 15;
 inline constexpr int kOpponentMeeplePlane = 20;
@@ -52,12 +52,18 @@ inline constexpr int kCurrentTileWestPlane = 34;
 inline constexpr int kCurrentTileShieldPlane = 37;
 inline constexpr int kCurrentTileMonasteryPlane = 38;
 //city connectivity
+inline constexpr int kCurrentTileCityConnectivityPlane = 39;
 //information
-inline constexpr int kMyHoldingMeeplesPlane = 39;
-inline constexpr int kOpponentHoldingMeeplesPlane = 40;
-inline constexpr int kRemainingTilesPlane = 41;
-inline constexpr int kScoreDiffPlane = 42;
-inline constexpr int kIsMeeplePhasePlane = 43;
+inline constexpr int kLastPlacedPlane = 40;
+//legal positions
+inline constexpr int kLegalPlacementPlane = 41;
+//information
+inline constexpr int kMyHoldingMeeplesPlane = 45;
+inline constexpr int kOpponentHoldingMeeplesPlane = 46;
+inline constexpr int kRemainingTilesPlane = 47;
+inline constexpr int kScoreDiffPlane = 48;
+inline constexpr int kIsMeeplePhasePlane = 49;
+static_assert(kObservationPlanes == kIsMeeplePhasePlane + 1);
 inline constexpr int kObservationTensorSize = kObservationPlanes * BOARD_SIZE * BOARD_SIZE;
 
 class CarcassonneGame;
@@ -101,7 +107,7 @@ class CarcassonneGame : public Game {
     absl::optional<double> UtilitySum() const override { return 0; }
     double MaxUtility() const override { return 1; }
     std::vector<int> ObservationTensorShape() const override { return {kObservationPlanes, BOARD_SIZE, BOARD_SIZE}; }
-    int MaxGameLength() const override { return (PHYSICAL_TILE_COUNT - 1) * 2; }
+    int MaxGameLength() const override { return (PHYSICAL_TILE_COUNT - 1) * 3; }
     int MaxChanceNodesInHistory() const override { return PHYSICAL_TILE_COUNT - 1; }
 };
 

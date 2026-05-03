@@ -129,7 +129,8 @@ class LogModule {
         tile_x[tile_id] = x;
         tile_y[tile_id] = y;
     }
-    void getMeepleMap(FeatureModule &features, MonasteryModule &monasteries, float *span) {
+    void getMeepleMap(const FeatureModule &features, const MonasteryModule &monasteries, int player, float *span) const {
+        int opponent = 1 - player;
         for (int i = 1; i < 73; i++) {
             int x = tile_x[i], y = tile_y[i];
             if (x == -1 || y == -1)
@@ -137,15 +138,16 @@ class LogModule {
             for (int j = 0; j < 4; j++) {
                 int index0 = (j * BOARD_SIZE + y) * BOARD_SIZE + x;
                 int index1 = ((5 + j) * BOARD_SIZE + y) * BOARD_SIZE + x;
-                Feature &f = features.featureMap.getSetData(features.edgeIndex(i, j));
-                int m0 = f.meeple_count[0], m1 = f.meeple_count[1];
-                span[index0] = 1.0f / 7.0f * m0;
-                span[index1] = 1.0f / 7.0f * m1;
+                const Feature &f = features.featureMap.getSetData(features.edgeIndex(i, j));
+                int my_meeples = f.meeple_count[player], opponent_meeples = f.meeple_count[opponent];
+                span[index0] = 1.0f / 7.0f * my_meeples;
+                span[index1] = 1.0f / 7.0f * opponent_meeples;
             }
         }
-        for (MonasteryTracker &tr : monasteries.active_monasteries) {
+        for (const MonasteryTracker &tr : monasteries.active_monasteries) {
             int x = tr.x, y = tr.y;
-            int index = ((tr.owner * 5 + 4) * BOARD_SIZE + y) * BOARD_SIZE + x;
+            int plane = tr.owner == player ? 4 : 9;
+            int index = (plane * BOARD_SIZE + y) * BOARD_SIZE + x;
             span[index] = 1.0f;
         }
     }
@@ -176,11 +178,11 @@ class Carcassonne {
 
     Carcassonne();
     int currentTileType() const;
-    float terminalValue() const;
     Carcassonne clone() const;
 
     Placement getPlacement(int x, int y) const { return board.board[y][x]; }
     int getTotalRemaining() const { return deck.total_remaining; }
+    void WriteMeepleMap(int player, float *span) const;
 
     void getAvailableDraws(ChanceBranch *out, int &count) const;
     void drawTile(int type_id);

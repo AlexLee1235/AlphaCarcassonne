@@ -1,5 +1,4 @@
 #include <array>
-#include <cmath>
 #include <tuple>
 #include <utility>
 #include <vector>
@@ -16,7 +15,6 @@ namespace {
 constexpr int kMeepleMapPlanes = 10;
 constexpr int kMeepleMapSize = kMeepleMapPlanes * BOARD_SIZE * BOARD_SIZE;
 constexpr int kMaxTileMoves = BOARD_SIZE * BOARD_SIZE * 4;
-constexpr double kTieEpsilon = 1e-9;
 
 std::vector<std::tuple<int, double>> GetAvailableDraws(const Carcassonne &game) {
     std::array<ChanceBranch, CANONICAL_TILE_TYPE_COUNT> draws{};

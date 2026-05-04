@@ -155,6 +155,9 @@ bool HasCityConnectivityPlane(int canonical_type) { return canonical_type == 14 
 
 CarcassonneState::CarcassonneState(std::shared_ptr<const Game> game) : State(std::move(game)), game_state_() {}
 
+CarcassonneState::CarcassonneState(std::shared_ptr<const Game> game, const ::Carcassonne &game_state)
+    : State(std::move(game)), game_state_(game_state) {}
+
 Player CarcassonneState::CurrentPlayer() const {
     if (IsTerminal()) {
         return kTerminalPlayerId;

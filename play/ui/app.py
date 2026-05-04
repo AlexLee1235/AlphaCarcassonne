@@ -34,6 +34,7 @@ class CarcassonneUI:
         self.meeple_options: List[int] = []
 
         self.status = ft.Text("Ready.")
+        self.ai_text = ft.Text("")
         self.turn_text = ft.Text()
         self.holding_text = ft.Text("Holding tile")
         self.score_text = ft.Text()
@@ -41,6 +42,19 @@ class CarcassonneUI:
         self.view_text = ft.Text()
         self.holding_image = ft.Image(src="tiles/1.png", width=140, height=140, fit=IMAGE_FIT.CONTAIN)
 
+        self.opponent_dropdown = ft.Dropdown(
+            value="player",
+            label="Opponent",
+            options=[
+                ft.DropdownOption(key="player", text="Player"),
+                ft.DropdownOption(key="random", text="Random"),
+                ft.DropdownOption(key="mcts", text="MCTS"),
+                ft.DropdownOption(key="alphazero", text="AlphaZero"),
+            ],
+            width=180,
+            on_select=self.on_opponent_change,
+        )
+        self.new_game_btn = ft.ElevatedButton("New Game", on_click=self.on_new_game)
         self.confirm_btn = ft.ElevatedButton("Confirm Tile", on_click=self.on_confirm_tile)
         self.skip_btn = ft.OutlinedButton("Skip Meeple", on_click=lambda _: self.on_apply_move(-1))
         self.pan_up_btn = ft.OutlinedButton("Up", on_click=lambda _: self.on_pan(0, -1), width=88)
@@ -79,7 +93,9 @@ class CarcassonneUI:
             content=ft.Column(
                 controls=[
                     ft.Text("Game Info", size=20, weight=ft.FontWeight.BOLD),
+                    ft.Row([self.opponent_dropdown, self.new_game_btn], wrap=True),
                     self.turn_text,
+                    self.ai_text,
                     self.holding_text,
                     ft.Text("Holding Preview", weight=ft.FontWeight.W_600),
                     ft.Container(
@@ -130,13 +146,22 @@ class CarcassonneUI:
         for pos in moves_by_cell:
             moves_by_cell[pos].sort()
 
-        self.confirm_btn.disabled = self.selected_move is None or self.awaiting_meeple or self.state.game_over
-        self.skip_btn.visible = self.awaiting_meeple
+        ai_turn = self.engine.is_ai_turn()
+        self.confirm_btn.disabled = self.selected_move is None or self.awaiting_meeple or self.state.game_over or ai_turn
+        self.skip_btn.visible = self.awaiting_meeple and not ai_turn
+        self.new_game_btn.disabled = False
 
         for pos, btn in self.meeple_buttons.items():
             btn.visible = self.awaiting_meeple and pos in self.meeple_options
+            btn.disabled = ai_turn
 
         self.turn_text.value = f"Turn: {self.state.turn} | Player: P{self.state.current_player}"
+        if self.engine.ai_status:
+            self.ai_text.value = f"AI: {self.engine.ai_status}"
+        elif self.engine.opponent_mode == "player":
+            self.ai_text.value = "Mode: Player vs Player"
+        else:
+            self.ai_text.value = f"Mode: Player vs {self.engine.opponent_mode}"
         self.holding_text.value = "Holding tile"
         self.view_text.value = (
             f"View X: {self.view_origin[0]}-{self.view_origin[0] + BOARD_SIZE - 1} | "
@@ -152,7 +177,7 @@ class CarcassonneUI:
         self.meeple_text.value = (
             f"Meeples -> P1: {self.state.meeples_remaining[1]} | P2: {self.state.meeples_remaining[2]}"
         )
-        pan_disabled = self.awaiting_meeple or self.state.game_over
+        pan_disabled = self.awaiting_meeple or self.state.game_over or ai_turn
         self.pan_up_btn.disabled = pan_disabled or not self.engine.can_pan(0, -1)
         self.pan_left_btn.disabled = pan_disabled or not self.engine.can_pan(-1, 0)
         self.pan_right_btn.disabled = pan_disabled or not self.engine.can_pan(1, 0)
@@ -261,7 +286,7 @@ class CarcassonneUI:
         )
 
     def on_cell_click(self, x: int, y: int, moves_by_cell: Dict[Tuple[int, int], List[int]]) -> None:
-        if self.awaiting_meeple or self.state.game_over:
+        if self.awaiting_meeple or self.state.game_over or self.engine.is_ai_turn():
             return
         rots = moves_by_cell.get((x, y))
         if not rots:
@@ -310,6 +335,9 @@ class CarcassonneUI:
             return
         old_scores = dict(self.state.scores)
         try:
+            if self.engine.opponent_mode != "player":
+                self.status.value = f"{self.engine.opponent_mode} thinking..."
+                self.page.update()
             self.engine.apply_meeple(meeple_pos)
         except ValueError as exc:
             self.status.value = str(exc)
@@ -319,7 +347,9 @@ class CarcassonneUI:
         self.state = self.engine.state
         p1_gain = self.state.scores[1] - old_scores[1]
         p2_gain = self.state.scores[2] - old_scores[2]
-        if p1_gain or p2_gain:
+        if self.engine.ai_status:
+            self.status.value = self.engine.ai_status
+        elif p1_gain or p2_gain:
             self.status.value = f"Scored: P1 +{p1_gain}, P2 +{p2_gain}"
         else:
             self.status.value = "Move applied."
@@ -327,6 +357,26 @@ class CarcassonneUI:
         self.selected_move = None
         self.awaiting_meeple = False
         self.meeple_options = []
+        self.refresh()
+
+    def on_opponent_change(self, _: ft.ControlEvent) -> None:
+        self.status.value = "Opponent mode will apply to the next new game."
+        self.refresh()
+
+    def on_new_game(self, _: ft.ControlEvent) -> None:
+        mode = self.opponent_dropdown.value or "player"
+        try:
+            self.engine = CppCarcassonneAdapter(opponent_mode=mode)
+        except ValueError as exc:
+            self.status.value = str(exc)
+            self.refresh()
+            return
+        self.state = self.engine.state
+        self.view_origin = self.engine.view_origin
+        self.selected_move = None
+        self.awaiting_meeple = False
+        self.meeple_options = []
+        self.status.value = f"New game: Player vs {mode}."
         self.refresh()
 
 

@@ -71,6 +71,7 @@ class CarcassonneGame;
 class CarcassonneState : public State {
   public:
     explicit CarcassonneState(std::shared_ptr<const Game> game);
+    CarcassonneState(std::shared_ptr<const Game> game, const ::Carcassonne &game_state);
     CarcassonneState(const CarcassonneState &) = default;
 
     Player CurrentPlayer() const override;

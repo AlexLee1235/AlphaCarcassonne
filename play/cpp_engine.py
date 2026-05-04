@@ -9,6 +9,7 @@ try:
         PHASE_TERMINAL,
         PHASE_TILE,
         PHYSICAL_TO_CANONICAL_TYPE,
+        OPPONENT_MODES,
         START_POS,
         CppCarcassonneAdapter,
     )
@@ -21,6 +22,7 @@ except ImportError:  # pragma: no cover - package import fallback
         PHASE_TERMINAL,
         PHASE_TILE,
         PHYSICAL_TO_CANONICAL_TYPE,
+        OPPONENT_MODES,
         START_POS,
         CppCarcassonneAdapter,
     )
@@ -33,6 +35,7 @@ __all__ = [
     "PHASE_TERMINAL",
     "PHASE_TILE",
     "PHYSICAL_TO_CANONICAL_TYPE",
+    "OPPONENT_MODES",
     "START_POS",
     "CppCarcassonneAdapter",
 ]

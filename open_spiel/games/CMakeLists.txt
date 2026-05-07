@@ -28,6 +28,17 @@ set(GAME_SOURCES
   bridge/bridge_uncontested_bidding.h
   catch/catch.cc
   catch/catch.h
+  carcassonne/carcassonne.cc
+  carcassonne/carcassonne.h
+  carcassonne/game/BoardModule.cpp
+  carcassonne/game/DeckModule.cpp
+  carcassonne/game/Feature.cpp
+  carcassonne/game/FeatureModule.cpp
+  carcassonne/game/FrontierModule.cpp
+  carcassonne/game/MonasteryModule.cpp
+  carcassonne/game/game.cpp
+  carcassonne/game/game.hpp
+  carcassonne/game/tile.hpp
   checkers/checkers.cc
   checkers/checkers.h
   chess/chess.cc
@@ -368,6 +379,10 @@ add_test(bridge_test bridge_test)
 add_executable(catch_test catch/catch_test.cc ${OPEN_SPIEL_OBJECTS}
                $<TARGET_OBJECTS:tests>)
 add_test(catch_test catch_test)
+
+add_executable(carcassonne_test carcassonne/carcassonne_test.cc ${OPEN_SPIEL_OBJECTS}
+               $<TARGET_OBJECTS:tests>)
+add_test(carcassonne_test carcassonne_test)
 
 add_executable(checkers_test checkers/checkers_test.cc ${OPEN_SPIEL_OBJECTS}
                $<TARGET_OBJECTS:tests>)

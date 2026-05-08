@@ -67,6 +67,9 @@ InitBot(std::string type, const open_spiel::Game &game,
         std::shared_ptr<open_spiel::algorithms::torch_az::VPNetEvaluator>
             az_evaluator) {
   if (type == "az") {
+    if (az_evaluator == nullptr) {
+      open_spiel::SpielFatalError("AlphaZero evaluator is not initialized.");
+    }
     return std::make_unique<open_spiel::algorithms::MCTSBot>(
         game, std::move(az_evaluator), absl::GetFlag(FLAGS_uct_c),
         absl::GetFlag(FLAGS_max_simulations),
@@ -189,24 +192,28 @@ int main(int argc, char **argv) {
     open_spiel::SpielFatalError("Game must have terminal rewards.");
   if (game_type.dynamics != open_spiel::GameType::Dynamics::kSequential)
     open_spiel::SpielFatalError("Game must have sequential turns.");
-  if (absl::GetFlag(FLAGS_az_path).empty())
+  const bool has_az_player = absl::GetFlag(FLAGS_player1) == "az" ||
+                             absl::GetFlag(FLAGS_player2) == "az";
+  if (has_az_player && absl::GetFlag(FLAGS_az_path).empty())
     open_spiel::SpielFatalError("AlphaZero path must be specified.");
-  if (absl::GetFlag(FLAGS_player1) != "az" &&
-      absl::GetFlag(FLAGS_player2) != "az")
-    open_spiel::SpielFatalError("One of the players must be AlphaZero.");
 
   open_spiel::algorithms::torch_az::DeviceManager device_manager;
-  device_manager.AddDevice(open_spiel::algorithms::torch_az::VPNetModel(
-      *game, absl::GetFlag(FLAGS_az_path), absl::GetFlag(FLAGS_az_graph_def),
-      "/cpu:0"));
-  device_manager.Get(0, 0)->LoadCheckpoint(absl::GetFlag(FLAGS_az_checkpoint));
-  auto az_evaluator =
-      std::make_shared<open_spiel::algorithms::torch_az::VPNetEvaluator>(
+  std::shared_ptr<open_spiel::algorithms::torch_az::VPNetEvaluator>
+      az_evaluator;
+  if (has_az_player) {
+    device_manager.AddDevice(open_spiel::algorithms::torch_az::VPNetModel(
+        *game, absl::GetFlag(FLAGS_az_path), absl::GetFlag(FLAGS_az_graph_def),
+        "/cpu:0"));
+    device_manager.Get(0, 0)->LoadCheckpoint(
+        absl::GetFlag(FLAGS_az_checkpoint));
+    az_evaluator =
+        std::make_shared<open_spiel::algorithms::torch_az::VPNetEvaluator>(
           /*device_manager=*/&device_manager,
           /*batch_size=*/absl::GetFlag(FLAGS_az_batch_size),
           /*threads=*/absl::GetFlag(FLAGS_az_threads),
           /*cache_size=*/absl::GetFlag(FLAGS_az_cache_size),
           /*cache_shards=*/absl::GetFlag(FLAGS_az_cache_shards));
+  }
   auto evaluator =
       std::make_shared<open_spiel::algorithms::RandomRolloutEvaluator>(
           absl::GetFlag(FLAGS_rollout_count), Seed());

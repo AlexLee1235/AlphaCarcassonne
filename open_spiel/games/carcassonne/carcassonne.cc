@@ -306,6 +306,7 @@ void CarcassonneState::ObservationTensor(Player player, absl::Span<float> values
     const float score_diff = static_cast<float>(game_state_.player_scores[player] - game_state_.player_scores[opponent]);
     BroadcastPlane(values, kScoreDiffPlane, std::tanh(score_diff / kScoreDiffNormalization));
     BroadcastPlane(values, kIsMeeplePhasePlane, game_state_.current_phase == PHASE_MEEPLE ? 1.0f : 0.0f);
+    BroadcastPlane(values, kCurrentPlayerIsPlayer0Plane, game_state_.currentPlayer == 0 ? 1.0f : 0.0f);
 
     if (game_state_.current_phase != PHASE_MEEPLE) {
         SPIEL_CHECK_EQ(values[kIsMeeplePhasePlane * BOARD_SIZE * BOARD_SIZE], 0.0f);

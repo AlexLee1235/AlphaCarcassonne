@@ -92,6 +92,7 @@ void ObservationTensorSmokeTest() {
   const std::vector<int> shape = game->ObservationTensorShape();
 
   SPIEL_CHECK_EQ(shape.size(), 3);
+  SPIEL_CHECK_EQ(shape[0], 51);
   SPIEL_CHECK_EQ(shape[0], kObservationPlanes);
   SPIEL_CHECK_EQ(shape[1], BOARD_SIZE);
   SPIEL_CHECK_EQ(shape[2], BOARD_SIZE);
@@ -118,6 +119,7 @@ void ObservationTensorSmokeTest() {
   CheckBroadcastPlane(initial_obs, kRemainingTilesPlane, 71.0f / 72.0f);
   CheckBroadcastPlane(initial_obs, kScoreDiffPlane, 0.0f);
   CheckBroadcastPlane(initial_obs, kIsMeeplePhasePlane, 0.0f);
+  CheckBroadcastPlane(initial_obs, kCurrentPlayerIsPlayer0Plane, 1.0f);
 
   while (state->IsChanceNode()) {
     state->ApplyAction(state->LegalActions()[0]);
@@ -155,6 +157,7 @@ void ObservationTensorSmokeTest() {
       PHYSICAL_TO_CANONICAL_TYPE[hand_tile_id] == 15;
   CheckBroadcastPlane(tile_phase_obs, kCurrentTileCityConnectivityPlane,
                       hand_has_city_connectivity ? 1.0f : 0.0f);
+  CheckBroadcastPlane(tile_phase_obs, kCurrentPlayerIsPlayer0Plane, 1.0f);
   for (Action action : state->LegalActions()) {
     int tile_x;
     int tile_y;
@@ -178,8 +181,18 @@ void ObservationTensorSmokeTest() {
   CheckBroadcastPlane(meeple_phase_obs, kCurrentTileCityConnectivityPlane, 0.0f);
   CheckZeroPlanes(meeple_phase_obs, kLegalPlacementPlane, kLegalPlacementPlanes);
   CheckBroadcastPlane(meeple_phase_obs, kIsMeeplePhasePlane, 1.0f);
+  CheckBroadcastPlane(meeple_phase_obs, kCurrentPlayerIsPlayer0Plane, 1.0f);
 
   state->ApplyAction(state->LegalActions()[0]);
+  std::vector<float> player1_chance_obs = state->ObservationTensor(1);
+  CheckBroadcastPlane(player1_chance_obs, kCurrentPlayerIsPlayer0Plane, 0.0f);
+  while (state->IsChanceNode()) {
+    state->ApplyAction(state->LegalActions()[0]);
+  }
+  SPIEL_CHECK_EQ(state->CurrentPlayer(), 1);
+  std::vector<float> player1_tile_phase_obs = state->ObservationTensor(1);
+  CheckBroadcastPlane(player1_tile_phase_obs, kCurrentPlayerIsPlayer0Plane,
+                      0.0f);
   SPIEL_CHECK_EQ(state->ObservationTensor(0).size(), kObservationTensorSize);
   SPIEL_CHECK_EQ(state->ObservationTensor(1).size(), kObservationTensorSize);
 }
@@ -213,6 +226,13 @@ void RelativePerspectiveTest() {
       std::tanh((core.player_scores[0] - core.player_scores[1]) / 30.0f);
   CheckBroadcastPlane(obs0, kScoreDiffPlane, score_diff);
   CheckBroadcastPlane(obs1, kScoreDiffPlane, -score_diff);
+
+  const float current_player_is_player0 =
+      core.currentPlayer == 0 ? 1.0f : 0.0f;
+  CheckBroadcastPlane(obs0, kCurrentPlayerIsPlayer0Plane,
+                      current_player_is_player0);
+  CheckBroadcastPlane(obs1, kCurrentPlayerIsPlayer0Plane,
+                      current_player_is_player0);
 }
 
 void ReturnsMatchScoresTest() {

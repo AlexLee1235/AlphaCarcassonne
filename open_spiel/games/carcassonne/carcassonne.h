@@ -29,7 +29,7 @@ inline constexpr int kMeepleFeaturePlanes = 10;
 inline constexpr int kCurrentTileFeaturePlanes = 4 * kTerrainTypes + 3;
 inline constexpr int kLastPlacedFeaturePlanes = 1;
 inline constexpr int kLegalPlacementPlanes = 4;
-inline constexpr int kGlobalFeaturePlanes = 5;
+inline constexpr int kGlobalFeaturePlanes = 6;
 inline constexpr int kObservationPlanes = kBoardFeaturePlanes + kMeepleFeaturePlanes + kCurrentTileFeaturePlanes +
                                           kLastPlacedFeaturePlanes + kLegalPlacementPlanes + kGlobalFeaturePlanes;
 //map
@@ -63,7 +63,8 @@ inline constexpr int kOpponentHoldingMeeplesPlane = 46;
 inline constexpr int kRemainingTilesPlane = 47;
 inline constexpr int kScoreDiffPlane = 48;
 inline constexpr int kIsMeeplePhasePlane = 49;
-static_assert(kObservationPlanes == kIsMeeplePhasePlane + 1);
+inline constexpr int kCurrentPlayerIsPlayer0Plane = 50;
+static_assert(kObservationPlanes == kCurrentPlayerIsPlayer0Plane + 1);
 inline constexpr int kObservationTensorSize = kObservationPlanes * BOARD_SIZE * BOARD_SIZE;
 
 class CarcassonneGame;

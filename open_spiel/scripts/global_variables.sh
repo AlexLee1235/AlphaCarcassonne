@@ -87,7 +87,7 @@ export OPEN_SPIEL_BUILD_WITH_LIBTORCH="${OPEN_SPIEL_BUILD_WITH_LIBTORCH:-"ON"}"
 # Note: there are currently known problems with the C++ PyTorch: inteferences
 # with pybind11 versions. Until it is properly fixed, there is a workaround:
 # https://github.com/deepmind/open_spiel/issues/966#issuecomment-1322982393
-export OPEN_SPIEL_BUILD_WITH_LIBTORCH_DOWNLOAD_URL="${OPEN_SPIEL_BUILD_WITH_LIBTORCH_DOWNLOAD_URL:-"https://download.pytorch.org/libtorch/cu121/libtorch-cxx11-abi-shared-with-deps-2.3.0%2Bcu121.zip"}"
+export OPEN_SPIEL_BUILD_WITH_LIBTORCH_DOWNLOAD_URL="${OPEN_SPIEL_BUILD_WITH_LIBTORCH_DOWNLOAD_URL:-"https://download.pytorch.org/libtorch/cu126/libtorch-shared-with-deps-2.11.0%2Bcu126.zip"}"
 
 # Enable integration with GAMUT game generator (see games/gamut).
 # Requires java and GAMUT, so disabled by default.
@@ -108,3 +108,14 @@ export OPEN_SPIEL_BUILD_WITH_ORTOOLS_DOWNLOAD_URL="${OPEN_SPIEL_BUILD_WITH_ORTOO
 export OPEN_SPIEL_ENABLE_JAX=${OPEN_SPIEL_ENABLE_JAX:-"AUTO"}
 export OPEN_SPIEL_ENABLE_PYTORCH=${OPEN_SPIEL_ENABLE_PYTORCH:-"AUTO"}
 export OPEN_SPIEL_ENABLE_PYTHON_MISC=${OPEN_SPIEL_ENABLE_PYTHON_MISC:-"OFF"}
+
+
+
+# !!!!!!!!!!!!!!!!!!!!!!!!!!!!! User added
+export CUDA_HOME=/usr/local/cuda
+export CUDA_PATH=/usr/local/cuda
+export CUDA_TOOLKIT_ROOT_DIR=/usr/local/cuda
+export CUDAToolkit_ROOT=/usr/local/cuda
+export CUDACXX=/usr/local/cuda/bin/nvcc
+export LD_LIBRARY_PATH=/usr/local/cuda/lib64:/usr/local/cuda/targets/x86_64-linux/lib:$LD_LIBRARY_PATH
+

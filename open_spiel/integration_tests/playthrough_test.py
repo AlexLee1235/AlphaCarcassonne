@@ -25,20 +25,13 @@ import pyspiel
 
 _DATA_DIR = "open_spiel/integration_tests/playthroughs/"
 
-_OPTIONAL_GAMES = frozenset([
-    "hanabi",
-    "python_pokerkit_wrapper",
-    "python_pokerkit_wrapper_acpc_style",
-    "python_repeated_pokerkit",
-    "repeated_poker",
-    "universal_poker"
-])
+_OPTIONAL_GAMES = frozenset()
 _AVAILABLE_GAMES = set(pyspiel.registered_names())
 
 # Games for which we do not have playthroughs. Please don't add new games
 # here if you can avoid it. Adding a playthrough is easy and very useful!
 # Run `generate_new_playthrough.sh $GAME` to add a playthrough.
-_MISSING_GAMES = set(["nfg_game", "efg_game", "restricted_nash_response"])
+_MISSING_GAMES = set()
 
 # Regex to find the game name in a playthrough. This will return the name of the
 # transform for wrapped games, e.g. goofspiel --> turn_based_simultaneous_game
@@ -108,7 +101,7 @@ def _add_tests():
   test_srcdir = os.environ.get("TEST_SRCDIR", "")
   path = os.path.join(test_srcdir, _DATA_DIR)
   basenames = sorted(os.listdir(path))
-  if len(basenames) < 40:
+  if len(basenames) < len(_AVAILABLE_GAMES):
     raise ValueError(f"Playthroughs are missing from {path}")
   for basename in basenames:
     test_name = f"test_playthrough_{basename}"

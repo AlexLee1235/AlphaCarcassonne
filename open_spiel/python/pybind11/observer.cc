@@ -16,8 +16,6 @@
 
 // Python bindings for observers.
 
-#include "open_spiel/game_transforms/normal_form_extensive_game.h"
-#include "open_spiel/game_transforms/turn_based_simultaneous_game.h"
 #include "open_spiel/observer.h"
 #include "open_spiel/python/pybind11/pybind11.h"
 

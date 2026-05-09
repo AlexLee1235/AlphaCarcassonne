@@ -5,15 +5,21 @@
 
 `registered_names()`
 
-Returns a list of short names of all game in the library. These are names that
+Returns a list of short names of all games in the library. These are names that
 can be used when loading games in `load_game`.
+
+In this trimmed build, the returned list is:
+
+```python
+["carcassonne", "othello", "tic_tac_toe"]
+```
 
 ## Examples:
 
 ```python
 import pyspiel
 
-# Print the name of all OpenSpiel games
+# Print the name of all games in this build
 for short_name in pyspiel.registered_names():
   print(short_name)
 ```

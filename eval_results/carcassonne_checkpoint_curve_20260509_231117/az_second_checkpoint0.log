@@ -1,0 +1,2 @@
+Game: carcassonne
+[W TensorCompare.cpp:530] Warning: where received a uint8 condition tensor. This behavior is deprecated and will be removed in a future version of PyTorch. Use a boolean condition instead. (function operator())

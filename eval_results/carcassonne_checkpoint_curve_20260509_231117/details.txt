@@ -6,3 +6,24 @@ num_games=20
 seed=0
 out=/mnt/c/achieve/Carcassonne/AlphaCarcassonne/eval_results/carcassonne_checkpoint_curve_20260509_231117
 
+== az_first checkpoint=-1 ==
+Number of games played: 20
+Players: az, random
+Overall wins: 18, 2
+Overall returns: 16, -16
+log=/mnt/c/achieve/Carcassonne/AlphaCarcassonne/eval_results/carcassonne_checkpoint_curve_20260509_231117/az_first_checkpoint-1.log
+
+== az_second checkpoint=-1 ==
+Number of games played: 20
+Players: random, az
+Overall wins: 5, 14
+Overall returns: -9, 9
+log=/mnt/c/achieve/Carcassonne/AlphaCarcassonne/eval_results/carcassonne_checkpoint_curve_20260509_231117/az_second_checkpoint-1.log
+
+== az_first checkpoint=0 ==
+Number of games played: 20
+Players: az, random
+Overall wins: 6, 11
+Overall returns: -5, 5
+log=/mnt/c/achieve/Carcassonne/AlphaCarcassonne/eval_results/carcassonne_checkpoint_curve_20260509_231117/az_first_checkpoint0.log
+

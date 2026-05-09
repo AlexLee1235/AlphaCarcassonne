@@ -1,5 +1,4 @@
 #include "game.hpp"
-#include "games/bridge/double_dummy_solver/include/dll.h"
 #include "tile.hpp"
 
 #include <array>

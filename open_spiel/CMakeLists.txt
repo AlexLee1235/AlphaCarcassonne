@@ -107,10 +107,6 @@ macro(openspiel_optional_dependency DEP_NAME DEP_DEFAULT DEP_DESCRIPTION)
 endmacro()
 
 # List of all optional dependencies:
-openspiel_optional_dependency(OPEN_SPIEL_BUILD_WITH_ACPC           OFF
-  "Build against the Universal Poker library.")
-openspiel_optional_dependency(OPEN_SPIEL_BUILD_WITH_HANABI         OFF
-  "Build against the Hanabi game.")
 openspiel_optional_dependency(OPEN_SPIEL_BUILD_WITH_JULIA          OFF
   "Build binary for Julia.")
 openspiel_optional_dependency(OPEN_SPIEL_BUILD_WITH_LIBNOP         OFF
@@ -119,12 +115,6 @@ openspiel_optional_dependency(OPEN_SPIEL_BUILD_WITH_LIBTORCH       OFF
   "Build with support for libtorch.")
 openspiel_optional_dependency(OPEN_SPIEL_BUILD_WITH_PYTHON         ON
   "Build binary for Python.")
-openspiel_optional_dependency(OPEN_SPIEL_BUILD_WITH_XINXIN         OFF
-  "Build against xinxin Hearts program.")
-openspiel_optional_dependency(OPEN_SPIEL_BUILD_WITH_ROSHAMBO       OFF
-  "Build against RoShamBo bots.")
-openspiel_optional_dependency(OPEN_SPIEL_BUILD_WITH_GAMUT          OFF
-  "Build with GAMUT generator integration.")
 openspiel_optional_dependency(OPEN_SPIEL_BUILD_WITH_ORTOOLS        OFF
   "Build with C++ optimization library OR-Tools.")
 
@@ -225,28 +215,11 @@ set (OPEN_SPIEL_OBJECTS
   $<TARGET_OBJECTS:open_spiel_core>
   $<TARGET_OBJECTS:bots>
   $<TARGET_OBJECTS:games>
-  $<TARGET_OBJECTS:game_transforms>
-  $<TARGET_OBJECTS:bridge_double_dummy_solver>
   $<TARGET_OBJECTS:algorithms>
   $<TARGET_OBJECTS:evaluation>
   $<TARGET_OBJECTS:utils>
   $<TARGET_OBJECTS:tests>
 )
-if (OPEN_SPIEL_BUILD_WITH_HANABI)
-  set(OPEN_SPIEL_OBJECTS ${OPEN_SPIEL_OBJECTS}
-      $<TARGET_OBJECTS:hanabi_learning_environment>)
-endif()
-if (OPEN_SPIEL_BUILD_WITH_ACPC)
-  set(OPEN_SPIEL_OBJECTS ${OPEN_SPIEL_OBJECTS}
-      $<TARGET_OBJECTS:universal_poker_clib>
-      $<TARGET_OBJECTS:universal_poker_lib>)
-endif()
-if (OPEN_SPIEL_BUILD_WITH_XINXIN)
-  set(OPEN_SPIEL_OBJECTS ${OPEN_SPIEL_OBJECTS} $<TARGET_OBJECTS:xinxin>)
-endif()
-if (OPEN_SPIEL_BUILD_WITH_ROSHAMBO)
-  set(OPEN_SPIEL_OBJECTS ${OPEN_SPIEL_OBJECTS} $<TARGET_OBJECTS:roshambo>)
-endif()
 if (OPEN_SPIEL_BUILD_WITH_LIBNOP)
   if (EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/libnop/libnop/include")
     include_directories(libnop/libnop/include)
@@ -270,9 +243,6 @@ if (OPEN_SPIEL_BUILD_WITH_LIBTORCH)
       "open_spiel/libtorch/libtorch. Run the dependency install step or disable "
       "OPEN_SPIEL_BUILD_WITH_LIBTORCH.")
   endif()
-endif()
-if (OPEN_SPIEL_BUILD_WITH_GAMUT)
-  set(OPEN_SPIEL_OBJECTS ${OPEN_SPIEL_OBJECTS} $<TARGET_OBJECTS:gamut>)
 endif()
 if (OPEN_SPIEL_BUILD_WITH_ORTOOLS)
   # Compile with OR-Tools headers and link against binary distribution,
@@ -302,7 +272,6 @@ add_subdirectory (bots)
 add_subdirectory (evaluation)
 add_subdirectory (examples)
 add_subdirectory (games)
-add_subdirectory (game_transforms)
 
 if (OPEN_SPIEL_BUILD_WITH_PYTHON)
   add_subdirectory (python)

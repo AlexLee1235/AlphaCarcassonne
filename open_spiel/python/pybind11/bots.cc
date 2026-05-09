@@ -23,8 +23,6 @@
 #include "open_spiel/algorithms/evaluate_bots.h"
 #include "open_spiel/algorithms/is_mcts.h"
 #include "open_spiel/algorithms/mcts.h"
-#include "open_spiel/bots/gin_rummy/simple_gin_rummy_bot.h"
-#include "open_spiel/bots/uci/uci_bot.h"
 #include "open_spiel/game_parameters.h"
 #include "open_spiel/python/pybind11/pybind11.h"
 #include "open_spiel/spiel.h"
@@ -34,11 +32,6 @@
 #include "pybind11/include/pybind11/detail/common.h"
 #include "pybind11/include/pybind11/pybind11.h"
 #include "pybind11/include/pybind11/pytypes.h"
-
-// Optional headers.
-#if OPEN_SPIEL_BUILD_WITH_ROSHAMBO
-#include "open_spiel/bots/roshambo/roshambo_bot.h"
-#endif
 
 namespace open_spiel {
 namespace {
@@ -189,39 +182,5 @@ void init_pyspiel_bots(py::module& m) {
       },
       "A bot that samples from a policy.");
 
-  py::enum_<open_spiel::uci::SearchLimitType>(m, "SearchLimitType")
-      .value("MOVETIME", open_spiel::uci::SearchLimitType::kMoveTime)
-      .value("NODES", open_spiel::uci::SearchLimitType::kNodes)
-      .value("DEPTH", open_spiel::uci::SearchLimitType::kDepth)
-      .export_values();
-
-#ifndef _WIN32
-  m.def("make_uci_bot", open_spiel::uci::MakeUCIBot, py::arg("bot_binary_path"),
-        py::arg("search_limit_value"), py::arg("ponder"), py::arg("options"),
-        py::arg("search_limit_type") =
-            open_spiel::uci::SearchLimitType::kMoveTime,
-        py::arg("use_game_history_for_position") = false,
-        "Bot that can play chess using UCI chess engine.");
-#endif
-
-#if OPEN_SPIEL_BUILD_WITH_ROSHAMBO
-  m.attr("ROSHAMBO_NUM_THROWS") = py::int_(open_spiel::roshambo::kNumThrows);
-  m.attr("ROSHAMBO_NUM_BOTS") = py::int_(open_spiel::roshambo::kNumBots);
-  // no arguments; returns vector of strings
-  m.def("roshambo_bot_names", open_spiel::roshambo::RoshamboBotNames);
-  // args: player_int (int), bot name (string), num throws (int), returns bot
-  m.def("make_roshambo_bot", open_spiel::roshambo::MakeRoshamboBot,
-        py::arg("player_id"), py::arg("bot_name"),
-        py::arg("num_throws") = open_spiel::roshambo::kNumThrows);
-#endif
-
-  m.def(
-      "make_simple_gin_rummy_bot",
-      [](const GameParameters& params,
-         int player_id) -> std::unique_ptr<open_spiel::Bot> {
-        return std::make_unique<gin_rummy::SimpleGinRummyBot>(params,
-                                                              player_id);
-      },
-      py::arg("params"), py::arg("player_id"));
 }
 }  // namespace open_spiel

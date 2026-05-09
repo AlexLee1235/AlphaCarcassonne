@@ -27,48 +27,17 @@
 #include "open_spiel/algorithms/tensor_game_utils.h"
 #include "open_spiel/canonical_game_strings.h"
 #include "open_spiel/game_parameters.h"
-#include "open_spiel/game_transforms/turn_based_simultaneous_game.h"
-#include "open_spiel/games/efg_game/efg_game.h"
-#include "open_spiel/games/efg_game/efg_game_data.h"
-#include "open_spiel/games/nfg_game/nfg_game.h"
 #include "open_spiel/matrix_game.h"
 #include "open_spiel/normal_form_game.h"
 #include "open_spiel/observer.h"
 #include "open_spiel/pybind11_json/include/pybind11_json/pybind11_json.hpp"
-#include "open_spiel/python/pybind11/algorithms_corr_dist.h"
 // Disabled while tests aren't passing. See GitHub issue #1502.
 // #include "open_spiel/python/pybind11/algorithms_infostate_tree.h"
 #include "open_spiel/python/pybind11/algorithms_trajectories.h"
 #include "open_spiel/python/pybind11/bots.h"
 #include "open_spiel/python/pybind11/evaluation_elo.h"
 #include "open_spiel/python/pybind11/evaluation_sco.h"
-#include "open_spiel/python/pybind11/game_transforms.h"
-#include "open_spiel/python/pybind11/games_catch.h"
-#include "open_spiel/python/pybind11/games_backgammon.h"
-#include "open_spiel/python/pybind11/games_bargaining.h"
-#include "open_spiel/python/pybind11/games_blackjack.h"
-#include "open_spiel/python/pybind11/games_bridge.h"
-#include "open_spiel/python/pybind11/games_chess.h"
-#include "open_spiel/python/pybind11/games_colored_trails.h"
-#include "open_spiel/python/pybind11/games_connect_four.h"
-#include "open_spiel/python/pybind11/games_crazy_eights.h"
-#include "open_spiel/python/pybind11/games_crazyhouse.h"
-#include "open_spiel/python/pybind11/games_dots_and_boxes.h"
-#include "open_spiel/python/pybind11/games_euchre.h"
-#include "open_spiel/python/pybind11/games_gin_rummy.h"
-#include "open_spiel/python/pybind11/games_go.h"
-#include "open_spiel/python/pybind11/games_gomoku.h"
-#include "open_spiel/python/pybind11/games_hearts.h"
-#include "open_spiel/python/pybind11/games_kuhn_poker.h"
-#include "open_spiel/python/pybind11/games_leduc_poker.h"
-#include "open_spiel/python/pybind11/games_negotiation.h"
-#include "open_spiel/python/pybind11/games_pokerkit_wrapper.h"
-#include "open_spiel/python/pybind11/games_repeated_pokerkit.h"
-#include "open_spiel/python/pybind11/games_spades.h"
-#include "open_spiel/python/pybind11/games_tarok.h"
 #include "open_spiel/python/pybind11/games_tic_tac_toe.h"
-#include "open_spiel/python/pybind11/games_tiny_bridge.h"
-#include "open_spiel/python/pybind11/games_trade_comm.h"
 #include "open_spiel/python/pybind11/observer.h"
 #include "open_spiel/python/pybind11/policy.h"
 #include "open_spiel/python/pybind11/pybind11.h"
@@ -85,18 +54,6 @@
 #include "pybind11/include/pybind11/detail/common.h"
 #include "pybind11_abseil/absl_casters.h"
 #include "pybind11_abseil/status_casters.h"
-
-// List of optional python submodules.
-#if OPEN_SPIEL_BUILD_WITH_GAMUT
-#include "open_spiel/games/gamut/gamut_pybind11.h"
-#endif
-#if OPEN_SPIEL_BUILD_WITH_XINXIN
-#include "open_spiel/bots/xinxin/xinxin_pybind11.h"
-#endif
-#if OPEN_SPIEL_BUILD_WITH_ACPC
-#include "open_spiel/python/pybind11/games_repeated_poker.h"
-#include "open_spiel/python/pybind11/games_universal_poker.h"
-#endif
 
 #define PYSPIEL_VERSION "1.6.12"
 
@@ -538,23 +495,6 @@ PYBIND11_MODULE(pyspiel, m) {
                 std::static_pointer_cast<const NormalFormGame>(LoadGame(data)));
           }));
 
-  // Put this here rather than in game_transforms.cc because it depends on
-  // State, which is defined above.
-  py::classh<TurnBasedSimultaneousState> tbs_state(m,
-      "TurnBasedSimultaneousState", state);
-  tbs_state.def("simultaneous_game_state",
-                &TurnBasedSimultaneousState::SimultaneousGameState,
-                py::return_value_policy::reference)
-      .def(py::pickle(              // Pickle support
-        [](const TurnBasedSimultaneousState& state) {  // __getstate__
-          return SerializeGameAndState(*state.GetGame(), state);
-        },
-        [](const std::string& data) {  // __setstate__
-          auto state = DeserializeGameAndState(data).second;
-          auto pydict = PyDict(*state);
-          return std::make_pair(std::move(state), pydict);
-        }));
-
   py::classh<MatrixGame> matrix_game(m, "MatrixGame", normal_form_game);
   matrix_game
       .def(py::init<GameType, GameParameters, std::vector<std::string>,
@@ -628,11 +568,6 @@ PYBIND11_MODULE(pyspiel, m) {
             return std::const_pointer_cast<TensorGame>(
                 algorithms::LoadTensorGame(data));
           }));
-
-  m.def("hulh_game_string", &open_spiel::HulhGameString);
-  m.def("hunl_game_string", &open_spiel::HunlGameString);
-  m.def("turn_based_goofspiel_game_string",
-        &open_spiel::TurnBasedGoofspielGameString);
 
   m.def("create_matrix_game",
         py::overload_cast<const std::string&, const std::string&,
@@ -729,16 +664,6 @@ PYBIND11_MODULE(pyspiel, m) {
   m.def("load_tensor_game", open_spiel::algorithms::LoadTensorGame,
         "Loads a game as a tensor game (will fail if not a tensor game.");
 
-  m.def("load_efg_game", open_spiel::efg_game::LoadEFGGame,
-        "Load a gambit extensive form game (.efg) from string data.");
-  m.def("get_sample_efg_data", open_spiel::efg_game::GetSampleEFGData,
-        "Get Kuhn poker EFG data.");
-  m.def("get_kuhn_poker_efg_data", open_spiel::efg_game::GetKuhnPokerEFGData,
-        "Get sample EFG data.");
-
-  m.def("load_nfg_game", open_spiel::nfg_game::LoadNFGGame,
-        "Load a gambit normal form game (.nfg) from string data.");
-
   m.def("extensive_to_matrix_game",
         open_spiel::algorithms::ExtensiveToMatrixGame,
         "Converts a two-player extensive-game to its equivalent matrix game, "
@@ -815,55 +740,15 @@ PYBIND11_MODULE(pyspiel, m) {
   // Register other bits of the API.
   init_pyspiel_bots(m);                     // Bots and bot-related algorithms.
   init_pyspiel_policy(m);                   // Policies and related algorithms.
-  init_pyspiel_algorithms_corr_dist(m);     // Correlated eq. distance funcs
   init_pyspiel_algorithms_trajectories(m);  // Trajectories.
   init_pyspiel_evaluation_elo(m);           // Elo rating system.
   init_pyspiel_evaluation_sco(m);           // Soft Condorcet Optimization.
-  init_pyspiel_game_transforms(m);          // Game transformations.
-  // Game-specific functions.
-  init_pyspiel_games_backgammon(m);
-  init_pyspiel_games_bargaining(m);
-  init_pyspiel_games_blackjack(m);
-  init_pyspiel_games_bridge(m);
-  init_pyspiel_games_catch(m);
-  init_pyspiel_games_chess(m);
-  init_pyspiel_games_crazyhouse(m);
-  init_pyspiel_games_colored_trails(m);
-  init_pyspiel_games_connect_four(m);
-  init_pyspiel_games_crazy_eights(m);
-  init_pyspiel_games_dots_and_boxes(m);
-  init_pyspiel_games_euchre(m);
-  init_pyspiel_games_gin_rummy(m);
-  init_pyspiel_games_go(m);
-  init_pyspiel_games_gomoku(m);
-  init_pyspiel_games_hearts(m);
-  init_pyspiel_games_kuhn_poker(m);
-  init_pyspiel_games_leduc_poker(m);
-  init_pyspiel_games_negotiation(m);
-  init_pyspiel_games_spades(m);
-  init_pyspiel_games_tarok(m);
   init_pyspiel_games_tic_tac_toe(m);
-  init_pyspiel_games_tiny_bridge(m);
-  init_pyspiel_games_trade_comm(m);
-  bind_pokerkit_state_struct(m);           // C++ struct for a Python game.
-  bind_repeated_pokerkit_state_struct(m);  // C++ struct for a Python game.
   init_pyspiel_observer(m);                 // Observers and observations.
   init_pyspiel_utils(m);                    // Utilities.
   // Disabled while tests aren't passing. See GitHub issue #1502.
   // init_pyspiel_infostate_tree(
   //     m);  // Infostate-Tree and associated classes (Id etc.)
-
-  // List of optional python submodules.
-#if OPEN_SPIEL_BUILD_WITH_GAMUT
-  init_pyspiel_gamut(m);
-#endif
-#if OPEN_SPIEL_BUILD_WITH_XINXIN
-  init_pyspiel_xinxin(m);
-#endif
-#if OPEN_SPIEL_BUILD_WITH_ACPC
-  init_pyspiel_games_universal_poker(m);  // Universal poker game.
-  init_pyspiel_games_repeated_poker(m);  // Repeated poker game.
-#endif
 }  // NOLINT
 
 }  // namespace

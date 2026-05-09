@@ -1,0 +1,103 @@
+root=/mnt/c/achieve/Carcassonne/AlphaCarcassonne
+model=/mnt/c/achieve/Carcassonne/AlphaCarcassonne/0509
+checkpoint=-1
+num_games=20
+sims=1 10 100
+out=/mnt/c/achieve/Carcassonne/AlphaCarcassonne/eval_results/carcassonne_az_20260509_222612
+
+== az_first_random_sims1 ==
+players=az,random sims=1 games=20 seed=0
+Number of games played: 20
+Players: az, random
+Overall wins: 11, 8
+Overall returns: 3, -3
+log=/mnt/c/achieve/Carcassonne/AlphaCarcassonne/eval_results/carcassonne_az_20260509_222612/az_first_random_sims1.log
+
+== az_second_random_sims1 ==
+players=random,az sims=1 games=20 seed=0
+Number of games played: 20
+Players: random, az
+Overall wins: 4, 16
+Overall returns: -12, 12
+log=/mnt/c/achieve/Carcassonne/AlphaCarcassonne/eval_results/carcassonne_az_20260509_222612/az_second_random_sims1.log
+
+== az_first_random_sims10 ==
+players=az,random sims=10 games=20 seed=0
+Number of games played: 20
+Players: az, random
+Overall wins: 14, 4
+Overall returns: 10, -10
+log=/mnt/c/achieve/Carcassonne/AlphaCarcassonne/eval_results/carcassonne_az_20260509_222612/az_first_random_sims10.log
+
+== az_second_random_sims10 ==
+players=random,az sims=10 games=20 seed=0
+Number of games played: 20
+Players: random, az
+Overall wins: 3, 16
+Overall returns: -13, 13
+log=/mnt/c/achieve/Carcassonne/AlphaCarcassonne/eval_results/carcassonne_az_20260509_222612/az_second_random_sims10.log
+
+== az_first_random_sims100 ==
+players=az,random sims=100 games=20 seed=0
+Number of games played: 20
+Players: az, random
+Overall wins: 16, 4
+Overall returns: 12, -12
+log=/mnt/c/achieve/Carcassonne/AlphaCarcassonne/eval_results/carcassonne_az_20260509_222612/az_first_random_sims100.log
+
+== az_second_random_sims100 ==
+players=random,az sims=100 games=20 seed=0
+Number of games played: 20
+Players: random, az
+Overall wins: 4, 16
+Overall returns: -12, 12
+log=/mnt/c/achieve/Carcassonne/AlphaCarcassonne/eval_results/carcassonne_az_20260509_222612/az_second_random_sims100.log
+
+== mcts_first_random_sims1 ==
+players=mcts,random sims=1 games=20 seed=0
+Number of games played: 20
+Players: mcts, random
+Overall wins: 11, 8
+Overall returns: 3, -3
+log=/mnt/c/achieve/Carcassonne/AlphaCarcassonne/eval_results/carcassonne_az_20260509_222612/mcts_first_random_sims1.log
+
+== mcts_second_random_sims1 ==
+players=random,mcts sims=1 games=20 seed=0
+Number of games played: 20
+Players: random, mcts
+Overall wins: 9, 11
+Overall returns: -2, 2
+log=/mnt/c/achieve/Carcassonne/AlphaCarcassonne/eval_results/carcassonne_az_20260509_222612/mcts_second_random_sims1.log
+
+== mcts_first_random_sims10 ==
+players=mcts,random sims=10 games=20 seed=0
+Number of games played: 20
+Players: mcts, random
+Overall wins: 20, 0
+Overall returns: 20, -20
+log=/mnt/c/achieve/Carcassonne/AlphaCarcassonne/eval_results/carcassonne_az_20260509_222612/mcts_first_random_sims10.log
+
+== mcts_second_random_sims10 ==
+players=random,mcts sims=10 games=20 seed=0
+Number of games played: 20
+Players: random, mcts
+Overall wins: 0, 20
+Overall returns: -20, 20
+log=/mnt/c/achieve/Carcassonne/AlphaCarcassonne/eval_results/carcassonne_az_20260509_222612/mcts_second_random_sims10.log
+
+== mcts_first_random_sims100 ==
+players=mcts,random sims=100 games=20 seed=0
+Number of games played: 20
+Players: mcts, random
+Overall wins: 20, 0
+Overall returns: 20, -20
+log=/mnt/c/achieve/Carcassonne/AlphaCarcassonne/eval_results/carcassonne_az_20260509_222612/mcts_first_random_sims100.log
+
+== mcts_second_random_sims100 ==
+players=random,mcts sims=100 games=20 seed=0
+Number of games played: 20
+Players: random, mcts
+Overall wins: 0, 20
+Overall returns: -20, 20
+log=/mnt/c/achieve/Carcassonne/AlphaCarcassonne/eval_results/carcassonne_az_20260509_222612/mcts_second_random_sims100.log
+

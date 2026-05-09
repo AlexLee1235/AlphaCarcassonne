@@ -2,6 +2,7 @@
 checkpoints
 checkpoint*
 0508
+0509
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

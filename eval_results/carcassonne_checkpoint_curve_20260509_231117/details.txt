@@ -1,0 +1,8 @@
+root=/mnt/c/achieve/Carcassonne/AlphaCarcassonne
+model=/mnt/c/achieve/Carcassonne/AlphaCarcassonne/0509
+checkpoints=-1 0 2 4 6 8 10 12 14 16 18 20 22 24 26 28 
+sims=100
+num_games=20
+seed=0
+out=/mnt/c/achieve/Carcassonne/AlphaCarcassonne/eval_results/carcassonne_checkpoint_curve_20260509_231117
+

@@ -132,6 +132,7 @@ if [[ $ARG_virtualenv == "true" ]]; then
   # Otherwise, it uses the environment's python.
   PYBIN="python"
 fi
+export PYBIN
 
 # We only exit the virtualenv if we were asked to create one.
 function cleanup {

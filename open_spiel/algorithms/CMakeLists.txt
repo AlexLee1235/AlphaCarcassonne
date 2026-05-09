@@ -67,6 +67,27 @@ add_library(algorithms OBJECT
 
 target_include_directories(algorithms PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 
+if (OPEN_SPIEL_BUILD_WITH_LIBTORCH)
+  if(NOT OPEN_SPIEL_BUILD_WITH_LIBNOP)
+    message(FATAL_ERROR
+      "alpha_zero_torch requires libnop (OPEN_SPIEL_BUILD_WITH_LIBNOP)")
+  endif()
+
+  add_library(alpha_zero_torch OBJECT
+    alpha_zero_torch/alpha_zero.h
+    alpha_zero_torch/alpha_zero.cc
+    alpha_zero_torch/device_manager.h
+    alpha_zero_torch/model.h
+    alpha_zero_torch/model.cc
+    alpha_zero_torch/vpevaluator.h
+    alpha_zero_torch/vpevaluator.cc
+    alpha_zero_torch/vpnet.h
+    alpha_zero_torch/vpnet.cc
+  )
+  target_include_directories(alpha_zero_torch PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/alpha_zero_torch)
+endif()
+
 if (${OPEN_SPIEL_BUILD_WITH_ORTOOLS})
   add_subdirectory(ortools)
 endif()

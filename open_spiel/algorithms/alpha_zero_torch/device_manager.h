@@ -15,6 +15,7 @@
 #ifndef OPEN_SPIEL_ALGORITHMS_ALPHA_ZERO_TORCH_DEVICE_MANAGER_H_
 #define OPEN_SPIEL_ALGORITHMS_ALPHA_ZERO_TORCH_DEVICE_MANAGER_H_
 
+#include <memory>
 #include <vector>
 
 #include "open_spiel/abseil-cpp/absl/synchronization/mutex.h"
@@ -36,7 +37,7 @@ class DeviceManager {
   }
 
   void AddDevice(VPNetModel model) {  // Not thread safe.
-    devices.emplace_back(Device{std::move(model)});
+    devices.push_back(std::make_unique<Device>(std::move(model)));
     multiple_devices_ = devices.size() > 1;
   }
 
@@ -44,23 +45,61 @@ class DeviceManager {
   class DeviceLoan {
    public:
     // DeviceLoan is not public constructible and is move only.
-    DeviceLoan(DeviceLoan&& other) = default;
-    DeviceLoan& operator=(DeviceLoan&& other) = default;
+    DeviceLoan(DeviceLoan&& other) noexcept
+        : manager_(other.manager_),
+          model_(other.model_),
+          model_mu_(other.model_mu_),
+          device_id_(other.device_id_),
+          requests_(other.requests_) {
+      other.manager_ = nullptr;
+      other.model_ = nullptr;
+      other.model_mu_ = nullptr;
+      other.device_id_ = -1;
+      other.requests_ = 0;
+    }
+    DeviceLoan& operator=(DeviceLoan&& other) noexcept {
+      if (this != &other) {
+        Release();
+        manager_ = other.manager_;
+        model_ = other.model_;
+        model_mu_ = other.model_mu_;
+        device_id_ = other.device_id_;
+        requests_ = other.requests_;
+        other.manager_ = nullptr;
+        other.model_ = nullptr;
+        other.model_mu_ = nullptr;
+        other.device_id_ = -1;
+        other.requests_ = 0;
+      }
+      return *this;
+    }
     DeviceLoan(const DeviceLoan&) = delete;
     DeviceLoan& operator=(const DeviceLoan&) = delete;
 
-    ~DeviceLoan() { manager_->Return(device_id_, requests_); }
+    ~DeviceLoan() { Release(); }
     VPNetModel* operator->() { return model_; }
 
    private:
-    DeviceLoan(DeviceManager* manager, VPNetModel* model, int device_id,
-               int requests)
+    DeviceLoan(DeviceManager* manager, VPNetModel* model,
+               absl::Mutex* model_mu, int device_id, int requests)
         : manager_(manager),
           model_(model),
+          model_mu_(model_mu),
           device_id_(device_id),
           requests_(requests) {}
+    void Release() {
+      if (model_mu_ != nullptr) {
+        model_mu_->Unlock();
+        model_mu_ = nullptr;
+      }
+      if (manager_ != nullptr) {
+        manager_->Return(device_id_, requests_);
+        manager_ = nullptr;
+      }
+    }
     DeviceManager* manager_;
     VPNetModel* model_;
+    absl::Mutex* model_mu_;
     int device_id_;
     int requests_;
     friend DeviceManager;
@@ -68,44 +107,56 @@ class DeviceManager {
 
   // Gives the device with the fewest outstanding requests.
   DeviceLoan Get(int requests, int device_id = -1) {
-    absl::MutexLock lock(m_);
-    if (device_id < 0) {
-      // The starting device changes depending on if we are allowed to
-      // use the first device or not.
-      device_id = 0 + (learning_ && multiple_devices_);
-      for (int i = 1 + (learning_ && multiple_devices_); i < devices.size();
-           ++i) {
-        if (devices[i].requests < devices[device_id].requests) {
-          device_id = i;
+    VPNetModel* model = nullptr;
+    absl::Mutex* model_mu = nullptr;
+    {
+      absl::MutexLock lock(m_);
+      if (device_id < 0) {
+        // The starting device changes depending on if we are allowed to
+        // use the first device or not.
+        device_id = 0 + (learning_ && multiple_devices_);
+        for (int i = 1 + (learning_ && multiple_devices_); i < devices.size();
+             ++i) {
+          if (devices[i]->requests < devices[device_id]->requests) {
+            device_id = i;
+          }
         }
       }
+      devices[device_id]->requests += requests;
+      model = &devices[device_id]->model;
+      model_mu = &devices[device_id]->model_mu;
     }
-    devices[device_id].requests += requests;
-    return DeviceLoan(this, &devices[device_id].model, device_id, requests);
+    model_mu->Lock();
+    return DeviceLoan(this, model, model_mu, device_id, requests);
   }
 
   // A member to ensure that when device:0 is learning and there are
   // multiple devices available, that device:0 does not take on any
   // inference requests from the actors and evaluators. These inference
   // requests should be dealt with by the other available devices.
-  void SetLearning(bool value) { learning_ = value; }
+  void SetLearning(bool value) {
+    absl::MutexLock lock(m_);
+    learning_ = value;
+  }
 
   int Count() const { return devices.size(); }
 
  private:
   void Return(int device_id, int requests) {
     absl::MutexLock lock(m_);
-    devices[device_id].requests -= requests;
+    devices[device_id]->requests -= requests;
   }
 
   struct Device {
+    explicit Device(VPNetModel model) : model(std::move(model)) {}
     VPNetModel model;
     int requests = 0;
+    absl::Mutex model_mu;
   };
 
   bool learning_;
   bool multiple_devices_;
-  std::vector<Device> devices;
+  std::vector<std::unique_ptr<Device>> devices;
   absl::Mutex m_;
 };
 

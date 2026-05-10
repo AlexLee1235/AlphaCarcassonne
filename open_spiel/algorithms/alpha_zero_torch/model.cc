@@ -343,11 +343,23 @@ std::vector<torch::Tensor> ModelImpl::losses(torch::Tensor inputs,
 
   torch::Tensor value_predictions = output[0];
   torch::Tensor policy_predictions = output[1];
+  torch::Tensor log_policy_predictions = torch::log_softmax(policy_predictions, 1);
 
   // Policy loss (cross-entropy).
   torch::Tensor policy_loss = torch::sum(
-      -policy_targets * torch::log_softmax(policy_predictions, 1), -1);
+      -policy_targets * log_policy_predictions, -1);
   policy_loss = torch::mean(policy_loss);
+
+  torch::Tensor target_entropy = torch::sum(
+      -policy_targets * torch::log(torch::clamp(policy_targets, 1e-12, 1)), -1);
+  target_entropy = torch::mean(target_entropy);
+
+  torch::Tensor policy_probs = torch::softmax(policy_predictions, 1);
+  torch::Tensor pred_entropy =
+      torch::sum(-policy_probs * log_policy_predictions, -1);
+  pred_entropy = torch::mean(pred_entropy);
+
+  torch::Tensor policy_kl = policy_loss - target_entropy;
 
   // Value loss (mean-squared error).
   torch::nn::MSELoss mse_loss;
@@ -372,7 +384,8 @@ std::vector<torch::Tensor> ModelImpl::losses(torch::Tensor inputs,
         weight_decay_ * torch::sum(torch::square(named_parameter.value())) / 2;
   }
 
-  return {policy_loss, value_loss, l2_regularization_loss};
+  return {policy_loss, value_loss, l2_regularization_loss, target_entropy,
+          pred_entropy, policy_kl};
 }
 
 std::vector<torch::Tensor> ModelImpl::forward_(torch::Tensor x,

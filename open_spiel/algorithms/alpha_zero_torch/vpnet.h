@@ -44,14 +44,24 @@ class VPNetModel {
   class LossInfo {
    public:
     LossInfo() {}
-    LossInfo(double policy, double value, double l2)
-        : policy_(policy), value_(value), l2_(l2), batches_(1) {}
+    LossInfo(double policy, double value, double l2, double target_entropy,
+             double pred_entropy, double kl)
+        : policy_(policy),
+          value_(value),
+          l2_(l2),
+          target_entropy_(target_entropy),
+          pred_entropy_(pred_entropy),
+          kl_(kl),
+          batches_(1) {}
 
     // Merge another LossInfo into this one.
     LossInfo& operator+=(const LossInfo& other) {
       policy_ += other.policy_;
       value_ += other.value_;
       l2_ += other.l2_;
+      target_entropy_ += other.target_entropy_;
+      pred_entropy_ += other.pred_entropy_;
+      kl_ += other.kl_;
       batches_ += other.batches_;
       return *this;
     }
@@ -61,11 +71,17 @@ class VPNetModel {
     double Value() const { return value_ / batches_; }
     double L2() const { return l2_ / batches_; }
     double Total() const { return Policy() + Value() + L2(); }
+    double TargetEntropy() const { return target_entropy_ / batches_; }
+    double PredEntropy() const { return pred_entropy_ / batches_; }
+    double KL() const { return kl_ / batches_; }
 
    private:
     double policy_ = 0;
     double value_ = 0;
     double l2_ = 0;
+    double target_entropy_ = 0;
+    double pred_entropy_ = 0;
+    double kl_ = 0;
     int batches_ = 0;
   };
 

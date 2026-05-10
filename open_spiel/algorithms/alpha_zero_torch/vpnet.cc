@@ -283,7 +283,10 @@ VPNetModel::LossInfo VPNetModel::Learn(const std::vector<TrainInputs>& inputs) {
 
   return LossInfo(torch_outputs[0].item<float>(),
                   torch_outputs[1].item<float>(),
-                  torch_outputs[2].item<float>());
+                  torch_outputs[2].item<float>(),
+                  torch_outputs[3].item<float>(),
+                  torch_outputs[4].item<float>(),
+                  torch_outputs[5].item<float>());
 }
 
 }  // namespace torch_az

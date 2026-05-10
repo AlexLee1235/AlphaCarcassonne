@@ -50,6 +50,8 @@ ABSL_FLAG(int, az_batch_size, 1, "Batch size of AZ inference.");
 ABSL_FLAG(int, az_threads, 1, "Number of threads to run for AZ inference.");
 ABSL_FLAG(int, az_cache_size, 16384, "Cache size of AZ algorithm.");
 ABSL_FLAG(int, az_cache_shards, 1, "Cache shards of AZ algorithm.");
+ABSL_FLAG(std::string, az_device, "/cpu:0",
+          "Torch device for the AZ model, e.g. /cpu:0, cpu, cuda:0.");
 ABSL_FLAG(bool, solve, true, "Whether to use MCTS-Solver.");
 ABSL_FLAG(uint_fast32_t, seed, 0, "Seed for MCTS.");
 ABSL_FLAG(bool, verbose, false, "Show the MCTS stats of possible moves.");
@@ -203,7 +205,7 @@ int main(int argc, char **argv) {
   if (has_az_player) {
     device_manager.AddDevice(open_spiel::algorithms::torch_az::VPNetModel(
         *game, absl::GetFlag(FLAGS_az_path), absl::GetFlag(FLAGS_az_graph_def),
-        "/cpu:0"));
+        absl::GetFlag(FLAGS_az_device)));
     device_manager.Get(0, 0)->LoadCheckpoint(
         absl::GetFlag(FLAGS_az_checkpoint));
     az_evaluator =

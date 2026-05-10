@@ -16,4 +16,16 @@ if (OPEN_SPIEL_BUILD_WITH_LIBTORCH)
     ${OPEN_SPIEL_OBJECTS}
     $<TARGET_OBJECTS:alpha_zero_torch>)
   target_link_libraries(alpha_zero_torch_game_example ${TORCH_LIBRARIES})
+
+  add_executable(alpha_zero_torch_infer_once
+    alpha_zero_torch_infer_once.cc
+    ${OPEN_SPIEL_OBJECTS}
+    $<TARGET_OBJECTS:alpha_zero_torch>)
+  target_link_libraries(alpha_zero_torch_infer_once ${TORCH_LIBRARIES})
+
+  add_executable(alpha_zero_torch_policy_overfit
+    alpha_zero_torch_policy_overfit.cc
+    ${OPEN_SPIEL_OBJECTS}
+    $<TARGET_OBJECTS:alpha_zero_torch>)
+  target_link_libraries(alpha_zero_torch_policy_overfit ${TORCH_LIBRARIES})
 endif()

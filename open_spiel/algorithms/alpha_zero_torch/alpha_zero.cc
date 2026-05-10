@@ -467,11 +467,17 @@ void learner(const open_spiel::Game& game, const AlphaZeroConfig& config,
                      {"value", losses.Value()},
                      {"l2reg", losses.L2()},
                      {"sum", losses.Total()},
+                     {"policy_target_entropy", losses.TargetEntropy()},
+                     {"policy_pred_entropy", losses.PredEntropy()},
+                     {"policy_kl", losses.KL()},
                  })},
     };
     eval->ResetBatchSizeStats();
-    logger.Print("Losses: policy: %.4f, value: %.4f, l2: %.4f, sum: %.4f",
-                 losses.Policy(), losses.Value(), losses.L2(), losses.Total());
+    logger.Print(
+        "Losses: policy: %.4f, value: %.4f, l2: %.4f, sum: %.4f, "
+        "target_entropy: %.4f, pred_entropy: %.4f, kl: %.4f",
+        losses.Policy(), losses.Value(), losses.L2(), losses.Total(),
+        losses.TargetEntropy(), losses.PredEntropy(), losses.KL());
 
     LRUCacheInfo cache_info = eval->CacheInfo();
     if (cache_info.size > 0) {

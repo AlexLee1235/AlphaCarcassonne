@@ -55,7 +55,7 @@ ABSL_FLAG(std::string, az_device, "/cpu:0",
 ABSL_FLAG(bool, solve, true, "Whether to use MCTS-Solver.");
 ABSL_FLAG(uint_fast32_t, seed, 0, "Seed for MCTS.");
 ABSL_FLAG(bool, verbose, false, "Show the MCTS stats of possible moves.");
-ABSL_FLAG(bool, quiet, false, "Show the MCTS stats of possible moves.");
+ABSL_FLAG(bool, quiet, false, "Hide per-action state traces and game actions.");
 
 uint_fast32_t Seed() {
   uint_fast32_t seed = absl::GetFlag(FLAGS_seed);
@@ -171,7 +171,8 @@ PlayGame(const open_spiel::Game &game,
 
   std::cerr << "Returns: " << absl::StrJoin(state->Returns(), ", ")
             << std::endl;
-  std::cerr << "Game actions: " << absl::StrJoin(history, ", ") << std::endl;
+  if (!quiet)
+    std::cerr << "Game actions: " << absl::StrJoin(history, ", ") << std::endl;
 
   return {state->Returns(), history};
 }

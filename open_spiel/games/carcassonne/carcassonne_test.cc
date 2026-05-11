@@ -67,6 +67,38 @@ void DecodeTileActionForTest(Action action, int* x, int* y, int* rot) {
   *y = action / BOARD_SIZE;
 }
 
+int DecodeMeepleActionForTest(Action action) {
+  return action - kMeepleActionOffset - 1;
+}
+
+void CheckLegalMeeplePlanes(const std::vector<float>& tensor,
+                            const std::vector<Action>& legal_actions) {
+  bool expected[kLegalMeeplePlanes] = {};
+  for (Action action : legal_actions) {
+    if (action < kMeepleActionOffset) continue;
+    const int pos = DecodeMeepleActionForTest(action);
+    if (pos >= 0 && pos < kLegalMeeplePlanes) {
+      expected[pos] = true;
+    }
+  }
+  for (int pos = 0; pos < kLegalMeeplePlanes; ++pos) {
+    CheckBroadcastPlane(tensor, kLegalMeeplePlane + pos,
+                        expected[pos] ? 1.0f : 0.0f);
+  }
+}
+
+void CheckRemainingTileTypePlanes(const std::vector<float>& tensor,
+                                  const ::Carcassonne& core) {
+  for (int type_id = 1; type_id <= CANONICAL_TILE_TYPE_COUNT; ++type_id) {
+    const int initial_count = tile_type_tables.draw_count_by_type[type_id];
+    SPIEL_CHECK_GT(initial_count, 0);
+    const float expected =
+        static_cast<float>(core.getRemainingTypeCount(type_id)) / initial_count;
+    CheckBroadcastPlane(tensor, kRemainingTileTypePlane + type_id - 1,
+                        expected);
+  }
+}
+
 void AdvanceUntilMeeplePlaced(std::unique_ptr<State>* state) {
   constexpr Action kSkipMeepleAction = kMeepleActionOffset;
   for (int step = 0; step < 20; ++step) {
@@ -92,7 +124,7 @@ void ObservationTensorSmokeTest() {
   const std::vector<int> shape = game->ObservationTensorShape();
 
   SPIEL_CHECK_EQ(shape.size(), 3);
-  SPIEL_CHECK_EQ(shape[0], 51);
+  SPIEL_CHECK_EQ(shape[0], 80);
   SPIEL_CHECK_EQ(shape[0], kObservationPlanes);
   SPIEL_CHECK_EQ(shape[1], BOARD_SIZE);
   SPIEL_CHECK_EQ(shape[2], BOARD_SIZE);
@@ -102,6 +134,8 @@ void ObservationTensorSmokeTest() {
 
   const int center = BOARD_SIZE / 2;
   std::vector<float> initial_obs = state->ObservationTensor(0);
+  auto* initial_state = dynamic_cast<CarcassonneState*>(state.get());
+  SPIEL_CHECK_TRUE(initial_state != nullptr);
   SPIEL_CHECK_EQ(PlaneValue(initial_obs, kNorthTerrainPlane + 1, center, center),
                  1.0f);
   SPIEL_CHECK_EQ(PlaneValue(initial_obs, kEastTerrainPlane + 2, center, center),
@@ -114,6 +148,8 @@ void ObservationTensorSmokeTest() {
                  0.0f);
   SPIEL_CHECK_EQ(PlaneValue(initial_obs, kLastPlacedPlane, center, center), 1.0f);
   CheckZeroPlanes(initial_obs, kLegalPlacementPlane, kLegalPlacementPlanes);
+  CheckZeroPlanes(initial_obs, kLegalMeeplePlane, kLegalMeeplePlanes);
+  CheckRemainingTileTypePlanes(initial_obs, initial_state->UnderlyingState());
   CheckBroadcastPlane(initial_obs, kMyHoldingMeeplesPlane, 1.0f);
   CheckBroadcastPlane(initial_obs, kOpponentHoldingMeeplesPlane, 1.0f);
   CheckBroadcastPlane(initial_obs, kRemainingTilesPlane, 71.0f / 72.0f);
@@ -158,6 +194,8 @@ void ObservationTensorSmokeTest() {
   CheckBroadcastPlane(tile_phase_obs, kCurrentTileCityConnectivityPlane,
                       hand_has_city_connectivity ? 1.0f : 0.0f);
   CheckBroadcastPlane(tile_phase_obs, kCurrentPlayerIsPlayer0Plane, 1.0f);
+  CheckZeroPlanes(tile_phase_obs, kLegalMeeplePlane, kLegalMeeplePlanes);
+  CheckRemainingTileTypePlanes(tile_phase_obs, chance_done->UnderlyingState());
   for (Action action : state->LegalActions()) {
     int tile_x;
     int tile_y;
@@ -180,6 +218,10 @@ void ObservationTensorSmokeTest() {
   CheckBroadcastPlane(meeple_phase_obs, kCurrentTileMonasteryPlane, 0.0f);
   CheckBroadcastPlane(meeple_phase_obs, kCurrentTileCityConnectivityPlane, 0.0f);
   CheckZeroPlanes(meeple_phase_obs, kLegalPlacementPlane, kLegalPlacementPlanes);
+  CheckLegalMeeplePlanes(meeple_phase_obs, state->LegalActions());
+  auto* meeple_state = dynamic_cast<CarcassonneState*>(state.get());
+  SPIEL_CHECK_TRUE(meeple_state != nullptr);
+  CheckRemainingTileTypePlanes(meeple_phase_obs, meeple_state->UnderlyingState());
   CheckBroadcastPlane(meeple_phase_obs, kIsMeeplePhasePlane, 1.0f);
   CheckBroadcastPlane(meeple_phase_obs, kCurrentPlayerIsPlayer0Plane, 1.0f);
 

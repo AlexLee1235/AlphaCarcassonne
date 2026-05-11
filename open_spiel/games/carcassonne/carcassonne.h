@@ -29,9 +29,12 @@ inline constexpr int kMeepleFeaturePlanes = 10;
 inline constexpr int kCurrentTileFeaturePlanes = 4 * kTerrainTypes + 3;
 inline constexpr int kLastPlacedFeaturePlanes = 1;
 inline constexpr int kLegalPlacementPlanes = 4;
+inline constexpr int kLegalMeeplePlanes = 5;
+inline constexpr int kRemainingTileTypePlanes = CANONICAL_TILE_TYPE_COUNT;
 inline constexpr int kGlobalFeaturePlanes = 6;
 inline constexpr int kObservationPlanes = kBoardFeaturePlanes + kMeepleFeaturePlanes + kCurrentTileFeaturePlanes +
-                                          kLastPlacedFeaturePlanes + kLegalPlacementPlanes + kGlobalFeaturePlanes;
+                                          kLastPlacedFeaturePlanes + kLegalPlacementPlanes + kLegalMeeplePlanes +
+                                          kRemainingTileTypePlanes + kGlobalFeaturePlanes;
 //map
 inline constexpr int kNorthTerrainPlane = 0;
 inline constexpr int kEastTerrainPlane = 3;
@@ -57,13 +60,15 @@ inline constexpr int kCurrentTileCityConnectivityPlane = 39;
 inline constexpr int kLastPlacedPlane = 40;
 //legal positions
 inline constexpr int kLegalPlacementPlane = 41;
+inline constexpr int kLegalMeeplePlane = 45;
+inline constexpr int kRemainingTileTypePlane = 50;
 //information
-inline constexpr int kMyHoldingMeeplesPlane = 45;
-inline constexpr int kOpponentHoldingMeeplesPlane = 46;
-inline constexpr int kRemainingTilesPlane = 47;
-inline constexpr int kScoreDiffPlane = 48;
-inline constexpr int kIsMeeplePhasePlane = 49;
-inline constexpr int kCurrentPlayerIsPlayer0Plane = 50;
+inline constexpr int kMyHoldingMeeplesPlane = 74;
+inline constexpr int kOpponentHoldingMeeplesPlane = 75;
+inline constexpr int kRemainingTilesPlane = 76;
+inline constexpr int kScoreDiffPlane = 77;
+inline constexpr int kIsMeeplePhasePlane = 78;
+inline constexpr int kCurrentPlayerIsPlayer0Plane = 79;
 static_assert(kObservationPlanes == kCurrentPlayerIsPlayer0Plane + 1);
 inline constexpr int kObservationTensorSize = kObservationPlanes * BOARD_SIZE * BOARD_SIZE;
 

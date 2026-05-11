@@ -184,6 +184,7 @@ class Carcassonne {
 
     Placement getPlacement(int x, int y) const { return board.board[y][x]; }
     int getTotalRemaining() const { return deck.total_remaining; }
+    int getRemainingTypeCount(int type_id) const { return deck.type_counts[type_id]; }
     void WriteMeepleMap(int player, float *span) const;
 
     void getAvailableDraws(ChanceBranch *out, int &count) const;

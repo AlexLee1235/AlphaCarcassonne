@@ -301,6 +301,22 @@ void CarcassonneState::ObservationTensor(Player player, absl::Span<float> values
         }
     }
 
+    if (game_state_.current_phase == PHASE_MEEPLE) {
+        FixedVector<int, kMeepleActionCount> meeple_moves = game_state_.getLegalMeepleMoves();
+        for (int i = 0; i < meeple_moves.size(); ++i) {
+            const int pos = meeple_moves[i];
+            if (pos >= 0 && pos < kLegalMeeplePlanes) {
+                BroadcastPlane(values, kLegalMeeplePlane + pos, 1.0f);
+            }
+        }
+    }
+
+    for (int type_id = 1; type_id <= CANONICAL_TILE_TYPE_COUNT; ++type_id) {
+        const int initial_count = tile_type_tables.draw_count_by_type[type_id];
+        const float remaining = static_cast<float>(game_state_.getRemainingTypeCount(type_id));
+        BroadcastPlane(values, kRemainingTileTypePlane + type_id - 1, remaining / initial_count);
+    }
+
     const int opponent = 1 - player;
     BroadcastPlane(values, kMyHoldingMeeplesPlane, game_state_.holding_meeples[player] / kMeepleNormalization);
     BroadcastPlane(values, kOpponentHoldingMeeplesPlane, game_state_.holding_meeples[opponent] / kMeepleNormalization);

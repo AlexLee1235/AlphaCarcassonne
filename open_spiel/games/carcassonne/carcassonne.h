@@ -72,6 +72,7 @@ class CarcassonneGame;
 class CarcassonneState : public State {
   public:
     explicit CarcassonneState(std::shared_ptr<const Game> game);
+    CarcassonneState(std::shared_ptr<const Game> game, int max_turns);
     CarcassonneState(std::shared_ptr<const Game> game, const ::Carcassonne &game_state);
     CarcassonneState(const CarcassonneState &) = default;
 
@@ -101,7 +102,7 @@ class CarcassonneGame : public Game {
 
     int NumDistinctActions() const override { return kNumDistinctPlayerActions; }
     std::unique_ptr<State> NewInitialState() const override {
-        return std::unique_ptr<State>(new CarcassonneState(shared_from_this()));
+        return std::unique_ptr<State>(new CarcassonneState(shared_from_this(), max_turns_));
     }
     int MaxChanceOutcomes() const override { return kChanceActionCount; }
     int NumPlayers() const override { return kNumPlayers; }
@@ -109,8 +110,14 @@ class CarcassonneGame : public Game {
     absl::optional<double> UtilitySum() const override { return 0; }
     double MaxUtility() const override { return 1; }
     std::vector<int> ObservationTensorShape() const override { return {kObservationPlanes, BOARD_SIZE, BOARD_SIZE}; }
-    int MaxGameLength() const override { return (PHYSICAL_TILE_COUNT - 1) * 3; }
+    int MaxGameLength() const override {
+        return max_turns_ > 0 ? (PHYSICAL_TILE_COUNT - 1) + 2 * max_turns_
+                              : (PHYSICAL_TILE_COUNT - 1) * 3;
+    }
     int MaxChanceNodesInHistory() const override { return PHYSICAL_TILE_COUNT - 1; }
+
+  private:
+    int max_turns_ = 0;
 };
 
 } // namespace carcassonne

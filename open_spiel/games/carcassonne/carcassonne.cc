@@ -34,7 +34,7 @@ const GameType kGameType{/*short_name=*/"carcassonne",
                          /*provides_information_state_tensor=*/false,
                          /*provides_observation_string=*/true,
                          /*provides_observation_tensor=*/true,
-                         /*parameter_specification=*/{}};
+                         /*parameter_specification=*/{{"max_turns", GameParameter(0)}}};
 
 std::shared_ptr<const Game> Factory(const GameParameters &params) {
     return std::shared_ptr<const Game>(new CarcassonneGame(params));
@@ -154,6 +154,9 @@ bool HasCityConnectivityPlane(int canonical_type) { return canonical_type == 14 
 } // namespace
 
 CarcassonneState::CarcassonneState(std::shared_ptr<const Game> game) : State(std::move(game)), game_state_() {}
+
+CarcassonneState::CarcassonneState(std::shared_ptr<const Game> game, int max_turns)
+    : State(std::move(game)), game_state_(max_turns) {}
 
 CarcassonneState::CarcassonneState(std::shared_ptr<const Game> game, const ::Carcassonne &game_state)
     : State(std::move(game)), game_state_(game_state) {}
@@ -389,7 +392,10 @@ void CarcassonneState::DoApplyAction(Action action) {
     game_state_.placeMeeple(DecodeMeepleAction(action));
 }
 
-CarcassonneGame::CarcassonneGame(const GameParameters &params) : Game(kGameType, params) {}
+CarcassonneGame::CarcassonneGame(const GameParameters &params)
+    : Game(kGameType, params), max_turns_(ParameterValue<int>("max_turns")) {
+    SPIEL_CHECK_GE(max_turns_, 0);
+}
 
 } // namespace carcassonne
 } // namespace open_spiel

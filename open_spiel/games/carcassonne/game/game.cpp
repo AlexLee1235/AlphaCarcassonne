@@ -55,7 +55,7 @@ void Carcassonne::placeTileOnBoard(int tile_id, int x, int y, int rot) {
     logs.placeTileOnBoard(tile_id, x, y, rot);
 }
 
-Carcassonne::Carcassonne() {
+Carcassonne::Carcassonne(int max_turns) : max_turns(max_turns) {
     deck.initializeTypeCounts();
     int start_tile_id = deck.consumeType(START_TILE_TYPE);
     placeTileOnBoard(start_tile_id, BOARD_SIZE / 2, BOARD_SIZE / 2, START_TILE_ROTATION);
@@ -147,7 +147,12 @@ void Carcassonne::placeMeeple(int pos) {
     features.settleAfterPlaceMeeple(x, y, board, player_scores, holding_meeples);
     monasteries.settleCompletedMonasteries(player_scores, holding_meeples);
 
+    completed_turns++;
     currentPlayer = 1 - currentPlayer;
+    if (max_turns > 0 && completed_turns >= max_turns) {
+        resolveNoMoreDraws();
+        return;
+    }
     if (deck.total_remaining == 0) {
         resolveNoMoreDraws();
         return;

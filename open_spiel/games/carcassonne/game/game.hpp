@@ -175,8 +175,10 @@ class Carcassonne {
     int holding_meeples[2] = {7, 7};
     int currentPlayer = 0;
     int current_tile_in_hand = 0;
+    int completed_turns = 0;
+    int max_turns = 0;
 
-    Carcassonne();
+    explicit Carcassonne(int max_turns = 0);
     int currentTileType() const;
     Carcassonne clone() const;
 

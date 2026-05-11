@@ -272,13 +272,51 @@ void ReturnsMatchScoresTest() {
   }
 }
 
+void ShortGameMaxTurnsTest() {
+  std::shared_ptr<const Game> game = LoadGame("carcassonne(max_turns=10)");
+  SPIEL_CHECK_EQ(game->MaxGameLength(), (PHYSICAL_TILE_COUNT - 1) + 20);
+
+  std::unique_ptr<State> state = game->NewInitialState();
+  int actions_applied = 0;
+  while (!state->IsTerminal()) {
+    SPIEL_CHECK_LT(actions_applied, game->MaxGameLength());
+    const std::vector<Action> legal_actions = state->LegalActions();
+    SPIEL_CHECK_FALSE(legal_actions.empty());
+    state->ApplyAction(legal_actions[0]);
+    actions_applied++;
+  }
+
+  auto* carcassonne_state = dynamic_cast<CarcassonneState*>(state.get());
+  SPIEL_CHECK_TRUE(carcassonne_state != nullptr);
+  const ::Carcassonne& core = carcassonne_state->UnderlyingState();
+  SPIEL_CHECK_EQ(core.current_phase, PHASE_TERMINAL);
+  SPIEL_CHECK_TRUE(core.completed_turns == 10 || core.getTotalRemaining() == 0);
+  SPIEL_CHECK_LE(core.completed_turns, 10);
+
+  const auto returns = state->Returns();
+  SPIEL_CHECK_EQ(returns.size(), 2);
+  SPIEL_CHECK_EQ(returns[0] + returns[1], 0);
+  if (core.player_scores[0] > core.player_scores[1]) {
+    SPIEL_CHECK_EQ(returns[0], 1);
+    SPIEL_CHECK_EQ(returns[1], -1);
+  } else if (core.player_scores[0] < core.player_scores[1]) {
+    SPIEL_CHECK_EQ(returns[0], -1);
+    SPIEL_CHECK_EQ(returns[1], 1);
+  } else {
+    SPIEL_CHECK_EQ(returns[0], 0);
+    SPIEL_CHECK_EQ(returns[1], 0);
+  }
+}
+
 void BasicCarcassonneTests() {
   testing::LoadGameTest("carcassonne");
+  testing::LoadGameTest("carcassonne(max_turns=10)");
   testing::ChanceOutcomesTest(*LoadGame("carcassonne"));
   testing::RandomSimTest(*LoadGame("carcassonne"), 50);
   ObservationTensorSmokeTest();
   RelativePerspectiveTest();
   ReturnsMatchScoresTest();
+  ShortGameMaxTurnsTest();
 }
 
 }  // namespace

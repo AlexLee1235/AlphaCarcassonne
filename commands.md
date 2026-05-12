@@ -19,11 +19,11 @@
   --game='carcassonne(max_turns=10)' \
   --dataset=/tmp/car10_puremcts_train2.nop \
   --holdout_dataset=/tmp/car10_puremcts_holdout2.nop \
-  --student_path=/tmp/az10_pure_mcts_pretrain_from_file_v2_8 \
+  --student_path=/tmp/az10_pure_mcts_pretrain_from_file_v2_64x12 \
   --init_from_checkpoint=false \
   --nn_model=resnet \
   --nn_width=64 \
-  --nn_depth=8 \
+  --nn_depth=12 \
   --train_steps=2000 \
   --batch_size=512 \
   --learning_rate=0.001 \
@@ -39,7 +39,7 @@
   --game='carcassonne(max_turns=10)' \
   --player1=az \
   --player2=mcts \
-  --az_path=/tmp/az10_pure_mcts_pretrain_from_file_12 \
+  --az_path=/tmp/az10_pure_mcts_pretrain_from_file_v2_64x12 \
   --az_checkpoint=-3 \
   --az_device=/cuda:0 \
   --max_simulations=160 \

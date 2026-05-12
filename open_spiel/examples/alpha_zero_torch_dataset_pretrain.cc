@@ -18,6 +18,7 @@
 #include <nop/utility/stream_writer.h>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <filesystem>
@@ -36,7 +37,9 @@
 #include "open_spiel/abseil-cpp/absl/flags/flag.h"
 #include "open_spiel/abseil-cpp/absl/flags/parse.h"
 #include "open_spiel/abseil-cpp/absl/strings/str_cat.h"
+#include "open_spiel/algorithms/alpha_zero_torch/device_manager.h"
 #include "open_spiel/algorithms/alpha_zero_torch/model.h"
+#include "open_spiel/algorithms/alpha_zero_torch/vpevaluator.h"
 #include "open_spiel/algorithms/alpha_zero_torch/vpnet.h"
 #include "open_spiel/algorithms/mcts.h"
 #include "open_spiel/spiel.h"
@@ -49,12 +52,19 @@ ABSL_FLAG(std::string, holdout_dataset, "", "Holdout dataset path.");
 ABSL_FLAG(int, samples, 256, "Number of train samples to generate.");
 ABSL_FLAG(int, holdout_samples, 0, "Number of holdout samples to generate.");
 ABSL_FLAG(std::string, teacher, "pure_mcts",
-          "Teacher used for generation. Only pure_mcts is supported.");
+          "Teacher used for generation: pure_mcts or az.");
 ABSL_FLAG(int, max_simulations, 320, "MCTS simulations per target.");
 ABSL_FLAG(int, rollout_count, 10, "Random rollouts per pure-MCTS leaf.");
 ABSL_FLAG(double, uct_c, 2, "UCT exploration constant.");
 ABSL_FLAG(double, mcts_policy_temperature, 1,
           "Temperature applied to MCTS visit counts.");
+ABSL_FLAG(double, policy_alpha, 1, "AZ teacher Dirichlet noise alpha.");
+ABSL_FLAG(double, policy_epsilon, 0.25, "AZ teacher Dirichlet noise epsilon.");
+ABSL_FLAG(double, temperature, 1,
+          "Temperature used to sample AZ self-play actions before drop.");
+ABSL_FLAG(int, temperature_drop, 10,
+          "Drop AZ self-play action temperature to 0 after this many history "
+          "entries, matching alpha_zero.cc.");
 ABSL_FLAG(int, num_workers, 1, "Parallel CPU workers for generation.");
 ABSL_FLAG(uint_fast32_t, seed, 1, "Random seed.");
 
@@ -89,7 +99,9 @@ using open_spiel::Action;
 using open_spiel::ActionsAndProbs;
 using open_spiel::State;
 using open_spiel::algorithms::SearchNode;
+using open_spiel::algorithms::torch_az::DeviceManager;
 using open_spiel::algorithms::torch_az::ModelConfig;
+using open_spiel::algorithms::torch_az::VPNetEvaluator;
 using open_spiel::algorithms::torch_az::VPNetModel;
 
 constexpr int kFormatVersion = 1;
@@ -136,7 +148,9 @@ struct DatasetFile {
 
 struct SearchTarget {
   ActionsAndProbs policy;
+  ActionsAndProbs action_policy;
   double player0_value = 0;
+  Action best_action = open_spiel::kInvalidAction;
 };
 
 struct TargetStats {
@@ -301,38 +315,64 @@ void SampleChanceUntilDecision(State* state, std::mt19937* rng) {
   }
 }
 
+ActionsAndProbs VisitCountPolicy(const SearchNode& root, double temperature) {
+  ActionsAndProbs policy;
+  policy.reserve(root.children.size());
+  if (root.children.empty()) return policy;
+  if (temperature == 0) {
+    policy.emplace_back(root.BestChild().action, 1.0);
+    return policy;
+  }
+
+  double weight_sum = 0;
+  for (const SearchNode& child : root.children) {
+    const double weight = std::pow(child.explore_count, 1.0 / temperature);
+    policy.emplace_back(child.action, weight);
+    weight_sum += weight;
+  }
+  if (weight_sum <= 0) {
+    const double uniform_prob = 1.0 / root.children.size();
+    for (auto& [action, prob] : policy) {
+      prob = uniform_prob;
+    }
+  } else {
+    open_spiel::NormalizePolicy(&policy);
+  }
+  return policy;
+}
+
 SearchTarget MCTSTarget(
     const open_spiel::Game& game, const State& state,
     const std::shared_ptr<open_spiel::algorithms::Evaluator>& evaluator,
-    int seed) {
+    int seed,
+    open_spiel::algorithms::ChildSelectionPolicy child_selection_policy,
+    double dirichlet_alpha, double dirichlet_epsilon) {
   open_spiel::algorithms::MCTSBot bot(
       game, evaluator, absl::GetFlag(FLAGS_uct_c),
       absl::GetFlag(FLAGS_max_simulations),
       /*max_memory_mb=*/1000,
       /*solve=*/false, seed,
-      /*verbose=*/false, open_spiel::algorithms::ChildSelectionPolicy::UCT,
-      /*dirichlet_alpha=*/0, /*dirichlet_epsilon=*/0,
+      /*verbose=*/false, child_selection_policy,
+      dirichlet_alpha, dirichlet_epsilon,
       /*dont_return_chance_node=*/true);
   std::unique_ptr<SearchNode> root = bot.MCTSearch(state);
-
-  ActionsAndProbs policy;
-  policy.reserve(root->children.size());
-  const double temperature = absl::GetFlag(FLAGS_mcts_policy_temperature);
-  if (temperature == 0) {
-    policy.emplace_back(root->BestChild().action, 1.0);
-  } else {
-    for (const SearchNode& child : root->children) {
-      policy.emplace_back(child.action,
-                          std::pow(child.explore_count, 1.0 / temperature));
-    }
-    open_spiel::NormalizePolicy(&policy);
-  }
 
   const double root_value =
       root->explore_count > 0 ? root->total_reward / root->explore_count : 0;
   const double player0_value =
       state.CurrentPlayer() == 0 ? root_value : -root_value;
-  return {policy, player0_value};
+  return {VisitCountPolicy(*root, absl::GetFlag(FLAGS_mcts_policy_temperature)),
+          VisitCountPolicy(*root, absl::GetFlag(FLAGS_temperature)),
+          player0_value, root->BestChild().action};
+}
+
+SearchTarget MCTSTarget(
+    const open_spiel::Game& game, const State& state,
+    const std::shared_ptr<open_spiel::algorithms::Evaluator>& evaluator,
+    int seed) {
+  return MCTSTarget(game, state, evaluator, seed,
+                    open_spiel::algorithms::ChildSelectionPolicy::UCT,
+                    /*dirichlet_alpha=*/0, /*dirichlet_epsilon=*/0);
 }
 
 std::vector<DatasetSample> CollectPureMCTSSelfPlaySamples(
@@ -365,15 +405,81 @@ std::vector<DatasetSample> CollectPureMCTSSelfPlaySamples(
   return samples;
 }
 
+std::vector<DatasetSample> CollectAZMCTSSelfPlaySamples(
+    const open_spiel::Game& game, int num_samples,
+    const std::shared_ptr<open_spiel::algorithms::Evaluator>& evaluator,
+    int worker_id, uint_fast32_t seed) {
+  std::vector<DatasetSample> samples;
+  samples.reserve(num_samples);
+  std::mt19937 rng(seed + 1000003 * worker_id);
+  int search_seed = static_cast<int>(seed + 2000003 * worker_id + 1);
+
+  while (samples.size() < num_samples) {
+    std::unique_ptr<State> state = game.NewInitialState();
+    std::vector<DatasetSample> pending_game_samples;
+    const int remaining_samples =
+        num_samples - static_cast<int>(samples.size());
+    pending_game_samples.reserve(
+        std::min<int>(game.MaxGameLength(), remaining_samples));
+    int history_size = 0;
+
+    while (!state->IsTerminal()) {
+      if (state->IsChanceNode()) {
+        Action action =
+            open_spiel::SampleAction(state->ChanceOutcomes(), rng).first;
+        state->ApplyAction(action);
+        ++history_size;
+        continue;
+      }
+      if (state->LegalActions().empty()) break;
+
+      SearchTarget target = MCTSTarget(
+          game, *state, evaluator, search_seed++,
+          open_spiel::algorithms::ChildSelectionPolicy::PUCT,
+          absl::GetFlag(FLAGS_policy_alpha),
+          absl::GetFlag(FLAGS_policy_epsilon));
+
+      if (samples.size() + pending_game_samples.size() < num_samples) {
+        pending_game_samples.push_back(
+            {state->LegalActions(), state->ObservationTensor(), target.policy,
+             /*target_value=*/0, state->CurrentPlayer()});
+      }
+
+      Action action = target.best_action;
+      if (history_size < absl::GetFlag(FLAGS_temperature_drop)) {
+        SPIEL_CHECK_FALSE(target.action_policy.empty());
+        action = open_spiel::SampleAction(target.action_policy, rng).first;
+      }
+      state->ApplyAction(action);
+      ++history_size;
+    }
+
+    if (!state->IsTerminal()) {
+      continue;
+    }
+    const std::vector<double> returns = state->Returns();
+    SPIEL_CHECK_FALSE(returns.empty());
+    const double player0_return = returns[0];
+    for (DatasetSample& sample : pending_game_samples) {
+      sample.target_value = player0_return;
+      samples.push_back(std::move(sample));
+    }
+  }
+  SPIEL_CHECK_EQ(samples.size(), num_samples);
+  return samples;
+}
+
 DatasetHeader MakeHeader(const open_spiel::Game& game,
                          const std::string& game_string) {
+  const std::string teacher = absl::GetFlag(FLAGS_teacher);
   return DatasetHeader{/*format_version=*/kFormatVersion,
                        /*game_string=*/game_string,
                        /*observation_tensor_shape=*/game.ObservationTensorShape(),
                        /*num_distinct_actions=*/game.NumDistinctActions(),
-                       /*teacher=*/absl::GetFlag(FLAGS_teacher),
+                       /*teacher=*/teacher,
                        /*max_simulations=*/absl::GetFlag(FLAGS_max_simulations),
-                       /*rollout_count=*/absl::GetFlag(FLAGS_rollout_count),
+                       /*rollout_count=*/
+                       teacher == "az" ? 0 : absl::GetFlag(FLAGS_rollout_count),
                        /*mcts_policy_temperature=*/
                        absl::GetFlag(FLAGS_mcts_policy_temperature)};
 }
@@ -457,8 +563,11 @@ void ValidateDataset(const DatasetFile& dataset, const open_spiel::Game& game,
 
 DatasetFile GenerateDataset(const std::string& game_string, int sample_count,
                             uint_fast32_t seed) {
-  if (absl::GetFlag(FLAGS_teacher) != "pure_mcts") {
-    open_spiel::SpielFatalError("Only --teacher=pure_mcts is supported.");
+  const std::string teacher = absl::GetFlag(FLAGS_teacher);
+  if (teacher != "pure_mcts" && teacher != "az") {
+    open_spiel::SpielFatalError(
+        absl::StrCat("Unknown --teacher=", teacher,
+                     ". Expected pure_mcts or az."));
   }
   SPIEL_CHECK_GE(sample_count, 0);
   std::shared_ptr<const open_spiel::Game> game = open_spiel::LoadGame(game_string);
@@ -469,15 +578,46 @@ DatasetFile GenerateDataset(const std::string& game_string, int sample_count,
   const int worker_count = std::max(1, absl::GetFlag(FLAGS_num_workers));
   std::vector<std::future<std::vector<DatasetSample>>> futures;
   futures.reserve(worker_count);
-  for (int worker = 0; worker < worker_count; ++worker) {
-    const int worker_samples =
-        sample_count / worker_count + (worker < sample_count % worker_count);
-    futures.push_back(std::async(std::launch::async, [=]() {
-      std::shared_ptr<const open_spiel::Game> worker_game =
-          open_spiel::LoadGame(game_string);
-      return CollectPureMCTSSelfPlaySamples(*worker_game, worker_samples,
-                                            worker, seed);
-    }));
+  std::shared_ptr<DeviceManager> az_device_manager;
+  std::shared_ptr<open_spiel::algorithms::Evaluator> az_evaluator;
+
+  if (teacher == "az") {
+    const std::string az_path = absl::GetFlag(FLAGS_az_path);
+    if (az_path.empty()) {
+      open_spiel::SpielFatalError("--az_path is required when --teacher=az.");
+    }
+    const int inference_batch_size = std::max(1, std::min(64, worker_count));
+    const int inference_threads = inference_batch_size > 1 ? 1 : 0;
+    az_device_manager = std::make_shared<DeviceManager>();
+    VPNetModel teacher_model(*game, az_path, absl::GetFlag(FLAGS_az_graph_def),
+                             absl::GetFlag(FLAGS_device));
+    teacher_model.LoadCheckpoint(absl::GetFlag(FLAGS_az_checkpoint));
+    az_device_manager->AddDevice(std::move(teacher_model));
+    az_evaluator = std::make_shared<VPNetEvaluator>(
+        az_device_manager.get(), inference_batch_size, inference_threads,
+        /*cache_size=*/0);
+
+    for (int worker = 0; worker < worker_count; ++worker) {
+      const int worker_samples =
+          sample_count / worker_count + (worker < sample_count % worker_count);
+      futures.push_back(std::async(std::launch::async, [=]() {
+        std::shared_ptr<const open_spiel::Game> worker_game =
+            open_spiel::LoadGame(game_string);
+        return CollectAZMCTSSelfPlaySamples(*worker_game, worker_samples,
+                                            az_evaluator, worker, seed);
+      }));
+    }
+  } else {
+    for (int worker = 0; worker < worker_count; ++worker) {
+      const int worker_samples =
+          sample_count / worker_count + (worker < sample_count % worker_count);
+      futures.push_back(std::async(std::launch::async, [=]() {
+        std::shared_ptr<const open_spiel::Game> worker_game =
+            open_spiel::LoadGame(game_string);
+        return CollectPureMCTSSelfPlaySamples(*worker_game, worker_samples,
+                                              worker, seed);
+      }));
+    }
   }
 
   dataset.samples.reserve(sample_count);
@@ -633,19 +773,31 @@ int RunGenerate() {
   SPIEL_CHECK_FALSE(dataset_path.empty());
 
   std::shared_ptr<const open_spiel::Game> game = open_spiel::LoadGame(game_string);
+  const std::string teacher = absl::GetFlag(FLAGS_teacher);
   std::cout << "[generate]\n"
             << "  game: " << game_string << "\n"
             << "  obs_shape: " << ShapeString(game->ObservationTensorShape())
             << "\n"
             << "  actions: " << game->NumDistinctActions() << "\n"
-            << "  teacher: " << absl::GetFlag(FLAGS_teacher)
+            << "  teacher: " << teacher
             << " sim=" << absl::GetFlag(FLAGS_max_simulations)
-            << " rollouts=" << absl::GetFlag(FLAGS_rollout_count)
+            << " rollouts="
+            << (teacher == "az" ? 0 : absl::GetFlag(FLAGS_rollout_count))
             << " temp=" << absl::GetFlag(FLAGS_mcts_policy_temperature)
             << "\n"
             << "  workers: " << absl::GetFlag(FLAGS_num_workers)
             << "\n"
             << "  train_out: " << dataset_path << "\n";
+  if (teacher == "az") {
+    std::cout << "  az_path: " << absl::GetFlag(FLAGS_az_path)
+              << " checkpoint=" << absl::GetFlag(FLAGS_az_checkpoint)
+              << " device=" << absl::GetFlag(FLAGS_device) << "\n"
+              << "  puct: alpha=" << absl::GetFlag(FLAGS_policy_alpha)
+              << " epsilon=" << absl::GetFlag(FLAGS_policy_epsilon)
+              << " action_temp=" << absl::GetFlag(FLAGS_temperature)
+              << " temp_drop=" << absl::GetFlag(FLAGS_temperature_drop)
+              << "\n";
+  }
   if (absl::GetFlag(FLAGS_holdout_samples) > 0) {
     std::cout << "  holdout_out: " << absl::GetFlag(FLAGS_holdout_dataset)
               << "\n";

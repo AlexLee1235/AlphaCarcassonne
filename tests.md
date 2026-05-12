@@ -61,3 +61,7 @@
   --mcts_policy_temperature=1 \
   --num_workers=16 \
   --seed=1
+# 64x8
+  55:31
+# 64x12
+  56:29

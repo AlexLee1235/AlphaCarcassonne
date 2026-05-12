@@ -31,6 +31,7 @@
 #include <utility>
 #include <vector>
 
+#include "c10/util/Exception.h"
 #include "open_spiel/abseil-cpp/absl/flags/flag.h"
 #include "open_spiel/abseil-cpp/absl/flags/parse.h"
 #include "open_spiel/abseil-cpp/absl/strings/str_cat.h"
@@ -78,6 +79,8 @@ ABSL_FLAG(bool, save_best_holdout_checkpoint, false,
           "Save checkpoint--3 whenever holdout KL reaches a new best.");
 ABSL_FLAG(bool, save_checkpoint_every_report, false,
           "Save checkpoint-<step> at each report.");
+ABSL_FLAG(bool, quiet_torch_warnings, true,
+          "Suppress LibTorch warnings from this diagnostic binary.");
 
 namespace {
 
@@ -91,6 +94,11 @@ using open_spiel::algorithms::torch_az::VPNetModel;
 constexpr int kFormatVersion = 1;
 constexpr int kBestHoldoutCheckpointStep =
     VPNetModel::kInvalidCheckpointStep - 1;
+
+class QuietTorchWarningHandler : public c10::WarningHandler {
+ public:
+  void process(const c10::Warning&) override {}
+};
 
 struct DatasetSample {
   std::vector<Action> legal_actions;
@@ -236,6 +244,16 @@ double AverageTargetEntropy(const std::vector<DatasetSample>& samples) {
     entropy += Entropy(sample.target_policy);
   }
   return samples.empty() ? 0 : entropy / samples.size();
+}
+
+std::string ShapeString(const std::vector<int>& shape) {
+  std::string result = "[";
+  for (int i = 0; i < shape.size(); ++i) {
+    if (i > 0) absl::StrAppend(&result, ",");
+    absl::StrAppend(&result, shape[i]);
+  }
+  absl::StrAppend(&result, "]");
+  return result;
 }
 
 double PolicyProb(const ActionsAndProbs& policy, Action action) {
@@ -439,26 +457,25 @@ void PrintTargetStats(const std::string& label,
       by_player[sample.current_player].Add(sample.target_value);
     }
   }
-  std::cout << label
-            << " samples=" << stats.count
-            << " avg_target_entropy=" << AverageTargetEntropy(samples)
-            << " value_mean=" << stats.Mean()
-            << " value_std=" << stats.StdDev()
-            << " value_min=" << (stats.count ? stats.min : 0)
-            << " value_max=" << (stats.count ? stats.max : 0)
-            << " value_pos=" << stats.positive
-            << " value_neg=" << stats.negative
-            << " value_zero=" << stats.zero << "\n";
+  std::cout << "[dataset " << label << "]\n"
+            << "  samples: " << stats.count << "\n"
+            << "  target_entropy: " << AverageTargetEntropy(samples) << "\n"
+            << "  value: mean=" << stats.Mean()
+            << " std=" << stats.StdDev()
+            << " min=" << (stats.count ? stats.min : 0)
+            << " max=" << (stats.count ? stats.max : 0) << "\n"
+            << "  value_counts: pos=" << stats.positive
+            << " neg=" << stats.negative
+            << " zero=" << stats.zero << "\n";
   for (int player = 0; player < 2; ++player) {
     const TargetStats& p = by_player[player];
-    std::cout << label
-              << " current_player=" << player
-              << " samples=" << p.count
-              << " value_mean=" << p.Mean()
-              << " value_std=" << p.StdDev()
-              << " value_pos=" << p.positive
-              << " value_neg=" << p.negative
-              << " value_zero=" << p.zero << "\n";
+    std::cout << "  player" << player
+              << ": samples=" << p.count
+              << " mean=" << p.Mean()
+              << " std=" << p.StdDev()
+              << " pos=" << p.positive
+              << " neg=" << p.negative
+              << " zero=" << p.zero << "\n";
   }
 }
 
@@ -504,34 +521,30 @@ Metrics EvaluateVPNet(VPNetModel* model,
   return metrics;
 }
 
-void PrintValueStats(const std::string& mode, int step,
-                     const std::string& player_label,
+void PrintValueStats(const std::string& player_label,
                      const ValueStats& stats) {
   if (stats.count == 0) return;
-  std::cout << "value_split mode=" << mode
-            << " step=" << step
-            << " player=" << player_label
-            << " n=" << stats.count
-            << " target_mean=" << stats.TargetMean()
-            << " pred_mean=" << stats.PredictionMean()
+  std::cout << "  value " << player_label
+            << ": n=" << stats.count
             << " mse=" << stats.MSE()
-            << " sign_acc=" << stats.SignAccuracy()
-            << " corr=" << stats.Correlation() << "\n";
+            << " sign=" << stats.SignAccuracy()
+            << " corr=" << stats.Correlation()
+            << " target_mean=" << stats.TargetMean()
+            << " pred_mean=" << stats.PredictionMean() << "\n";
 }
 
 void PrintModeMetrics(const std::string& mode, int step,
                       const Metrics& metrics) {
-  std::cout << "mode=" << mode
-            << " step=" << step
-            << " ce=" << metrics.cross_entropy
+  std::cout << "[" << mode << " step=" << step << "]\n"
+            << "  policy: ce=" << metrics.cross_entropy
             << " kl=" << metrics.kl
-            << " target_entropy=" << metrics.target_entropy
-            << " policy_entropy=" << metrics.policy_entropy
-            << " value_mse=" << metrics.value_mse
-            << " top1=" << metrics.top1_agreement << "\n";
-  PrintValueStats(mode, step, "all", metrics.value_all);
-  PrintValueStats(mode, step, "0", metrics.value_by_player[0]);
-  PrintValueStats(mode, step, "1", metrics.value_by_player[1]);
+            << " target_H=" << metrics.target_entropy
+            << " pred_H=" << metrics.policy_entropy
+            << " top1=" << metrics.top1_agreement << "\n"
+            << "  value_mse: " << metrics.value_mse << "\n";
+  PrintValueStats("all", metrics.value_all);
+  PrintValueStats("p0_turn", metrics.value_by_player[0]);
+  PrintValueStats("p1_turn", metrics.value_by_player[1]);
 }
 
 ModelConfig LoadModelConfig(const std::string& path,
@@ -575,28 +588,44 @@ int RunGenerate() {
   const std::string dataset_path = absl::GetFlag(FLAGS_dataset);
   SPIEL_CHECK_FALSE(dataset_path.empty());
 
-  std::cout << "Generating " << absl::GetFlag(FLAGS_samples)
-            << " train samples with " << absl::GetFlag(FLAGS_num_workers)
-            << " workers...\n";
+  std::shared_ptr<const open_spiel::Game> game = open_spiel::LoadGame(game_string);
+  std::cout << "[generate]\n"
+            << "  game: " << game_string << "\n"
+            << "  obs_shape: " << ShapeString(game->ObservationTensorShape())
+            << "\n"
+            << "  actions: " << game->NumDistinctActions() << "\n"
+            << "  teacher: " << absl::GetFlag(FLAGS_teacher)
+            << " sim=" << absl::GetFlag(FLAGS_max_simulations)
+            << " rollouts=" << absl::GetFlag(FLAGS_rollout_count)
+            << " temp=" << absl::GetFlag(FLAGS_mcts_policy_temperature)
+            << "\n"
+            << "  workers: " << absl::GetFlag(FLAGS_num_workers)
+            << "\n"
+            << "  train_out: " << dataset_path << "\n";
+  if (absl::GetFlag(FLAGS_holdout_samples) > 0) {
+    std::cout << "  holdout_out: " << absl::GetFlag(FLAGS_holdout_dataset)
+              << "\n";
+  }
+
+  std::cout << "[generate train] samples=" << absl::GetFlag(FLAGS_samples)
+            << "\n";
   DatasetFile train =
       GenerateDataset(game_string, absl::GetFlag(FLAGS_samples),
                       absl::GetFlag(FLAGS_seed));
   SaveDataset(train, dataset_path);
-  std::cout << "saved_dataset=" << dataset_path << "\n";
+  std::cout << "[saved train] " << dataset_path << "\n";
   PrintTargetStats("train", train.samples);
 
   const int holdout_count = absl::GetFlag(FLAGS_holdout_samples);
   const std::string holdout_path = absl::GetFlag(FLAGS_holdout_dataset);
   if (holdout_count > 0) {
     SPIEL_CHECK_FALSE(holdout_path.empty());
-    std::cout << "Generating " << holdout_count
-              << " holdout samples with " << absl::GetFlag(FLAGS_num_workers)
-              << " workers...\n";
+    std::cout << "[generate holdout] samples=" << holdout_count << "\n";
     DatasetFile holdout =
         GenerateDataset(game_string, holdout_count,
                         absl::GetFlag(FLAGS_seed) + 50000019);
     SaveDataset(holdout, holdout_path);
-    std::cout << "saved_holdout_dataset=" << holdout_path << "\n";
+    std::cout << "[saved holdout] " << holdout_path << "\n";
     PrintTargetStats("holdout", holdout.samples);
   }
   return 0;
@@ -610,21 +639,17 @@ int RunInspect() {
   DatasetFile dataset = LoadDataset(dataset_path);
   ValidateDataset(dataset, *game, game_string);
 
-  std::cout << "dataset=" << dataset_path
-            << " format_version=" << dataset.header.format_version
-            << " game=" << dataset.header.game_string
-            << " num_actions=" << dataset.header.num_distinct_actions
-            << " teacher=" << dataset.header.teacher
-            << " max_simulations=" << dataset.header.max_simulations
-            << " rollout_count=" << dataset.header.rollout_count
-            << " mcts_policy_temperature="
-            << dataset.header.mcts_policy_temperature << "\n";
-  std::cout << "observation_shape=[";
-  for (int i = 0; i < dataset.header.observation_tensor_shape.size(); ++i) {
-    if (i > 0) std::cout << ",";
-    std::cout << dataset.header.observation_tensor_shape[i];
-  }
-  std::cout << "]\n";
+  std::cout << "[inspect]\n"
+            << "  dataset: " << dataset_path << "\n"
+            << "  format: " << dataset.header.format_version << "\n"
+            << "  game: " << dataset.header.game_string << "\n"
+            << "  obs_shape: "
+            << ShapeString(dataset.header.observation_tensor_shape) << "\n"
+            << "  actions: " << dataset.header.num_distinct_actions << "\n"
+            << "  teacher: " << dataset.header.teacher
+            << " sim=" << dataset.header.max_simulations
+            << " rollouts=" << dataset.header.rollout_count
+            << " temp=" << dataset.header.mcts_policy_temperature << "\n";
   PrintTargetStats("inspect", dataset.samples);
   return 0;
 }
@@ -672,24 +697,28 @@ int RunTrain() {
   std::vector<VPNetModel::TrainInputs> fixed_data = ToTrainInputs(train.samples);
   SPIEL_CHECK_FALSE(fixed_data.empty());
 
-  std::cout << "samples=" << train.samples.size()
-            << " holdout_samples=" << holdout.samples.size()
-            << " dataset=" << dataset_path
-            << " holdout_dataset=" << holdout_path
-            << " trainer=VPNetModel::Learn"
-            << " init_from_checkpoint="
+  std::cout << "[train]\n"
+            << "  game: " << game_string << "\n"
+            << "  train_dataset: " << dataset_path << "\n"
+            << "  train_samples: " << train.samples.size() << "\n"
+            << "  holdout_dataset: " << holdout_path << "\n"
+            << "  holdout_samples: " << holdout.samples.size() << "\n"
+            << "  student_path: " << student_path << "\n"
+            << "  init_from_checkpoint: "
             << (absl::GetFlag(FLAGS_init_from_checkpoint) ? "true" : "false")
-            << " nn_model=" << student_config.nn_model
-            << " nn_width=" << student_config.nn_width
-            << " nn_depth=" << student_config.nn_depth
-            << " lr=" << student_config.learning_rate
+            << "\n"
+            << "  model: " << student_config.nn_model
+            << " width=" << student_config.nn_width
+            << " depth=" << student_config.nn_depth << "\n"
+            << "  optimizer: lr=" << student_config.learning_rate
             << " weight_decay=" << student_config.weight_decay
             << " batch_size=" << absl::GetFlag(FLAGS_batch_size)
-            << " device=" << absl::GetFlag(FLAGS_device) << "\n";
+            << " steps=" << absl::GetFlag(FLAGS_train_steps) << "\n"
+            << "  device: " << absl::GetFlag(FLAGS_device) << "\n";
 
   if (absl::GetFlag(FLAGS_save_final_checkpoint)) {
     std::string initial_checkpoint = student.SaveCheckpoint(0);
-    std::cout << "saved_initial_checkpoint=" << initial_checkpoint << "\n";
+    std::cout << "[saved initial] " << initial_checkpoint << "\n";
   }
 
   PrintModeMetrics("train", 0, EvaluateVPNet(&student, train.samples));
@@ -701,7 +730,7 @@ int RunTrain() {
     if (absl::GetFlag(FLAGS_save_best_holdout_checkpoint)) {
       std::string best_checkpoint =
           student.SaveCheckpoint(kBestHoldoutCheckpointStep);
-      std::cout << "saved_best_holdout_checkpoint=" << best_checkpoint
+      std::cout << "[saved best] " << best_checkpoint
                 << " source_step=0"
                 << " holdout_kl=" << best_holdout_kl << "\n";
     }
@@ -722,7 +751,7 @@ int RunTrain() {
       PrintModeMetrics("train", step, EvaluateVPNet(&student, train.samples));
       if (absl::GetFlag(FLAGS_save_checkpoint_every_report)) {
         std::string report_checkpoint = student.SaveCheckpoint(step);
-        std::cout << "saved_report_checkpoint=" << report_checkpoint << "\n";
+        std::cout << "[saved report] " << report_checkpoint << "\n";
       }
       if (!holdout.samples.empty()) {
         Metrics holdout_metrics = EvaluateVPNet(&student, holdout.samples);
@@ -732,7 +761,7 @@ int RunTrain() {
           best_holdout_kl = holdout_metrics.kl;
           std::string best_checkpoint =
               student.SaveCheckpoint(kBestHoldoutCheckpointStep);
-          std::cout << "saved_best_holdout_checkpoint=" << best_checkpoint
+          std::cout << "[saved best] " << best_checkpoint
                     << " source_step=" << step
                     << " holdout_kl=" << best_holdout_kl << "\n";
         }
@@ -743,7 +772,7 @@ int RunTrain() {
   if (absl::GetFlag(FLAGS_save_final_checkpoint)) {
     std::string final_checkpoint =
         student.SaveCheckpoint(VPNetModel::kMostRecentCheckpointStep);
-    std::cout << "saved_final_checkpoint=" << final_checkpoint << "\n";
+    std::cout << "[saved final] " << final_checkpoint << "\n";
   }
   return 0;
 }
@@ -752,6 +781,10 @@ int RunTrain() {
 
 int main(int argc, char** argv) {
   absl::ParseCommandLine(argc, argv);
+  static QuietTorchWarningHandler quiet_torch_warning_handler;
+  if (absl::GetFlag(FLAGS_quiet_torch_warnings)) {
+    c10::WarningUtils::set_warning_handler(&quiet_torch_warning_handler);
+  }
   const std::string mode = absl::GetFlag(FLAGS_mode);
   if (mode == "generate") return RunGenerate();
   if (mode == "train") return RunTrain();

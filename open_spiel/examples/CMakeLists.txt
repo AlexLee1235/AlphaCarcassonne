@@ -32,4 +32,10 @@ if (OPEN_SPIEL_BUILD_WITH_LIBTORCH)
     ${OPEN_SPIEL_OBJECTS}
     $<TARGET_OBJECTS:alpha_zero_torch>)
   target_link_libraries(alpha_zero_torch_policy_overfit ${TORCH_LIBRARIES})
+
+  add_executable(alpha_zero_torch_dataset_pretrain
+    alpha_zero_torch_dataset_pretrain.cc
+    ${OPEN_SPIEL_OBJECTS}
+    $<TARGET_OBJECTS:alpha_zero_torch>)
+  target_link_libraries(alpha_zero_torch_dataset_pretrain ${TORCH_LIBRARIES})
 endif()

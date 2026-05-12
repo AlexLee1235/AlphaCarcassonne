@@ -15,6 +15,7 @@
 #include <torch/torch.h>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <filesystem>
@@ -29,7 +30,10 @@
 
 #include "open_spiel/abseil-cpp/absl/flags/flag.h"
 #include "open_spiel/abseil-cpp/absl/flags/parse.h"
+#include "open_spiel/abseil-cpp/absl/strings/numbers.h"
+#include "open_spiel/abseil-cpp/absl/strings/string_view.h"
 #include "open_spiel/abseil-cpp/absl/strings/str_cat.h"
+#include "open_spiel/abseil-cpp/absl/strings/str_split.h"
 #include "open_spiel/algorithms/alpha_zero_torch/model.h"
 #include "open_spiel/algorithms/alpha_zero_torch/vpnet.h"
 #include "open_spiel/algorithms/mcts.h"
@@ -41,10 +45,18 @@ ABSL_FLAG(std::string, az_path, "", "Path to teacher AZ experiment.");
 ABSL_FLAG(std::string, az_graph_def, "vpnet.pb",
           "AZ graph definition file name.");
 ABSL_FLAG(int, az_checkpoint, -1, "Teacher checkpoint.");
+ABSL_FLAG(std::string, nn_model, "resnet",
+          "Student model type when not initializing from a checkpoint.");
+ABSL_FLAG(int, nn_width, 128,
+          "Student model width when not initializing from a checkpoint.");
+ABSL_FLAG(int, nn_depth, 10,
+          "Student model depth when not initializing from a checkpoint.");
 ABSL_FLAG(std::string, device, "/cpu:0",
           "Torch device, e.g. /cpu:0, cpu, cuda:0.");
 ABSL_FLAG(uint_fast32_t, seed, 1, "Random seed.");
 ABSL_FLAG(int, samples, 256, "Number of fixed training states.");
+ABSL_FLAG(int, holdout_samples, 0,
+          "Number of additional teacher states for holdout metrics.");
 ABSL_FLAG(int, random_decision_steps, 30,
           "Random player decision actions to apply before each sampled state.");
 ABSL_FLAG(int, max_simulations, 320, "MCTS simulations for policy targets.");
@@ -70,6 +82,12 @@ ABSL_FLAG(bool, use_vpnet_learn, true,
           "policy-only training loop.");
 ABSL_FLAG(std::string, student_path, "/tmp/az_policy_overfit_student",
           "Temporary path for the VPNetModel::Learn student graph config.");
+ABSL_FLAG(bool, save_final_checkpoint, false,
+          "Save checkpoint-0 before training and checkpoint--1 after training.");
+ABSL_FLAG(bool, save_best_holdout_checkpoint, false,
+          "Save checkpoint--3 whenever holdout KL reaches a new best.");
+ABSL_FLAG(bool, save_checkpoint_every_report, false,
+          "Save checkpoint-<step> at every report interval.");
 ABSL_FLAG(bool, hardcoded_single_sample, false,
           "Bypass MCTS/replay and train one real observation against a "
           "manually hardcoded one-hot policy target.");
@@ -83,6 +101,19 @@ ABSL_FLAG(std::string, bn_calibrated_path, "/tmp/az_bn_calibrated",
           "Output path for --bn_calibration calibrated checkpoint.");
 ABSL_FLAG(bool, diagnose_self_play_targets, false,
           "Compare AZ self-play MCTS targets against pure rollout MCTS targets.");
+ABSL_FLAG(bool, diagnose_root_value_returns, false,
+          "Run MCTS self-play games and compare each root value against the "
+          "final returns.");
+ABSL_FLAG(bool, diagnose_mcts_stability, false,
+          "For fixed states, rerun root MCTS with multiple simulation counts "
+          "and seeds to measure policy target stability.");
+ABSL_FLAG(std::string, diagnose_sim_counts, "160,320,640,1280",
+          "Comma-separated simulation counts for --diagnose_mcts_stability.");
+ABSL_FLAG(int, diagnose_repeats, 5,
+          "Independent MCTS repeats per state and simulation count for "
+          "--diagnose_mcts_stability.");
+ABSL_FLAG(int, diagnose_games, 32,
+          "Number of full games for --diagnose_root_value_returns.");
 ABSL_FLAG(int, diagnose_cases, 5,
           "How many individual diagnosis cases to print.");
 ABSL_FLAG(int, diagnose_top_k, 8,
@@ -103,6 +134,49 @@ struct Sample {
   std::vector<float> observation;
   ActionsAndProbs target_policy;
   double target_value = 0;
+  int current_player = 0;
+};
+
+struct ValueStats {
+  int count = 0;
+  double target_sum = 0;
+  double prediction_sum = 0;
+  double target_square_sum = 0;
+  double prediction_square_sum = 0;
+  double product_sum = 0;
+  double squared_error_sum = 0;
+  double sign_correct = 0;
+
+  void Add(double prediction, double target) {
+    ++count;
+    target_sum += target;
+    prediction_sum += prediction;
+    target_square_sum += target * target;
+    prediction_square_sum += prediction * prediction;
+    product_sum += prediction * target;
+    const double error = prediction - target;
+    squared_error_sum += error * error;
+    sign_correct += (prediction >= 0) == (target >= 0) ? 1 : 0;
+  }
+
+  double TargetMean() const { return count > 0 ? target_sum / count : 0; }
+  double PredictionMean() const {
+    return count > 0 ? prediction_sum / count : 0;
+  }
+  double MSE() const { return count > 0 ? squared_error_sum / count : 0; }
+  double SignAccuracy() const { return count > 0 ? sign_correct / count : 0; }
+  double Correlation() const {
+    if (count <= 1) return std::numeric_limits<double>::quiet_NaN();
+    const double n = count;
+    const double numerator = n * product_sum - prediction_sum * target_sum;
+    const double prediction_var =
+        n * prediction_square_sum - prediction_sum * prediction_sum;
+    const double target_var = n * target_square_sum - target_sum * target_sum;
+    const double denominator =
+        std::sqrt(std::max(0.0, prediction_var) * std::max(0.0, target_var));
+    return denominator > 0 ? numerator / denominator
+                           : std::numeric_limits<double>::quiet_NaN();
+  }
 };
 
 struct Metrics {
@@ -112,7 +186,39 @@ struct Metrics {
   double kl = 0;
   double value_mse = 0;
   double top1_agreement = 0;
+  ValueStats value_all;
+  std::array<ValueStats, 2> value_by_player;
 };
+
+void AddValueMetric(Metrics* metrics, const Sample& sample,
+                    double prediction) {
+  metrics->value_all.Add(prediction, sample.target_value);
+  if (sample.current_player == 0 || sample.current_player == 1) {
+    metrics->value_by_player[sample.current_player].Add(prediction,
+                                                        sample.target_value);
+  }
+}
+
+struct SplitValueStats {
+  ValueStats all;
+  std::array<ValueStats, 2> by_player;
+
+  void Add(int current_player, double prediction, double target) {
+    all.Add(prediction, target);
+    if (current_player == 0 || current_player == 1) {
+      by_player[current_player].Add(prediction, target);
+    }
+  }
+};
+
+struct RootValueRecord {
+  int current_player = 0;
+  double root_value_current = 0;
+  double root_value_p0 = 0;
+};
+
+void PrintRootValueStats(const std::string& label,
+                         const SplitValueStats& stats);
 
 struct PredictionStats {
   double policy_entropy = 0;
@@ -152,12 +258,45 @@ ModelConfig LoadModelConfig(const std::string& path,
   return config;
 }
 
+ModelConfig NewModelConfig(const open_spiel::Game& game) {
+  return ModelConfig{/*observation_tensor_shape=*/game.ObservationTensorShape(),
+                     /*number_of_actions=*/game.NumDistinctActions(),
+                     /*nn_depth=*/absl::GetFlag(FLAGS_nn_depth),
+                     /*nn_width=*/absl::GetFlag(FLAGS_nn_width),
+                     /*learning_rate=*/absl::GetFlag(FLAGS_learning_rate),
+                     /*weight_decay=*/absl::GetFlag(FLAGS_weight_decay),
+                     /*nn_model=*/absl::GetFlag(FLAGS_nn_model)};
+}
+
+ModelConfig BaseModelConfig(const open_spiel::Game& game,
+                            const std::string& path,
+                            const std::string& filename) {
+  ModelConfig config;
+  const std::string config_path = absl::StrCat(path, "/", filename);
+  if (!path.empty() && std::filesystem::exists(config_path)) {
+    config = LoadModelConfig(path, filename);
+  } else {
+    config = NewModelConfig(game);
+  }
+  config.learning_rate = absl::GetFlag(FLAGS_learning_rate);
+  config.weight_decay = absl::GetFlag(FLAGS_weight_decay);
+  return config;
+}
+
 double Entropy(const ActionsAndProbs& policy) {
   double entropy = 0;
   for (const auto& [action, prob] : policy) {
     if (prob > 0) entropy -= prob * std::log(prob);
   }
   return entropy;
+}
+
+double AverageTargetEntropy(const std::vector<Sample>& samples) {
+  double entropy = 0;
+  for (const Sample& sample : samples) {
+    entropy += Entropy(sample.target_policy);
+  }
+  return samples.empty() ? 0 : entropy / samples.size();
 }
 
 double NormalizedEntropy(const ActionsAndProbs& policy, int legal_action_count) {
@@ -257,7 +396,8 @@ std::vector<Sample> CollectRandomObservationSamples(
       continue;
     }
     samples.push_back({state->LegalActions(), state->ObservationTensor(),
-                       /*target_policy=*/{}, /*target_value=*/0});
+                       /*target_policy=*/{}, /*target_value=*/0,
+                       state->CurrentPlayer()});
   }
   return samples;
 }
@@ -290,13 +430,14 @@ SearchTarget MCTSTarget(const open_spiel::Game& game, const State& state,
                         std::shared_ptr<open_spiel::algorithms::Evaluator>
                             evaluator,
                         int seed,
+                        int max_simulations,
                         open_spiel::algorithms::ChildSelectionPolicy
                             child_selection_policy,
                         double dirichlet_alpha,
                         double dirichlet_epsilon) {
   open_spiel::algorithms::MCTSBot bot(
       game, std::move(evaluator), absl::GetFlag(FLAGS_uct_c),
-      absl::GetFlag(FLAGS_max_simulations),
+      max_simulations,
       /*max_memory_mb=*/1000,
       /*solve=*/false, seed,
       /*verbose=*/false, child_selection_policy, dirichlet_alpha,
@@ -322,6 +463,20 @@ SearchTarget MCTSTarget(const open_spiel::Game& game, const State& state,
   return {policy, player0_value};
 }
 
+SearchTarget MCTSTarget(const open_spiel::Game& game, const State& state,
+                        std::shared_ptr<open_spiel::algorithms::Evaluator>
+                            evaluator,
+                        int seed,
+                        open_spiel::algorithms::ChildSelectionPolicy
+                            child_selection_policy,
+                        double dirichlet_alpha,
+                        double dirichlet_epsilon) {
+  return MCTSTarget(game, state, std::move(evaluator), seed,
+                    absl::GetFlag(FLAGS_max_simulations),
+                    child_selection_policy, dirichlet_alpha,
+                    dirichlet_epsilon);
+}
+
 ActionsAndProbs MCTSPolicy(const open_spiel::Game& game, const State& state,
                            std::shared_ptr<open_spiel::algorithms::Evaluator>
                                evaluator,
@@ -332,6 +487,191 @@ ActionsAndProbs MCTSPolicy(const open_spiel::Game& game, const State& state,
              absl::GetFlag(FLAGS_policy_alpha),
 	             absl::GetFlag(FLAGS_policy_epsilon))
 	      .policy;
+}
+
+std::vector<int> ParseSimCounts(const std::string& counts_text) {
+  std::vector<int> counts;
+  for (absl::string_view part :
+       absl::StrSplit(counts_text, ',', absl::SkipWhitespace())) {
+    int value = 0;
+    if (!absl::SimpleAtoi(part, &value) || value <= 0) {
+      open_spiel::SpielFatalError(
+          absl::StrCat("Invalid --diagnose_sim_counts entry: ", part));
+    }
+    counts.push_back(value);
+  }
+  if (counts.empty()) {
+    open_spiel::SpielFatalError("--diagnose_sim_counts must not be empty.");
+  }
+  std::sort(counts.begin(), counts.end());
+  counts.erase(std::unique(counts.begin(), counts.end()), counts.end());
+  return counts;
+}
+
+struct PolicyComparisonStats {
+  int count = 0;
+  double top1 = 0;
+  double kl = 0;
+  double l1 = 0;
+
+  void Add(const ActionsAndProbs& left, const ActionsAndProbs& right,
+           const std::vector<Action>& legal_actions) {
+    ++count;
+    top1 += TopAction(left) == TopAction(right) ? 1 : 0;
+    kl += KL(left, right);
+    l1 += L1Distance(left, right, legal_actions);
+  }
+
+  void Print(const std::string& label) const {
+    const double denom = count > 0 ? count : 1;
+    std::cout << label
+              << " comparisons=" << count
+              << " top1=" << top1 / denom
+              << " kl=" << kl / denom
+              << " l1=" << l1 / denom << "\n";
+  }
+};
+
+void PrintPolicyTable(const std::string& label, const ActionsAndProbs& policy,
+                      const DiagnosticCase& sample, int top_k);
+
+void RunMCTSStabilityDiagnosis(
+    const open_spiel::Game& game,
+    std::shared_ptr<open_spiel::algorithms::Evaluator> evaluator,
+    open_spiel::algorithms::ChildSelectionPolicy child_selection_policy,
+    double dirichlet_alpha, double dirichlet_epsilon, std::mt19937* rng) {
+  if (absl::GetFlag(FLAGS_mcts_policy_temperature) < 0) {
+    open_spiel::SpielFatalError("--mcts_policy_temperature must be >= 0.");
+  }
+  const int repeats = absl::GetFlag(FLAGS_diagnose_repeats);
+  if (repeats <= 0) {
+    open_spiel::SpielFatalError("--diagnose_repeats must be positive.");
+  }
+
+  std::vector<int> sim_counts =
+      ParseSimCounts(absl::GetFlag(FLAGS_diagnose_sim_counts));
+
+  std::vector<std::unique_ptr<State>> states;
+  states.reserve(absl::GetFlag(FLAGS_samples));
+  while (states.size() < absl::GetFlag(FLAGS_samples)) {
+    std::unique_ptr<State> state = RandomState(
+        game, absl::GetFlag(FLAGS_random_decision_steps), rng);
+    if (state->IsTerminal() || state->IsChanceNode() ||
+        state->LegalActions().empty()) {
+      continue;
+    }
+    states.push_back(std::move(state));
+  }
+
+  std::vector<std::vector<std::vector<ActionsAndProbs>>> policies(
+      sim_counts.size(),
+      std::vector<std::vector<ActionsAndProbs>>(
+          states.size(), std::vector<ActionsAndProbs>(repeats)));
+
+  int base_seed = absl::GetFlag(FLAGS_seed);
+  if (base_seed == 0) base_seed = 1;
+  for (int sim_index = 0; sim_index < sim_counts.size(); ++sim_index) {
+    for (int state_index = 0; state_index < states.size(); ++state_index) {
+      for (int repeat = 0; repeat < repeats; ++repeat) {
+        const int search_seed = base_seed + 1000000 * sim_index +
+                                1000 * state_index + repeat;
+        policies[sim_index][state_index][repeat] =
+            MCTSTarget(game, *states[state_index], evaluator, search_seed,
+                       sim_counts[sim_index], child_selection_policy,
+                       dirichlet_alpha, dirichlet_epsilon)
+                .policy;
+      }
+    }
+  }
+
+  std::cout << "mode=diagnose_mcts_stability"
+            << " samples=" << states.size()
+            << " repeats=" << repeats
+            << " sim_counts=" << absl::GetFlag(FLAGS_diagnose_sim_counts)
+            << " teacher=" << absl::GetFlag(FLAGS_teacher)
+            << " rollout_count=" << absl::GetFlag(FLAGS_rollout_count)
+            << " uct_c=" << absl::GetFlag(FLAGS_uct_c)
+            << " policy_alpha=" << dirichlet_alpha
+            << " policy_epsilon=" << dirichlet_epsilon
+            << " random_decision_steps="
+            << absl::GetFlag(FLAGS_random_decision_steps) << "\n";
+
+  for (int sim_index = 0; sim_index < sim_counts.size(); ++sim_index) {
+    double entropy = 0;
+    double norm_entropy = 0;
+    double top_prob = 0;
+    int policy_count = 0;
+    PolicyComparisonStats within;
+    for (int state_index = 0; state_index < states.size(); ++state_index) {
+      const std::vector<Action> legal_actions = states[state_index]->LegalActions();
+      for (int repeat = 0; repeat < repeats; ++repeat) {
+        const ActionsAndProbs& policy =
+            policies[sim_index][state_index][repeat];
+        entropy += Entropy(policy);
+        norm_entropy += NormalizedEntropy(policy, legal_actions.size());
+        top_prob += MaxProbability(policy);
+        ++policy_count;
+      }
+      for (int left = 0; left < repeats; ++left) {
+        for (int right = left + 1; right < repeats; ++right) {
+          within.Add(policies[sim_index][state_index][left],
+                     policies[sim_index][state_index][right], legal_actions);
+        }
+      }
+    }
+    const double denom = policy_count > 0 ? policy_count : 1;
+    std::cout << "sim=" << sim_counts[sim_index]
+              << " entropy=" << entropy / denom
+              << " normalized_entropy=" << norm_entropy / denom
+              << " top_prob=" << top_prob / denom << "\n";
+    within.Print(absl::StrCat("within_seed sim=", sim_counts[sim_index]));
+  }
+
+  const int max_index = sim_counts.size() - 1;
+  for (int sim_index = 0; sim_index + 1 < sim_counts.size(); ++sim_index) {
+    PolicyComparisonStats vs_next;
+    PolicyComparisonStats vs_max;
+    for (int state_index = 0; state_index < states.size(); ++state_index) {
+      const std::vector<Action> legal_actions = states[state_index]->LegalActions();
+      for (int left_repeat = 0; left_repeat < repeats; ++left_repeat) {
+        for (int right_repeat = 0; right_repeat < repeats; ++right_repeat) {
+          vs_next.Add(policies[sim_index][state_index][left_repeat],
+                      policies[sim_index + 1][state_index][right_repeat],
+                      legal_actions);
+          vs_max.Add(policies[sim_index][state_index][left_repeat],
+                     policies[max_index][state_index][right_repeat],
+                     legal_actions);
+        }
+      }
+    }
+    vs_next.Print(absl::StrCat("vs_next sim=", sim_counts[sim_index],
+                               "->", sim_counts[sim_index + 1]));
+    vs_max.Print(absl::StrCat("vs_max sim=", sim_counts[sim_index],
+                              "->", sim_counts[max_index]));
+  }
+
+  const int case_count =
+      std::max(0, std::min(absl::GetFlag(FLAGS_diagnose_cases),
+                           static_cast<int>(states.size())));
+  const int top_k = absl::GetFlag(FLAGS_diagnose_top_k);
+  for (int case_index = 0; case_index < case_count; ++case_index) {
+    std::cout << "\nstability_case=" << case_index
+              << " current_player=" << states[case_index]->CurrentPlayer()
+              << " legal_actions=" << states[case_index]->LegalActions().size()
+              << "\nstate:\n" << states[case_index]->ToString() << "\n";
+    DiagnosticCase printable;
+    printable.current_player = states[case_index]->CurrentPlayer();
+    for (Action action : states[case_index]->LegalActions()) {
+      printable.action_strings.push_back(
+          {action, states[case_index]->ActionToString(
+                       states[case_index]->CurrentPlayer(), action)});
+    }
+    for (int sim_index = 0; sim_index < sim_counts.size(); ++sim_index) {
+      PrintPolicyTable(absl::StrCat("sim=", sim_counts[sim_index],
+                                    " repeat=0"),
+                       policies[sim_index][case_index][0], printable, top_k);
+    }
+  }
 }
 
 std::string ActionString(const DiagnosticCase& sample, Action action) {
@@ -558,6 +898,101 @@ void RunSelfPlayTargetDiagnosis(const open_spiel::Game& game,
   }
 }
 
+void RunRootValueReturnsDiagnosis(
+    const open_spiel::Game& game,
+    std::shared_ptr<open_spiel::algorithms::Evaluator> evaluator,
+    open_spiel::algorithms::ChildSelectionPolicy child_selection_policy,
+    double dirichlet_alpha, double dirichlet_epsilon, std::mt19937* rng) {
+  if (absl::GetFlag(FLAGS_mcts_policy_temperature) < 0) {
+    open_spiel::SpielFatalError("--mcts_policy_temperature must be >= 0.");
+  }
+
+  const int game_count = absl::GetFlag(FLAGS_diagnose_games);
+  int search_seed = absl::GetFlag(FLAGS_seed);
+  if (search_seed == 0) search_seed = 1;
+
+  SplitValueStats root_p0_vs_return0;
+  SplitValueStats root_current_vs_return_current;
+  SplitValueStats root_current_vs_return0;
+  SplitValueStats root_p0_vs_return_current;
+  int total_states = 0;
+  int p0_wins = 0;
+  int p1_wins = 0;
+  int draws = 0;
+
+  for (int game_index = 0; game_index < game_count; ++game_index) {
+    std::unique_ptr<State> state = game.NewInitialState();
+    std::vector<RootValueRecord> records;
+
+    while (!state->IsTerminal()) {
+      SampleChanceUntilDecision(state.get(), rng);
+      if (state->IsTerminal()) break;
+      if (state->LegalActions().empty()) break;
+
+      const int current_player = state->CurrentPlayer();
+      SearchTarget target = MCTSTarget(
+          game, *state, evaluator, search_seed++, child_selection_policy,
+          dirichlet_alpha, dirichlet_epsilon);
+      const double root_value_p0 = target.player0_value;
+      const double root_value_current =
+          current_player == 0 ? root_value_p0 : -root_value_p0;
+      records.push_back({current_player, root_value_current, root_value_p0});
+
+      Action action = open_spiel::SampleAction(target.policy, *rng).first;
+      state->ApplyAction(action);
+    }
+
+    if (!state->IsTerminal()) {
+      open_spiel::SpielFatalError("Root-value diagnosis ended before terminal.");
+    }
+
+    const std::vector<double> returns = state->Returns();
+    if (returns[0] > 0) {
+      ++p0_wins;
+    } else if (returns[0] < 0) {
+      ++p1_wins;
+    } else {
+      ++draws;
+    }
+
+    for (const RootValueRecord& record : records) {
+      root_p0_vs_return0.Add(record.current_player, record.root_value_p0,
+                             returns[0]);
+      root_current_vs_return_current.Add(
+          record.current_player, record.root_value_current,
+          returns[record.current_player]);
+      root_current_vs_return0.Add(record.current_player,
+                                  record.root_value_current, returns[0]);
+      root_p0_vs_return_current.Add(record.current_player,
+                                    record.root_value_p0,
+                                    returns[record.current_player]);
+    }
+    total_states += records.size();
+  }
+
+  std::cout << "mode=diagnose_root_value_returns"
+            << " games=" << game_count
+            << " states=" << total_states
+            << " avg_states_per_game="
+            << (game_count > 0 ? static_cast<double>(total_states) / game_count
+                               : 0)
+            << " p0_wins=" << p0_wins
+            << " p1_wins=" << p1_wins
+            << " draws=" << draws
+            << " teacher=" << absl::GetFlag(FLAGS_teacher)
+            << " max_simulations=" << absl::GetFlag(FLAGS_max_simulations)
+            << " rollout_count=" << absl::GetFlag(FLAGS_rollout_count)
+            << " mcts_policy_temperature="
+            << absl::GetFlag(FLAGS_mcts_policy_temperature) << "\n";
+  PrintRootValueStats("root_p0_vs_return0", root_p0_vs_return0);
+  PrintRootValueStats("root_current_vs_return_current",
+                      root_current_vs_return_current);
+  PrintRootValueStats("root_current_vs_return0_wrong_view",
+                      root_current_vs_return0);
+  PrintRootValueStats("root_p0_vs_return_current_wrong_view",
+                      root_p0_vs_return_current);
+}
+
 std::vector<Sample> CollectPureMCTSSelfPlaySamples(
     const open_spiel::Game& game, int num_samples,
     std::shared_ptr<open_spiel::algorithms::Evaluator> evaluator,
@@ -579,7 +1014,8 @@ std::vector<Sample> CollectPureMCTSSelfPlaySamples(
           open_spiel::algorithms::ChildSelectionPolicy::UCT,
           /*dirichlet_alpha=*/0, /*dirichlet_epsilon=*/0);
       samples.push_back({state->LegalActions(), state->ObservationTensor(),
-                         target.policy, target.player0_value});
+                         target.policy, target.player0_value,
+                         state->CurrentPlayer()});
 
       Action action = open_spiel::SampleAction(target.policy, *rng).first;
       state->ApplyAction(action);
@@ -653,8 +1089,11 @@ Metrics Evaluate(Model& model, const std::vector<Sample>& samples,
         ObservationTensor(samples, one_index, flat_input_size, device);
     torch::Tensor mask = MaskTensor(samples, one_index, num_actions, device);
     torch::Tensor target = TargetTensor(samples, one_index, num_actions, device);
-    torch::Tensor policy = model->forward(obs, mask)[1].to(torch::kCPU);
+    std::vector<torch::Tensor> outputs = model->forward(obs, mask);
+    torch::Tensor value = outputs[0].to(torch::kCPU);
+    torch::Tensor policy = outputs[1].to(torch::kCPU);
     torch::Tensor target_cpu = target.to(torch::kCPU);
+    auto value_acc = value.accessor<float, 2>();
     auto policy_acc = policy.accessor<float, 2>();
     auto target_acc = target_cpu.accessor<float, 2>();
 
@@ -677,7 +1116,10 @@ Metrics Evaluate(Model& model, const std::vector<Sample>& samples,
     metrics.kl += ce - target_entropy;
     metrics.target_entropy += target_entropy;
     metrics.policy_entropy += Entropy(predicted);
-    metrics.value_mse += 0;
+    const double predicted_value = value_acc[0][0];
+    const double value_error = predicted_value - samples[i].target_value;
+    metrics.value_mse += value_error * value_error;
+    AddValueMetric(&metrics, samples[i], predicted_value);
     metrics.top1_agreement +=
         TopAction(predicted) == TopAction(samples[i].target_policy) ? 1 : 0;
   }
@@ -797,6 +1239,7 @@ Metrics EvaluateVPNet(VPNetModel* model, const std::vector<Sample>& samples) {
     metrics.target_entropy += target_entropy;
     metrics.policy_entropy += Entropy(output.policy);
     metrics.value_mse += value_error * value_error;
+    AddValueMetric(&metrics, sample, output.value);
     metrics.top1_agreement +=
         TopAction(output.policy) == TopAction(sample.target_policy) ? 1 : 0;
   }
@@ -820,10 +1263,35 @@ void PrintMetrics(int step, const Metrics& metrics) {
             << " top1=" << metrics.top1_agreement << "\n";
 }
 
+void PrintValueStats(const std::string& mode, int step,
+                     const std::string& player_label,
+                     const ValueStats& stats) {
+  if (stats.count == 0) return;
+  std::cout << "value_split mode=" << mode
+            << " step=" << step
+            << " player=" << player_label
+            << " n=" << stats.count
+            << " target_mean=" << stats.TargetMean()
+            << " pred_mean=" << stats.PredictionMean()
+            << " mse=" << stats.MSE()
+            << " sign_acc=" << stats.SignAccuracy()
+            << " corr=" << stats.Correlation() << "\n";
+}
+
+void PrintRootValueStats(const std::string& label,
+                         const SplitValueStats& stats) {
+  PrintValueStats(label, /*step=*/0, "all", stats.all);
+  PrintValueStats(label, /*step=*/0, "0", stats.by_player[0]);
+  PrintValueStats(label, /*step=*/0, "1", stats.by_player[1]);
+}
+
 void PrintModeMetrics(const std::string& mode, int step,
                       const Metrics& metrics) {
   std::cout << "mode=" << mode << " ";
   PrintMetrics(step, metrics);
+  PrintValueStats(mode, step, "all", metrics.value_all);
+  PrintValueStats(mode, step, "0", metrics.value_by_player[0]);
+  PrintValueStats(mode, step, "1", metrics.value_by_player[1]);
 }
 
 void PrintSavedModelTrainEvalMetrics(const std::string& checkpoint_base,
@@ -856,13 +1324,24 @@ int main(int argc, char** argv) {
   absl::ParseCommandLine(argc, argv);
 
   const std::string az_path = absl::GetFlag(FLAGS_az_path);
-  if (az_path.empty()) {
-    open_spiel::SpielFatalError("--az_path must be specified.");
+  const std::string teacher_mode = absl::GetFlag(FLAGS_teacher);
+  const bool needs_input_checkpoint =
+      absl::GetFlag(FLAGS_diagnose_self_play_targets) ||
+      absl::GetFlag(FLAGS_bn_calibration) || teacher_mode == "az" ||
+      absl::GetFlag(FLAGS_init_from_checkpoint);
+  if (az_path.empty() && needs_input_checkpoint) {
+    open_spiel::SpielFatalError(
+        "--az_path must be specified when loading a teacher/checkpoint.");
   }
   if (absl::GetFlag(FLAGS_samples) <= 0 ||
       absl::GetFlag(FLAGS_batch_size) <= 0 ||
-      absl::GetFlag(FLAGS_train_steps) < 0) {
-    open_spiel::SpielFatalError("samples, batch_size, and train_steps invalid.");
+      absl::GetFlag(FLAGS_train_steps) < 0 ||
+      absl::GetFlag(FLAGS_holdout_samples) < 0 ||
+      absl::GetFlag(FLAGS_diagnose_games) <= 0 ||
+      absl::GetFlag(FLAGS_diagnose_repeats) <= 0) {
+    open_spiel::SpielFatalError(
+        "samples, holdout_samples, batch_size, train_steps, diagnose_games, "
+        "or diagnose_repeats invalid.");
   }
 
   std::shared_ptr<const open_spiel::Game> game =
@@ -871,9 +1350,8 @@ int main(int argc, char** argv) {
   torch::Device device(device_name);
   std::mt19937 rng(absl::GetFlag(FLAGS_seed));
 
-  ModelConfig config = LoadModelConfig(az_path, absl::GetFlag(FLAGS_az_graph_def));
-  config.learning_rate = absl::GetFlag(FLAGS_learning_rate);
-  config.weight_decay = absl::GetFlag(FLAGS_weight_decay);
+  ModelConfig config =
+      BaseModelConfig(*game, az_path, absl::GetFlag(FLAGS_az_graph_def));
 
   if (absl::GetFlag(FLAGS_diagnose_self_play_targets)) {
     VPNetModel teacher(*game, az_path, absl::GetFlag(FLAGS_az_graph_def),
@@ -972,14 +1450,14 @@ int main(int argc, char** argv) {
     Sample sample{legal_actions,
                   state->ObservationTensor(),
                   ActionsAndProbs{{target_action, 1.0}},
-                  /*target_value=*/0.0};
+                  /*target_value=*/0.0,
+                  state->CurrentPlayer()};
     std::vector<Sample> samples{sample};
 
     const std::string student_path = absl::GetFlag(FLAGS_student_path);
     std::filesystem::create_directories(student_path);
     open_spiel::algorithms::torch_az::CreateGraphDef(
-        *game, absl::GetFlag(FLAGS_learning_rate),
-        absl::GetFlag(FLAGS_weight_decay), student_path,
+        *game, config.learning_rate, config.weight_decay, student_path,
         absl::GetFlag(FLAGS_az_graph_def), config.nn_model, config.nn_width,
         config.nn_depth);
     VPNetModel student(*game, student_path, absl::GetFlag(FLAGS_az_graph_def),
@@ -1036,49 +1514,92 @@ int main(int argc, char** argv) {
 
   std::vector<Sample> samples;
   samples.reserve(absl::GetFlag(FLAGS_samples));
-  double target_entropy = 0;
-  const std::string teacher_mode = absl::GetFlag(FLAGS_teacher);
-  if (teacher_mode == "az") {
-    VPNetModel teacher(*game, az_path, absl::GetFlag(FLAGS_az_graph_def),
-                       absl::GetFlag(FLAGS_device));
-    teacher.LoadCheckpoint(absl::GetFlag(FLAGS_az_checkpoint));
-    auto evaluator = std::make_shared<DirectVPNetEvaluator>(&teacher);
+  std::vector<Sample> holdout_samples;
+  holdout_samples.reserve(absl::GetFlag(FLAGS_holdout_samples));
 
-    std::cout << "Collecting " << absl::GetFlag(FLAGS_samples)
-              << " fixed AZ-guided MCTS policy targets...\n";
-    for (int i = 0; i < absl::GetFlag(FLAGS_samples); ++i) {
-      std::unique_ptr<State> state =
-          RandomState(*game, absl::GetFlag(FLAGS_random_decision_steps), &rng);
-      if (state->IsTerminal() || state->IsChanceNode()) {
-        --i;
-        continue;
-      }
-      VPNetModel::InferenceInputs inference_input{state->LegalActions(),
-                                                  state->ObservationTensor()};
-      double target_value = teacher.Inference({inference_input})[0].value;
-      ActionsAndProbs policy = MCTSPolicy(*game, *state, evaluator,
-                                          absl::GetFlag(FLAGS_seed) + i);
-      target_entropy += Entropy(policy);
-      samples.push_back(Sample{state->LegalActions(), state->ObservationTensor(),
-                               policy, target_value});
-    }
+  std::unique_ptr<VPNetModel> az_teacher;
+  std::shared_ptr<open_spiel::algorithms::Evaluator> teacher_evaluator;
+  if (teacher_mode == "az") {
+    az_teacher = std::make_unique<VPNetModel>(
+        *game, az_path, absl::GetFlag(FLAGS_az_graph_def),
+        absl::GetFlag(FLAGS_device));
+    az_teacher->LoadCheckpoint(absl::GetFlag(FLAGS_az_checkpoint));
+    teacher_evaluator = std::make_shared<DirectVPNetEvaluator>(az_teacher.get());
   } else if (teacher_mode == "pure_mcts") {
-    auto evaluator =
+    teacher_evaluator =
         std::make_shared<open_spiel::algorithms::RandomRolloutEvaluator>(
             absl::GetFlag(FLAGS_rollout_count), absl::GetFlag(FLAGS_seed));
-    std::cout << "Collecting " << absl::GetFlag(FLAGS_samples)
-              << " fixed pure-MCTS self-play policy targets...\n";
-    samples = CollectPureMCTSSelfPlaySamples(
-        *game, absl::GetFlag(FLAGS_samples), evaluator, &rng);
-    for (const Sample& sample : samples) {
-      target_entropy += Entropy(sample.target_policy);
-    }
   } else {
     open_spiel::SpielFatalError(
         absl::StrCat("Unknown --teacher=", teacher_mode,
                      ". Expected az or pure_mcts."));
   }
-  target_entropy /= samples.size();
+
+  if (absl::GetFlag(FLAGS_diagnose_root_value_returns)) {
+    const bool use_az_teacher = teacher_mode == "az";
+    RunRootValueReturnsDiagnosis(
+        *game, teacher_evaluator,
+        use_az_teacher ? open_spiel::algorithms::ChildSelectionPolicy::PUCT
+                       : open_spiel::algorithms::ChildSelectionPolicy::UCT,
+        use_az_teacher ? absl::GetFlag(FLAGS_policy_alpha) : 0,
+        use_az_teacher ? absl::GetFlag(FLAGS_policy_epsilon) : 0, &rng);
+    return 0;
+  }
+
+  if (absl::GetFlag(FLAGS_diagnose_mcts_stability)) {
+    const bool use_az_teacher = teacher_mode == "az";
+    RunMCTSStabilityDiagnosis(
+        *game, teacher_evaluator,
+        use_az_teacher ? open_spiel::algorithms::ChildSelectionPolicy::PUCT
+                       : open_spiel::algorithms::ChildSelectionPolicy::UCT,
+        use_az_teacher ? absl::GetFlag(FLAGS_policy_alpha) : 0,
+        use_az_teacher ? absl::GetFlag(FLAGS_policy_epsilon) : 0, &rng);
+    return 0;
+  }
+
+  auto collect_teacher_samples = [&](int sample_count,
+                                     const std::string& split_name) {
+    std::vector<Sample> collected;
+    if (sample_count == 0) return collected;
+
+    if (teacher_mode == "az") {
+      std::cout << "Collecting " << sample_count
+                << " fixed AZ-guided MCTS " << split_name
+                << " policy targets...\n";
+      collected.reserve(sample_count);
+      for (int i = 0; i < sample_count; ++i) {
+        std::unique_ptr<State> state = RandomState(
+            *game, absl::GetFlag(FLAGS_random_decision_steps), &rng);
+        if (state->IsTerminal() || state->IsChanceNode()) {
+          --i;
+          continue;
+        }
+        VPNetModel::InferenceInputs inference_input{
+            state->LegalActions(), state->ObservationTensor()};
+        double target_value =
+            az_teacher->Inference({inference_input})[0].value;
+        ActionsAndProbs policy = MCTSPolicy(
+            *game, *state, teacher_evaluator,
+            absl::GetFlag(FLAGS_seed) + static_cast<int>(collected.size()));
+        collected.push_back(Sample{state->LegalActions(),
+                                   state->ObservationTensor(), policy,
+                                   target_value, state->CurrentPlayer()});
+      }
+      return collected;
+    }
+
+    std::cout << "Collecting " << sample_count
+              << " fixed pure-MCTS self-play " << split_name
+              << " policy targets...\n";
+    return CollectPureMCTSSelfPlaySamples(*game, sample_count,
+                                          teacher_evaluator, &rng);
+  };
+
+  samples = collect_teacher_samples(absl::GetFlag(FLAGS_samples), "train");
+  holdout_samples = collect_teacher_samples(
+      absl::GetFlag(FLAGS_holdout_samples), "holdout");
+  const double target_entropy = AverageTargetEntropy(samples);
+  const double holdout_target_entropy = AverageTargetEntropy(holdout_samples);
 
   if (absl::GetFlag(FLAGS_use_vpnet_learn)) {
     const std::string student_path = absl::GetFlag(FLAGS_student_path);
@@ -1103,17 +1624,44 @@ int main(int argc, char** argv) {
     }
 
     std::cout << "samples=" << samples.size()
+              << " holdout_samples=" << holdout_samples.size()
               << " teacher=" << teacher_mode
               << " avg_target_entropy=" << target_entropy
+              << " avg_holdout_target_entropy=" << holdout_target_entropy
               << " trainer=VPNetModel::Learn"
               << " init_from_checkpoint="
               << (absl::GetFlag(FLAGS_init_from_checkpoint) ? "true"
                                                              : "false")
+              << " nn_model=" << config.nn_model
+              << " nn_width=" << config.nn_width
+              << " nn_depth=" << config.nn_depth
               << " lr=" << absl::GetFlag(FLAGS_learning_rate)
               << " weight_decay=" << absl::GetFlag(FLAGS_weight_decay)
               << " batch_size=" << absl::GetFlag(FLAGS_batch_size) << "\n";
 
-    PrintMetrics(0, EvaluateVPNet(&student, samples));
+    if (absl::GetFlag(FLAGS_save_final_checkpoint)) {
+      std::string initial_checkpoint = student.SaveCheckpoint(0);
+      std::cout << "saved_initial_checkpoint=" << initial_checkpoint << "\n";
+    }
+
+    constexpr int kBestHoldoutCheckpointStep =
+        VPNetModel::kInvalidCheckpointStep - 1;
+    PrintModeMetrics("train", 0, EvaluateVPNet(&student, samples));
+    double best_holdout_kl = std::numeric_limits<double>::infinity();
+    int best_holdout_step = -1;
+    if (!holdout_samples.empty()) {
+      Metrics holdout_metrics = EvaluateVPNet(&student, holdout_samples);
+      PrintModeMetrics("holdout", 0, holdout_metrics);
+      best_holdout_kl = holdout_metrics.kl;
+      best_holdout_step = 0;
+      if (absl::GetFlag(FLAGS_save_best_holdout_checkpoint)) {
+        std::string best_checkpoint =
+            student.SaveCheckpoint(kBestHoldoutCheckpointStep);
+        std::cout << "saved_best_holdout_checkpoint=" << best_checkpoint
+                  << " source_step=0"
+                  << " holdout_kl=" << best_holdout_kl << "\n";
+      }
+    }
     std::uniform_int_distribution<int> sample_dist(0, fixed_data.size() - 1);
     for (int step = 1; step <= absl::GetFlag(FLAGS_train_steps); ++step) {
       std::vector<VPNetModel::TrainInputs> batch;
@@ -1125,8 +1673,32 @@ int main(int argc, char** argv) {
 
       if (step % absl::GetFlag(FLAGS_report_every) == 0 ||
           step == absl::GetFlag(FLAGS_train_steps)) {
-        PrintMetrics(step, EvaluateVPNet(&student, samples));
+        PrintModeMetrics("train", step, EvaluateVPNet(&student, samples));
+        if (absl::GetFlag(FLAGS_save_checkpoint_every_report)) {
+          std::string report_checkpoint = student.SaveCheckpoint(step);
+          std::cout << "saved_report_checkpoint=" << report_checkpoint
+                    << "\n";
+        }
+        if (!holdout_samples.empty()) {
+          Metrics holdout_metrics = EvaluateVPNet(&student, holdout_samples);
+          PrintModeMetrics("holdout", step, holdout_metrics);
+          if (absl::GetFlag(FLAGS_save_best_holdout_checkpoint) &&
+              holdout_metrics.kl < best_holdout_kl) {
+            best_holdout_kl = holdout_metrics.kl;
+            best_holdout_step = step;
+            std::string best_checkpoint =
+                student.SaveCheckpoint(kBestHoldoutCheckpointStep);
+            std::cout << "saved_best_holdout_checkpoint=" << best_checkpoint
+                      << " source_step=" << best_holdout_step
+                      << " holdout_kl=" << best_holdout_kl << "\n";
+          }
+        }
       }
+    }
+    if (absl::GetFlag(FLAGS_save_final_checkpoint)) {
+      std::string final_checkpoint =
+          student.SaveCheckpoint(VPNetModel::kMostRecentCheckpointStep);
+      std::cout << "saved_final_checkpoint=" << final_checkpoint << "\n";
     }
     return 0;
   }
@@ -1146,14 +1718,22 @@ int main(int argc, char** argv) {
   const int flat_input_size = game->ObservationTensorSize();
   const int num_actions = game->NumDistinctActions();
   std::cout << "samples=" << samples.size()
+            << " holdout_samples=" << holdout_samples.size()
             << " avg_target_entropy=" << target_entropy
+            << " avg_holdout_target_entropy=" << holdout_target_entropy
             << " init_from_checkpoint="
             << (absl::GetFlag(FLAGS_init_from_checkpoint) ? "true" : "false")
             << " lr=" << absl::GetFlag(FLAGS_learning_rate)
             << " batch_size=" << absl::GetFlag(FLAGS_batch_size) << "\n";
 
-  PrintMetrics(0, Evaluate(student, samples, flat_input_size, num_actions,
-                           device, /*train_mode=*/false));
+  PrintModeMetrics("train", 0,
+                   Evaluate(student, samples, flat_input_size, num_actions,
+                            device, /*train_mode=*/false));
+  if (!holdout_samples.empty()) {
+    PrintModeMetrics("holdout", 0,
+                     Evaluate(student, holdout_samples, flat_input_size,
+                              num_actions, device, /*train_mode=*/false));
+  }
 
   std::uniform_int_distribution<int> sample_dist(0, samples.size() - 1);
   for (int step = 1; step <= absl::GetFlag(FLAGS_train_steps); ++step) {
@@ -1178,9 +1758,15 @@ int main(int argc, char** argv) {
 
     if (step % absl::GetFlag(FLAGS_report_every) == 0 ||
         step == absl::GetFlag(FLAGS_train_steps)) {
-      PrintMetrics(step, Evaluate(student, samples, flat_input_size,
+      PrintModeMetrics("train", step,
+                       Evaluate(student, samples, flat_input_size, num_actions,
+                                device, /*train_mode=*/false));
+      if (!holdout_samples.empty()) {
+        PrintModeMetrics("holdout", step,
+                         Evaluate(student, holdout_samples, flat_input_size,
                                   num_actions, device,
                                   /*train_mode=*/false));
+      }
     }
   }
 

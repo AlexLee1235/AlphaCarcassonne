@@ -592,6 +592,11 @@ bool AlphaZero(AlphaZeroConfig config, StopToken* stop, bool resuming) {
             << std::endl;
   {  // Make sure they're all in sync.
     if (!resuming) {
+      if (!config.init_checkpoint.empty()) {
+        std::cerr << "Initializing model from " << config.init_checkpoint
+                  << std::endl;
+        device_manager.Get(0)->LoadCheckpoint(config.init_checkpoint);
+      }
       device_manager.Get(0)->SaveCheckpoint(start_info.model_checkpoint_step);
     }
     for (int i = 0; i < device_manager.Count(); ++i) {

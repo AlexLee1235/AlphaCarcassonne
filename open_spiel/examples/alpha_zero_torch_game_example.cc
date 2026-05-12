@@ -62,6 +62,32 @@ uint_fast32_t Seed() {
   return seed != 0 ? seed : absl::ToUnixMicros(absl::Now());
 }
 
+class SplitEvaluator : public open_spiel::algorithms::Evaluator {
+ public:
+  SplitEvaluator(std::shared_ptr<open_spiel::algorithms::Evaluator> prior,
+                 std::shared_ptr<open_spiel::algorithms::Evaluator> value)
+      : prior_(std::move(prior)), value_(std::move(value)) {}
+
+  std::vector<double> Evaluate(const open_spiel::State& state) override {
+    return value_->Evaluate(state);
+  }
+
+  open_spiel::ActionsAndProbs Prior(
+      const open_spiel::State& state) override {
+    return prior_->Prior(state);
+  }
+
+ private:
+  std::shared_ptr<open_spiel::algorithms::Evaluator> prior_;
+  std::shared_ptr<open_spiel::algorithms::Evaluator> value_;
+};
+
+bool RequiresAZEvaluator(const std::string& type) {
+  return type == "az" || type == "az_prior_rollout_value" ||
+         type == "network_prior_rollout_value" ||
+         type == "uniform_prior_az_value";
+}
+
 std::unique_ptr<open_spiel::Bot>
 InitBot(std::string type, const open_spiel::Game &game,
         open_spiel::Player player,
@@ -74,6 +100,44 @@ InitBot(std::string type, const open_spiel::Game &game,
     }
     return std::make_unique<open_spiel::algorithms::MCTSBot>(
         game, std::move(az_evaluator), absl::GetFlag(FLAGS_uct_c),
+        absl::GetFlag(FLAGS_max_simulations),
+        absl::GetFlag(FLAGS_max_memory_mb), absl::GetFlag(FLAGS_solve), Seed(),
+        absl::GetFlag(FLAGS_verbose),
+        open_spiel::algorithms::ChildSelectionPolicy::PUCT, 0, 0,
+        /*dont_return_chance_node=*/true);
+  }
+  if (type == "puct_mcts") {
+    return std::make_unique<open_spiel::algorithms::MCTSBot>(
+        game, std::move(evaluator), absl::GetFlag(FLAGS_uct_c),
+        absl::GetFlag(FLAGS_max_simulations),
+        absl::GetFlag(FLAGS_max_memory_mb), absl::GetFlag(FLAGS_solve), Seed(),
+        absl::GetFlag(FLAGS_verbose),
+        open_spiel::algorithms::ChildSelectionPolicy::PUCT, 0, 0,
+        /*dont_return_chance_node=*/true);
+  }
+  if (type == "az_prior_rollout_value" ||
+      type == "network_prior_rollout_value") {
+    if (az_evaluator == nullptr) {
+      open_spiel::SpielFatalError("AlphaZero evaluator is not initialized.");
+    }
+    auto split_evaluator =
+        std::make_shared<SplitEvaluator>(az_evaluator, evaluator);
+    return std::make_unique<open_spiel::algorithms::MCTSBot>(
+        game, std::move(split_evaluator), absl::GetFlag(FLAGS_uct_c),
+        absl::GetFlag(FLAGS_max_simulations),
+        absl::GetFlag(FLAGS_max_memory_mb), absl::GetFlag(FLAGS_solve), Seed(),
+        absl::GetFlag(FLAGS_verbose),
+        open_spiel::algorithms::ChildSelectionPolicy::PUCT, 0, 0,
+        /*dont_return_chance_node=*/true);
+  }
+  if (type == "uniform_prior_az_value") {
+    if (az_evaluator == nullptr) {
+      open_spiel::SpielFatalError("AlphaZero evaluator is not initialized.");
+    }
+    auto split_evaluator =
+        std::make_shared<SplitEvaluator>(evaluator, az_evaluator);
+    return std::make_unique<open_spiel::algorithms::MCTSBot>(
+        game, std::move(split_evaluator), absl::GetFlag(FLAGS_uct_c),
         absl::GetFlag(FLAGS_max_simulations),
         absl::GetFlag(FLAGS_max_memory_mb), absl::GetFlag(FLAGS_solve), Seed(),
         absl::GetFlag(FLAGS_verbose),
@@ -95,7 +159,9 @@ InitBot(std::string type, const open_spiel::Game &game,
   }
 
   open_spiel::SpielFatalError(
-      "Bad player type. Known types: az, human, mcts, random");
+      "Bad player type. Known types: az, az_prior_rollout_value, "
+      "network_prior_rollout_value, uniform_prior_az_value, puct_mcts, human, "
+      "mcts, random");
 }
 
 open_spiel::Action GetAction(const open_spiel::State &state,
@@ -195,8 +261,9 @@ int main(int argc, char **argv) {
     open_spiel::SpielFatalError("Game must have terminal rewards.");
   if (game_type.dynamics != open_spiel::GameType::Dynamics::kSequential)
     open_spiel::SpielFatalError("Game must have sequential turns.");
-  const bool has_az_player = absl::GetFlag(FLAGS_player1) == "az" ||
-                             absl::GetFlag(FLAGS_player2) == "az";
+  const bool has_az_player =
+      RequiresAZEvaluator(absl::GetFlag(FLAGS_player1)) ||
+      RequiresAZEvaluator(absl::GetFlag(FLAGS_player2));
   if (has_az_player && absl::GetFlag(FLAGS_az_path).empty())
     open_spiel::SpielFatalError("AlphaZero path must be specified.");
 

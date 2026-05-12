@@ -31,6 +31,9 @@ ABSL_FLAG(std::string, path, "/tmp/az", "Where to output the logs.");
 ABSL_FLAG(std::string, graph_def, "",
           ("Where to get the graph. This could be from export_model.py, or "
            "from a checkpoint. If this is empty it'll create one."));
+ABSL_FLAG(std::string, init_checkpoint, "",
+          "Optional checkpoint basename to initialize a new run from, e.g. "
+          "/tmp/run/checkpoint--3. Do not include the .pt suffix.");
 ABSL_FLAG(std::string, nn_model, "resnet",
           "Model torso type, can be resnet or mlp.");
 ABSL_FLAG(int, nn_width, 128, "Width of the model, passed to export_model.py.");
@@ -132,6 +135,7 @@ int main(int argc, char** argv) {
     config.game = absl::GetFlag(FLAGS_game);
     config.path = absl::GetFlag(FLAGS_path);
     config.graph_def = absl::GetFlag(FLAGS_graph_def);
+    config.init_checkpoint = absl::GetFlag(FLAGS_init_checkpoint);
     config.nn_model = absl::GetFlag(FLAGS_nn_model);
     config.nn_width = absl::GetFlag(FLAGS_nn_width);
     config.nn_depth = absl::GetFlag(FLAGS_nn_depth);

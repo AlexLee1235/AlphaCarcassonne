@@ -31,6 +31,7 @@ struct AlphaZeroConfig {
   std::string game;
   std::string path;
   std::string graph_def;
+  std::string init_checkpoint;
   std::string nn_model;
   int nn_width;
   int nn_depth;
@@ -67,6 +68,7 @@ struct AlphaZeroConfig {
         {"game", game},
         {"path", path},
         {"graph_def", graph_def},
+        {"init_checkpoint", init_checkpoint},
         {"nn_model", nn_model},
         {"nn_width", nn_width},
         {"nn_depth", nn_depth},
@@ -101,6 +103,12 @@ struct AlphaZeroConfig {
     game = config_json.at("game").GetString();
     path = config_json.at("path").GetString();
     graph_def = config_json.at("graph_def").GetString();
+    const auto init_checkpoint_it = config_json.find("init_checkpoint");
+    if (init_checkpoint_it != config_json.end()) {
+      init_checkpoint = init_checkpoint_it->second.GetString();
+    } else {
+      init_checkpoint.clear();
+    }
     nn_model = config_json.at("nn_model").GetString();
     nn_width = config_json.at("nn_width").GetInt();
     nn_depth = config_json.at("nn_depth").GetInt();

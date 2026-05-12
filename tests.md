@@ -1,6 +1,6 @@
 
 
-# 4k sample 160 sim 8 roll
+# 16k sample 160 sim 8 roll
 ./build/examples/alpha_zero_torch_dataset_pretrain \
   --mode=generate \
   --game='carcassonne(max_turns=10)' \
@@ -41,6 +41,23 @@
   49:38 46:42
   ckpt 1100
 # 64x8
-  
+  50:43
+  1200
 # 64x12
+  64:43
   
+
+# 64k sample 640 sim 8 roll
+./build/examples/alpha_zero_torch_dataset_pretrain \
+  --mode=generate \
+  --game='carcassonne(max_turns=10)' \
+  --dataset=/tmp/car10_puremcts_train2.nop \
+  --holdout_dataset=/tmp/car10_puremcts_holdout2.nop \
+  --samples=65536 \
+  --holdout_samples=16384 \
+  --teacher=pure_mcts \
+  --max_simulations=640 \
+  --rollout_count=8 \
+  --mcts_policy_temperature=1 \
+  --num_workers=16 \
+  --seed=1

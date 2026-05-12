@@ -28,6 +28,7 @@
 #include <memory>
 #include <random>
 #include <string>
+#include <system_error>
 #include <utility>
 #include <vector>
 
@@ -387,23 +388,66 @@ void EnsureParentDirectory(const std::string& path) {
 void SaveDataset(const DatasetFile& dataset, const std::string& path) {
   EnsureParentDirectory(path);
   nop::Serializer<nop::StreamWriter<std::ofstream>> serializer{path};
-  serializer.Write(dataset);
+  auto status = serializer.Write(dataset);
+  if (!status) {
+    open_spiel::SpielFatalError(absl::StrCat(
+        "Failed to write dataset: ", path,
+        " error=", status.GetErrorMessage()));
+  }
 }
 
 DatasetFile LoadDataset(const std::string& path) {
+  std::error_code error;
+  const bool exists = std::filesystem::exists(path, error);
+  if (error || !exists) {
+    open_spiel::SpielFatalError(absl::StrCat(
+        "Dataset file does not exist: ", path));
+  }
+  const uintmax_t bytes = std::filesystem::file_size(path, error);
+  if (error || bytes == 0) {
+    open_spiel::SpielFatalError(absl::StrCat(
+        "Dataset file is empty or unreadable: ", path));
+  }
   DatasetFile dataset;
   nop::Deserializer<nop::StreamReader<std::ifstream>> deserializer{path};
-  deserializer.Read(&dataset);
+  auto status = deserializer.Read(&dataset);
+  if (!status) {
+    open_spiel::SpielFatalError(absl::StrCat(
+        "Failed to read dataset: ", path,
+        " error=", status.GetErrorMessage(),
+        ". Regenerate this file with --mode=generate."));
+  }
   return dataset;
 }
 
 void ValidateDataset(const DatasetFile& dataset, const open_spiel::Game& game,
                      const std::string& expected_game_string) {
-  SPIEL_CHECK_EQ(dataset.header.format_version, kFormatVersion);
-  SPIEL_CHECK_EQ(dataset.header.game_string, expected_game_string);
-  SPIEL_CHECK_EQ(dataset.header.observation_tensor_shape,
-                 game.ObservationTensorShape());
-  SPIEL_CHECK_EQ(dataset.header.num_distinct_actions, game.NumDistinctActions());
+  if (dataset.header.format_version != kFormatVersion) {
+    open_spiel::SpielFatalError(absl::StrCat(
+        "Unsupported dataset format_version=", dataset.header.format_version,
+        " expected=", kFormatVersion));
+  }
+  if (dataset.header.game_string != expected_game_string) {
+    open_spiel::SpielFatalError(absl::StrCat(
+        "Dataset game mismatch. dataset_game='", dataset.header.game_string,
+        "' requested_game='", expected_game_string,
+        "'. Use --game='", dataset.header.game_string,
+        "' or regenerate the dataset."));
+  }
+  if (dataset.header.observation_tensor_shape != game.ObservationTensorShape()) {
+    open_spiel::SpielFatalError(absl::StrCat(
+        "Dataset observation shape mismatch. dataset_shape=",
+        ShapeString(dataset.header.observation_tensor_shape),
+        " requested_shape=", ShapeString(game.ObservationTensorShape()),
+        ". Regenerate the dataset after observation-plane changes."));
+  }
+  if (dataset.header.num_distinct_actions != game.NumDistinctActions()) {
+    open_spiel::SpielFatalError(absl::StrCat(
+        "Dataset action count mismatch. dataset_actions=",
+        dataset.header.num_distinct_actions,
+        " requested_actions=", game.NumDistinctActions(),
+        ". Regenerate the dataset."));
+  }
   for (const DatasetSample& sample : dataset.samples) {
     SPIEL_CHECK_EQ(sample.observation.size(), game.ObservationTensorSize());
     SPIEL_CHECK_TRUE(sample.target_value >= -1.000001);

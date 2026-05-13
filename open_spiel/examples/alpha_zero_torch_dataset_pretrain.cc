@@ -399,20 +399,40 @@ std::vector<DatasetSample> CollectPureMCTSSelfPlaySamples(
 
   while (samples.size() < num_samples) {
     std::unique_ptr<State> state = game.NewInitialState();
-    while (!state->IsTerminal() && samples.size() < num_samples) {
+    std::vector<DatasetSample> pending_game_samples;
+    const int remaining_samples =
+        num_samples - static_cast<int>(samples.size());
+    pending_game_samples.reserve(
+        std::min<int>(game.MaxGameLength(), remaining_samples));
+
+    while (!state->IsTerminal()) {
       SampleChanceUntilDecision(state.get(), &rng);
       if (state->IsTerminal()) break;
       if (state->LegalActions().empty()) break;
 
       SearchTarget target = MCTSTarget(game, *state, evaluator, search_seed++);
-      samples.push_back({state->LegalActions(), state->ObservationTensor(),
-                         target.policy, target.player0_value,
-                         state->CurrentPlayer()});
+      if (samples.size() + pending_game_samples.size() < num_samples) {
+        pending_game_samples.push_back(
+            {state->LegalActions(), state->ObservationTensor(), target.policy,
+             /*target_value=*/0, state->CurrentPlayer()});
+      }
 
       Action action = open_spiel::SampleAction(target.policy, rng).first;
       state->ApplyAction(action);
     }
+
+    if (!state->IsTerminal()) {
+      continue;
+    }
+    const std::vector<double> returns = state->Returns();
+    SPIEL_CHECK_FALSE(returns.empty());
+    const double player0_return = returns[0];
+    for (DatasetSample& sample : pending_game_samples) {
+      sample.target_value = player0_return;
+      samples.push_back(std::move(sample));
+    }
   }
+  SPIEL_CHECK_EQ(samples.size(), num_samples);
   return samples;
 }
 

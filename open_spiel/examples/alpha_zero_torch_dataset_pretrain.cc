@@ -44,6 +44,7 @@
 #include "open_spiel/algorithms/mcts.h"
 #include "open_spiel/spiel.h"
 #include "open_spiel/spiel_utils.h"
+#include "open_spiel/utils/json.h"
 
 ABSL_FLAG(std::string, mode, "inspect", "generate, train, or inspect.");
 ABSL_FLAG(std::string, game, "carcassonne", "The game to load.");
@@ -67,6 +68,16 @@ ABSL_FLAG(int, temperature_drop, 10,
           "entries, matching alpha_zero.cc.");
 ABSL_FLAG(int, num_workers, 1, "Parallel CPU workers for generation.");
 ABSL_FLAG(uint_fast32_t, seed, 1, "Random seed.");
+ABSL_FLAG(int, inference_batch_size, 64,
+          "AZ teacher inference batch size during dataset generation.");
+ABSL_FLAG(int, inference_threads, 1,
+          "AZ teacher inference batching threads during dataset generation.");
+ABSL_FLAG(int, inference_cache, 0,
+          "AZ teacher inference cache size during dataset generation.");
+ABSL_FLAG(int, inference_cache_shards, 1,
+          "AZ teacher inference cache shards during dataset generation.");
+ABSL_FLAG(int, inference_batch_wait_ms, 2,
+          "How long an AZ teacher inference thread waits to fill a batch.");
 
 ABSL_FLAG(std::string, az_path, "", "Checkpoint source path.");
 ABSL_FLAG(std::string, az_graph_def, "vpnet.pb", "Graph definition file.");
@@ -469,6 +480,27 @@ std::vector<DatasetSample> CollectAZMCTSSelfPlaySamples(
   return samples;
 }
 
+void PrintInferenceStats(VPNetEvaluator* evaluator) {
+  open_spiel::BasicStats batch_stats = evaluator->BatchSizeStats();
+  open_spiel::LRUCacheInfo cache_info = evaluator->CacheInfo();
+  std::cout << "[az inference]\n"
+            << "  batch_size: n=" << batch_stats.Num()
+            << " avg=" << batch_stats.Avg()
+            << " min=" << batch_stats.Min()
+            << " max=" << batch_stats.Max()
+            << " std=" << batch_stats.StdDev() << "\n"
+            << "  batch_hist: "
+            << open_spiel::json::ToString(evaluator->BatchSizeHistogram().ToJson())
+            << "\n";
+  if (cache_info.max_size > 0) {
+    std::cout << "  cache: size=" << cache_info.size << "/"
+              << cache_info.max_size
+              << " hits=" << cache_info.hits
+              << " misses=" << cache_info.misses
+              << " hit_rate=" << cache_info.HitRate() << "\n";
+  }
+}
+
 DatasetHeader MakeHeader(const open_spiel::Game& game,
                          const std::string& game_string) {
   const std::string teacher = absl::GetFlag(FLAGS_teacher);
@@ -580,22 +612,33 @@ DatasetFile GenerateDataset(const std::string& game_string, int sample_count,
   futures.reserve(worker_count);
   std::shared_ptr<DeviceManager> az_device_manager;
   std::shared_ptr<open_spiel::algorithms::Evaluator> az_evaluator;
+  std::shared_ptr<VPNetEvaluator> az_vp_evaluator;
 
   if (teacher == "az") {
     const std::string az_path = absl::GetFlag(FLAGS_az_path);
     if (az_path.empty()) {
       open_spiel::SpielFatalError("--az_path is required when --teacher=az.");
     }
-    const int inference_batch_size = std::max(1, std::min(64, worker_count));
-    const int inference_threads = inference_batch_size > 1 ? 1 : 0;
+    const int inference_batch_size =
+        std::max(1, absl::GetFlag(FLAGS_inference_batch_size));
+    const int inference_threads =
+        inference_batch_size > 1
+            ? std::max(1, absl::GetFlag(FLAGS_inference_threads))
+            : 0;
+    const int inference_cache = std::max(0, absl::GetFlag(FLAGS_inference_cache));
+    const int inference_cache_shards =
+        std::max(1, absl::GetFlag(FLAGS_inference_cache_shards));
+    const int inference_batch_wait_ms =
+        std::max(0, absl::GetFlag(FLAGS_inference_batch_wait_ms));
     az_device_manager = std::make_shared<DeviceManager>();
     VPNetModel teacher_model(*game, az_path, absl::GetFlag(FLAGS_az_graph_def),
                              absl::GetFlag(FLAGS_device));
     teacher_model.LoadCheckpoint(absl::GetFlag(FLAGS_az_checkpoint));
     az_device_manager->AddDevice(std::move(teacher_model));
-    az_evaluator = std::make_shared<VPNetEvaluator>(
+    az_vp_evaluator = std::make_shared<VPNetEvaluator>(
         az_device_manager.get(), inference_batch_size, inference_threads,
-        /*cache_size=*/0);
+        inference_cache, inference_cache_shards, inference_batch_wait_ms);
+    az_evaluator = az_vp_evaluator;
 
     for (int worker = 0; worker < worker_count; ++worker) {
       const int worker_samples =
@@ -626,6 +669,9 @@ DatasetFile GenerateDataset(const std::string& game_string, int sample_count,
     dataset.samples.insert(dataset.samples.end(),
                            std::make_move_iterator(worker_samples.begin()),
                            std::make_move_iterator(worker_samples.end()));
+  }
+  if (az_vp_evaluator) {
+    PrintInferenceStats(az_vp_evaluator.get());
   }
   SPIEL_CHECK_EQ(dataset.samples.size(), sample_count);
   return dataset;
@@ -797,6 +843,18 @@ int RunGenerate() {
               << " action_temp=" << absl::GetFlag(FLAGS_temperature)
               << " temp_drop=" << absl::GetFlag(FLAGS_temperature_drop)
               << "\n";
+    std::cout << "  inference: batch_size="
+              << absl::GetFlag(FLAGS_inference_batch_size)
+              << " threads=" << absl::GetFlag(FLAGS_inference_threads)
+              << " wait_ms=" << absl::GetFlag(FLAGS_inference_batch_wait_ms)
+              << " cache=" << absl::GetFlag(FLAGS_inference_cache)
+              << " cache_shards="
+              << absl::GetFlag(FLAGS_inference_cache_shards) << "\n";
+    if (absl::GetFlag(FLAGS_num_workers) <
+        absl::GetFlag(FLAGS_inference_batch_size)) {
+      std::cout << "  note: num_workers < inference_batch_size; synchronous "
+                   "MCTS cannot consistently fill batches.\n";
+    }
   }
   if (absl::GetFlag(FLAGS_holdout_samples) > 0) {
     std::cout << "  holdout_out: " << absl::GetFlag(FLAGS_holdout_dataset)

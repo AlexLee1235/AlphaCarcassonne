@@ -26,17 +26,21 @@ namespace algorithms {
 namespace torch_az {
 
 VPNetEvaluator::VPNetEvaluator(DeviceManager* device_manager, int batch_size,
-                               int threads, int cache_size, int cache_shards)
+                               int threads, int cache_size, int cache_shards,
+                               int batch_wait_ms)
     : device_manager_(*device_manager),
       batch_size_(batch_size),
+      batch_wait_ms_(std::max(0, batch_wait_ms)),
       queue_(batch_size * threads * 4),
       batch_size_hist_(batch_size + 1) {
-  cache_shards = std::max(1, cache_shards);
-  cache_.reserve(cache_shards);
-  for (int i = 0; i < cache_shards; ++i) {
-    cache_.push_back(
-        std::make_unique<LRUCache<uint64_t, VPNetModel::InferenceOutputs>>(
-            cache_size / cache_shards));
+  if (cache_size > 0) {
+    cache_shards = std::max(1, cache_shards);
+    cache_.reserve(cache_shards);
+    for (int i = 0; i < cache_shards; ++i) {
+      cache_.push_back(
+          std::make_unique<LRUCache<uint64_t, VPNetModel::InferenceOutputs>>(
+              cache_size / cache_shards));
+    }
   }
   if (batch_size_ <= 1) {
     threads = 0;
@@ -131,7 +135,7 @@ void VPNetEvaluator::Runner() {
           break;
         }
         if (inputs.empty()) {
-          deadline = absl::Now() + absl::Milliseconds(1);
+          deadline = absl::Now() + absl::Milliseconds(batch_wait_ms_);
         }
         inputs.push_back(item->inputs);
         promises.push_back(item->prom);

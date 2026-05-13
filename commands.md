@@ -48,5 +48,22 @@
 
 
 
-
-
+./build/examples/alpha_zero_torch_dataset_pretrain \
+  --mode=generate \
+  --teacher=az \
+  --game='carcassonne(max_turns=10)' \
+  --az_path=/tmp/az10_pure_mcts_pretrain_from_file_v2_64x8 \
+  --az_checkpoint=-3 \
+  --device=/cuda:0 \
+  --dataset=$PWD/datasets/car10_azmcts_train.nop \
+  --holdout_dataset=$PWD/datasets/car10_azmcts_holdout.nop \
+  --samples=65536 \
+  --holdout_samples=16384 \
+  --max_simulations=640 \
+  --mcts_policy_temperature=1 \
+  --policy_alpha=1 \
+  --policy_epsilon=0.25 \
+  --temperature=1 \
+  --temperature_drop=10 \
+  --num_workers=16 \
+  --seed=1

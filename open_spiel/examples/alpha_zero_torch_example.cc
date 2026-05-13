@@ -60,6 +60,8 @@ ABSL_FLAG(double, replay_buffer_reuse, 3,
           "How many times to reuse each state in the replay buffer.");
 ABSL_FLAG(int, checkpoint_freq, 100, "Save a checkpoint every N steps.");
 ABSL_FLAG(int, max_simulations, 300, "How many simulations to run.");
+ABSL_FLAG(int, max_memory_mb, 1000,
+          "The maximum memory used before cutting the search short.");
 ABSL_FLAG(int, train_batch_size, 1 << 10,
           "How many states to learn from per batch.");
 ABSL_FLAG(int, inference_batch_size, 1,
@@ -152,6 +154,7 @@ int main(int argc, char** argv) {
     config.evaluation_window = absl::GetFlag(FLAGS_evaluation_window);
     config.uct_c = absl::GetFlag(FLAGS_uct_c);
     config.max_simulations = absl::GetFlag(FLAGS_max_simulations);
+    config.max_memory_mb = absl::GetFlag(FLAGS_max_memory_mb);
     config.train_batch_size = absl::GetFlag(FLAGS_train_batch_size);
     config.inference_batch_size = absl::GetFlag(FLAGS_inference_batch_size);
     config.inference_threads = absl::GetFlag(FLAGS_inference_threads);

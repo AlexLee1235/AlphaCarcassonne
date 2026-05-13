@@ -95,6 +95,12 @@ ABSL_FLAG(double, weight_decay, 0.0001, "Student weight decay.");
 ABSL_FLAG(double, policy_loss_weight, 1.0, "Policy loss multiplier.");
 ABSL_FLAG(double, value_loss_weight, 1.0, "Value loss multiplier.");
 ABSL_FLAG(double, l2_loss_weight, 1.0, "L2 loss multiplier.");
+ABSL_FLAG(std::string, value_target, "search",
+          "Value target source: terminal or search. search re-runs MCTS on "
+          "each sampled state without root Dirichlet noise.");
+ABSL_FLAG(int, value_search_simulations, 0,
+          "MCTS simulations for search value targets. 0 uses "
+          "--max_simulations.");
 ABSL_FLAG(bool, value_is_current_player, false,
           "Train/load value as current-player value instead of player0 value.");
 ABSL_FLAG(std::string, device, "/cpu:0", "Torch device, e.g. /cuda:0.");
@@ -336,6 +342,27 @@ Action TopAction(const ActionsAndProbs& policy) {
       ->first;
 }
 
+bool UseSearchValueTargets() {
+  const std::string value_target = absl::GetFlag(FLAGS_value_target);
+  if (value_target == "search") return true;
+  if (value_target == "terminal") return false;
+  open_spiel::SpielFatalError(absl::StrCat(
+      "Unknown --value_target=", value_target,
+      ". Expected terminal or search."));
+  return false;
+}
+
+int ValueSearchSimulations() {
+  const int simulations = absl::GetFlag(FLAGS_value_search_simulations);
+  return simulations > 0 ? simulations : absl::GetFlag(FLAGS_max_simulations);
+}
+
+double ValueTargetFromSearch(const SearchTarget& target) {
+  return absl::GetFlag(FLAGS_value_is_current_player)
+             ? target.current_player_value
+             : target.player0_value;
+}
+
 void AddValueMetric(Metrics* metrics, const DatasetSample& sample,
                     double prediction) {
   metrics->value_all.Add(prediction, sample.target_value);
@@ -383,10 +410,11 @@ SearchTarget MCTSTarget(
     const std::shared_ptr<open_spiel::algorithms::Evaluator>& evaluator,
     int seed,
     open_spiel::algorithms::ChildSelectionPolicy child_selection_policy,
-    double dirichlet_alpha, double dirichlet_epsilon) {
+    double dirichlet_alpha, double dirichlet_epsilon,
+    int max_simulations) {
   open_spiel::algorithms::MCTSBot bot(
       game, evaluator, absl::GetFlag(FLAGS_uct_c),
-      absl::GetFlag(FLAGS_max_simulations),
+      max_simulations,
       /*max_memory_mb=*/1000,
       /*solve=*/false, seed,
       /*verbose=*/false, child_selection_policy,
@@ -409,7 +437,8 @@ SearchTarget MCTSTarget(
     int seed) {
   return MCTSTarget(game, state, evaluator, seed,
                     open_spiel::algorithms::ChildSelectionPolicy::UCT,
-                    /*dirichlet_alpha=*/0, /*dirichlet_epsilon=*/0);
+                    /*dirichlet_alpha=*/0, /*dirichlet_epsilon=*/0,
+                    absl::GetFlag(FLAGS_max_simulations));
 }
 
 std::vector<DatasetSample> CollectPureMCTSSelfPlaySamples(
@@ -419,29 +448,69 @@ std::vector<DatasetSample> CollectPureMCTSSelfPlaySamples(
   samples.reserve(num_samples);
   std::mt19937 rng(seed + 1000003 * worker_id);
   int search_seed = static_cast<int>(seed + 2000003 * worker_id + 1);
+  int value_search_seed = static_cast<int>(seed + 4000037 * worker_id + 1);
+  const bool use_search_value_targets = UseSearchValueTargets();
   auto evaluator = std::make_shared<open_spiel::algorithms::RandomRolloutEvaluator>(
       absl::GetFlag(FLAGS_rollout_count),
       static_cast<int>(seed + 3000017 * worker_id + 1));
 
   while (samples.size() < num_samples) {
     std::unique_ptr<State> state = game.NewInitialState();
-    while (!state->IsTerminal() && samples.size() < num_samples) {
-      SampleChanceUntilDecision(state.get(), &rng);
-      if (state->IsTerminal()) break;
+    std::vector<DatasetSample> pending_game_samples;
+    const int remaining_samples =
+        num_samples - static_cast<int>(samples.size());
+    pending_game_samples.reserve(
+        std::min<int>(game.MaxGameLength(), remaining_samples));
+
+    while (!state->IsTerminal()) {
+      if (state->IsChanceNode()) {
+        Action action =
+            open_spiel::SampleAction(state->ChanceOutcomes(), rng).first;
+        state->ApplyAction(action);
+        continue;
+      }
       if (state->LegalActions().empty()) break;
 
       SearchTarget target = MCTSTarget(game, *state, evaluator, search_seed++);
-      const double target_value =
-          absl::GetFlag(FLAGS_value_is_current_player)
-              ? target.current_player_value
-              : target.player0_value;
-      samples.push_back({state->LegalActions(), state->ObservationTensor(),
-                         target.policy, target_value, state->CurrentPlayer()});
+      if (samples.size() + pending_game_samples.size() < num_samples) {
+        double target_value = 0;
+        if (use_search_value_targets) {
+          SearchTarget value_target = MCTSTarget(
+              game, *state, evaluator, value_search_seed++,
+              open_spiel::algorithms::ChildSelectionPolicy::UCT,
+              /*dirichlet_alpha=*/0, /*dirichlet_epsilon=*/0,
+              ValueSearchSimulations());
+          target_value = ValueTargetFromSearch(value_target);
+        }
+        pending_game_samples.push_back(
+            {state->LegalActions(), state->ObservationTensor(), target.policy,
+             target_value, state->CurrentPlayer()});
+      }
 
       Action action = open_spiel::SampleAction(target.policy, rng).first;
       state->ApplyAction(action);
     }
+
+    if (!state->IsTerminal()) {
+      continue;
+    }
+    const std::vector<double> returns = state->Returns();
+    SPIEL_CHECK_FALSE(returns.empty());
+    const double player0_return = returns[0];
+    for (DatasetSample& sample : pending_game_samples) {
+      if (!use_search_value_targets) {
+        if (absl::GetFlag(FLAGS_value_is_current_player)) {
+          SPIEL_CHECK_GE(sample.current_player, 0);
+          SPIEL_CHECK_LT(sample.current_player, returns.size());
+          sample.target_value = returns[sample.current_player];
+        } else {
+          sample.target_value = player0_return;
+        }
+      }
+      samples.push_back(std::move(sample));
+    }
   }
+  SPIEL_CHECK_EQ(samples.size(), num_samples);
   return samples;
 }
 
@@ -453,6 +522,8 @@ std::vector<DatasetSample> CollectAZMCTSSelfPlaySamples(
   samples.reserve(num_samples);
   std::mt19937 rng(seed + 1000003 * worker_id);
   int search_seed = static_cast<int>(seed + 2000003 * worker_id + 1);
+  int value_search_seed = static_cast<int>(seed + 4000037 * worker_id + 1);
+  const bool use_search_value_targets = UseSearchValueTargets();
 
   while (samples.size() < num_samples) {
     std::unique_ptr<State> state = game.NewInitialState();
@@ -477,12 +548,22 @@ std::vector<DatasetSample> CollectAZMCTSSelfPlaySamples(
           game, *state, evaluator, search_seed++,
           open_spiel::algorithms::ChildSelectionPolicy::PUCT,
           absl::GetFlag(FLAGS_policy_alpha),
-          absl::GetFlag(FLAGS_policy_epsilon));
+          absl::GetFlag(FLAGS_policy_epsilon),
+          absl::GetFlag(FLAGS_max_simulations));
 
       if (samples.size() + pending_game_samples.size() < num_samples) {
+        double target_value = 0;
+        if (use_search_value_targets) {
+          SearchTarget value_target = MCTSTarget(
+              game, *state, evaluator, value_search_seed++,
+              open_spiel::algorithms::ChildSelectionPolicy::PUCT,
+              /*dirichlet_alpha=*/0, /*dirichlet_epsilon=*/0,
+              ValueSearchSimulations());
+          target_value = ValueTargetFromSearch(value_target);
+        }
         pending_game_samples.push_back(
             {state->LegalActions(), state->ObservationTensor(), target.policy,
-             /*target_value=*/0, state->CurrentPlayer()});
+             target_value, state->CurrentPlayer()});
       }
 
       Action action = target.best_action;
@@ -501,12 +582,14 @@ std::vector<DatasetSample> CollectAZMCTSSelfPlaySamples(
     SPIEL_CHECK_FALSE(returns.empty());
     const double player0_return = returns[0];
     for (DatasetSample& sample : pending_game_samples) {
-      if (absl::GetFlag(FLAGS_value_is_current_player)) {
-        SPIEL_CHECK_GE(sample.current_player, 0);
-        SPIEL_CHECK_LT(sample.current_player, returns.size());
-        sample.target_value = returns[sample.current_player];
-      } else {
-        sample.target_value = player0_return;
+      if (!use_search_value_targets) {
+        if (absl::GetFlag(FLAGS_value_is_current_player)) {
+          SPIEL_CHECK_GE(sample.current_player, 0);
+          SPIEL_CHECK_LT(sample.current_player, returns.size());
+          sample.target_value = returns[sample.current_player];
+        } else {
+          sample.target_value = player0_return;
+        }
       }
       samples.push_back(std::move(sample));
     }
@@ -880,6 +963,11 @@ int RunGenerate() {
             << " rollouts="
             << (teacher == "az" ? 0 : absl::GetFlag(FLAGS_rollout_count))
             << " temp=" << absl::GetFlag(FLAGS_mcts_policy_temperature)
+            << " value_target=" << absl::GetFlag(FLAGS_value_target)
+            << " value_search_sim="
+            << (absl::GetFlag(FLAGS_value_search_simulations) > 0
+                    ? absl::GetFlag(FLAGS_value_search_simulations)
+                    : absl::GetFlag(FLAGS_max_simulations))
             << " value_is_current_player="
             << (absl::GetFlag(FLAGS_value_is_current_player) ? "true" : "false")
             << "\n"

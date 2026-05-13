@@ -42,7 +42,7 @@
 ./build/examples/alpha_zero_torch_example \
   --game='carcassonne(max_turns=10)' \
   --path=/tmp/az10_cpvalue_selfplay_64x8 \
-  --init_checkpoint=/tmp/az10_cpvalue_puremcts_64x8/checkpoint--1 \
+  --init_checkpoint=/tmp/az10_cpvalue_puremcts_64x8/checkpoint-2000 \
   --nn_model=resnet \
   --nn_width=64 \
   --nn_depth=8 \
@@ -60,8 +60,8 @@
   --temperature_drop=10 \
   --value_is_current_player=true \
   --devices=/cuda:0 \
-  --checkpoint_freq=100 \
-  --max_steps=4000
+  --checkpoint_freq=5 \
+  --max_steps=40
 
 # 4) evaluate only with the matching current-player value evaluator
 ./build/examples/alpha_zero_torch_game_example \
@@ -309,7 +309,7 @@
   --az_checkpoint=-1 \
    --train_steps=4000   --batch_size=512   --learning_rate=0.001   --weight_decay=0.0001   --device=/cuda:0   --report_every=100   --save_final_checkpoint=true   --save_best_holdout_checkpoint=true   --save_checkpoint_every_report=true
 
-"一整個 906 action softmax"???????? 我的設計應該是兩個phase要推理兩次 幹你前面都在亂寫 我真的要昏倒了 現在是什麼情況?
+
   # log
   generate low noise data from az10_pure_mcts_pretrain_from_file_v2_64x8
   --policy_alpha=0.3   --policy_epsilon=0

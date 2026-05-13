@@ -51,6 +51,7 @@ struct AlphaZeroConfig {
 
   double uct_c;
   int max_simulations;
+  int max_memory_mb;
   double policy_alpha;
   double policy_epsilon;
   double temperature;
@@ -87,6 +88,7 @@ struct AlphaZeroConfig {
         {"evaluation_window", evaluation_window},
         {"uct_c", uct_c},
         {"max_simulations", max_simulations},
+        {"max_memory_mb", max_memory_mb},
         {"policy_alpha", policy_alpha},
         {"policy_epsilon", policy_epsilon},
         {"temperature", temperature},
@@ -128,6 +130,10 @@ struct AlphaZeroConfig {
     evaluation_window = config_json.at("evaluation_window").GetInt();
     uct_c = config_json.at("uct_c").GetDouble();
     max_simulations = config_json.at("max_simulations").GetInt();
+    const auto max_memory_mb_it = config_json.find("max_memory_mb");
+    max_memory_mb = max_memory_mb_it == config_json.end()
+                        ? 1000
+                        : max_memory_mb_it->second.GetInt();
     policy_alpha = config_json.at("policy_alpha").GetDouble();
     policy_epsilon = config_json.at("policy_epsilon").GetDouble();
     temperature = config_json.at("temperature").GetDouble();

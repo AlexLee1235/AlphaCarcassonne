@@ -169,16 +169,24 @@ Trajectory PlayGame(Logger* logger, int game_num, const open_spiel::Game& game,
 std::unique_ptr<MCTSBot> InitAZBot(const AlphaZeroConfig& config,
                                    const open_spiel::Game& game,
                                    std::shared_ptr<Evaluator> evaluator,
-                                   bool evaluation) {
+                                   bool evaluation, int seed) {
   return std::make_unique<MCTSBot>(
       game, std::move(evaluator), config.uct_c, config.max_simulations,
-      /*max_memory_mb=*/10,
+      config.max_memory_mb,
       /*solve=*/false,
-      /*seed=*/0,
+      seed,
       /*verbose=*/false, ChildSelectionPolicy::PUCT,
       evaluation ? 0 : config.policy_alpha,
       evaluation ? 0 : config.policy_epsilon,
       /*dont_return_chance_node*/ true);
+}
+
+int SearchSeed(int worker, int game_num, int player) {
+  uint64_t seed = static_cast<uint64_t>(absl::ToUnixNanos(absl::Now()));
+  seed ^= static_cast<uint64_t>(worker + 1) * 0x9e3779b97f4a7c15ull;
+  seed ^= static_cast<uint64_t>(game_num + 1) * 0xbf58476d1ce4e5b9ull;
+  seed ^= static_cast<uint64_t>(player + 1) * 0x94d049bb133111ebull;
+  return static_cast<int>(seed & 0x7fffffff);
 }
 
 // An actor thread runner that generates games and returns trajectories.
@@ -193,12 +201,13 @@ void actor(const open_spiel::Game& game, const AlphaZeroConfig& config, int num,
   }
   std::mt19937 rng(absl::ToUnixNanos(absl::Now()));
   absl::uniform_real_distribution<double> dist(0.0, 1.0);
-  std::vector<std::unique_ptr<MCTSBot>> bots;
-  bots.reserve(2);
-  for (int player = 0; player < 2; player++) {
-    bots.push_back(InitAZBot(config, game, vp_eval, false));
-  }
   for (int game_num = 1; !stop->StopRequested(); ++game_num) {
+    std::vector<std::unique_ptr<MCTSBot>> bots;
+    bots.reserve(2);
+    for (int player = 0; player < 2; player++) {
+      bots.push_back(InitAZBot(config, game, vp_eval, false,
+                               SearchSeed(num, game_num, player)));
+    }
     double cutoff =
         (dist(rng) < config.cutoff_probability ? config.cutoff_value
                                                : game.MaxUtility() + 1);
@@ -273,7 +282,8 @@ void evaluator(const open_spiel::Game& game, const AlphaZeroConfig& config,
         config.max_simulations * std::pow(10, difficulty / 2.0);
     std::vector<std::unique_ptr<MCTSBot>> bots;
     bots.reserve(2);
-    bots.push_back(InitAZBot(config, game, vp_eval, true));
+    bots.push_back(InitAZBot(config, game, vp_eval, true,
+                             SearchSeed(num, game_num, az_player)));
     bots.push_back(std::make_unique<MCTSBot>(
         game, rand_evaluator, config.uct_c, rand_max_simulations,
         /*max_memory_mb=*/1000,

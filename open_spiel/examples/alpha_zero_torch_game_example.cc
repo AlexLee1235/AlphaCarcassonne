@@ -191,7 +191,9 @@ std::unique_ptr<open_spiel::Bot> InitBot(std::string type, const open_spiel::Gam
     if (type == "mcts") {
         return std::make_unique<open_spiel::algorithms::MCTSBot>(
             game, std::move(evaluator), absl::GetFlag(FLAGS_uct_c), absl::GetFlag(FLAGS_max_simulations),
-            absl::GetFlag(FLAGS_max_memory_mb), absl::GetFlag(FLAGS_solve), seed, absl::GetFlag(FLAGS_verbose));
+            absl::GetFlag(FLAGS_max_memory_mb), absl::GetFlag(FLAGS_solve), seed, absl::GetFlag(FLAGS_verbose),
+            open_spiel::algorithms::ChildSelectionPolicy::UCT, 0, 0,
+            /*dont_return_chance_node=*/true);
     }
     if (type == "random") {
         return open_spiel::MakeUniformRandomBot(player, seed);

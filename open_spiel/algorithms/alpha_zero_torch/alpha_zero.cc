@@ -364,9 +364,13 @@ void learner(const open_spiel::Game& game, const AlphaZeroConfig& config,
         outcomes.Add(p1_outcome > 0 ? 0 : (p1_outcome < 0 ? 1 : 2));
 
         for (const Trajectory::State& state : trajectory->states) {
+          const double value_target =
+              config.value_is_current_player
+                  ? trajectory->returns[state.current_player]
+                  : p1_outcome;
           replay_buffer.Add(VPNetModel::TrainInputs{state.legal_actions,
                                                     state.observation,
-                                                    state.policy, p1_outcome});
+                                                    state.policy, value_target});
           num_states += 1;
         }
 
@@ -607,7 +611,8 @@ bool AlphaZero(AlphaZeroConfig config, StopToken* stop, bool resuming) {
 
   auto eval = std::make_shared<VPNetEvaluator>(
       &device_manager, config.inference_batch_size, config.inference_threads,
-      config.inference_cache, (config.actors + config.evaluators) / 16);
+      config.inference_cache, (config.actors + config.evaluators) / 16,
+      /*batch_wait_ms=*/1, config.value_is_current_player);
 
   ThreadedQueue<Trajectory> trajectory_queue(config.replay_buffer_size /
                                              config.replay_buffer_reuse);

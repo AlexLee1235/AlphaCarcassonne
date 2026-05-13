@@ -95,6 +95,8 @@ ABSL_FLAG(double, weight_decay, 0.0001, "Student weight decay.");
 ABSL_FLAG(double, policy_loss_weight, 1.0, "Policy loss multiplier.");
 ABSL_FLAG(double, value_loss_weight, 1.0, "Value loss multiplier.");
 ABSL_FLAG(double, l2_loss_weight, 1.0, "L2 loss multiplier.");
+ABSL_FLAG(bool, value_is_current_player, false,
+          "Train/load value as current-player value instead of player0 value.");
 ABSL_FLAG(std::string, device, "/cpu:0", "Torch device, e.g. /cuda:0.");
 ABSL_FLAG(int, batch_size, 64, "Training batch size.");
 ABSL_FLAG(int, train_steps, 500, "Gradient steps.");
@@ -165,6 +167,7 @@ struct SearchTarget {
   ActionsAndProbs policy;
   ActionsAndProbs action_policy;
   double player0_value = 0;
+  double current_player_value = 0;
   Action best_action = open_spiel::kInvalidAction;
 };
 
@@ -397,7 +400,7 @@ SearchTarget MCTSTarget(
       state.CurrentPlayer() == 0 ? root_value : -root_value;
   return {VisitCountPolicy(*root, absl::GetFlag(FLAGS_mcts_policy_temperature)),
           VisitCountPolicy(*root, absl::GetFlag(FLAGS_temperature)),
-          player0_value, root->BestChild().action};
+          player0_value, root_value, root->BestChild().action};
 }
 
 SearchTarget MCTSTarget(
@@ -428,9 +431,12 @@ std::vector<DatasetSample> CollectPureMCTSSelfPlaySamples(
       if (state->LegalActions().empty()) break;
 
       SearchTarget target = MCTSTarget(game, *state, evaluator, search_seed++);
+      const double target_value =
+          absl::GetFlag(FLAGS_value_is_current_player)
+              ? target.current_player_value
+              : target.player0_value;
       samples.push_back({state->LegalActions(), state->ObservationTensor(),
-                         target.policy, target.player0_value,
-                         state->CurrentPlayer()});
+                         target.policy, target_value, state->CurrentPlayer()});
 
       Action action = open_spiel::SampleAction(target.policy, rng).first;
       state->ApplyAction(action);
@@ -495,7 +501,13 @@ std::vector<DatasetSample> CollectAZMCTSSelfPlaySamples(
     SPIEL_CHECK_FALSE(returns.empty());
     const double player0_return = returns[0];
     for (DatasetSample& sample : pending_game_samples) {
-      sample.target_value = player0_return;
+      if (absl::GetFlag(FLAGS_value_is_current_player)) {
+        SPIEL_CHECK_GE(sample.current_player, 0);
+        SPIEL_CHECK_LT(sample.current_player, returns.size());
+        sample.target_value = returns[sample.current_player];
+      } else {
+        sample.target_value = player0_return;
+      }
       samples.push_back(std::move(sample));
     }
   }
@@ -664,7 +676,8 @@ DatasetFile GenerateDataset(const std::string& game_string, int sample_count,
     az_device_manager->AddDevice(std::move(teacher_model));
     az_vp_evaluator = std::make_shared<VPNetEvaluator>(
         az_device_manager.get(), inference_batch_size, inference_threads,
-        inference_cache, inference_cache_shards, inference_batch_wait_ms);
+        inference_cache, inference_cache_shards, inference_batch_wait_ms,
+        absl::GetFlag(FLAGS_value_is_current_player));
     az_evaluator = az_vp_evaluator;
 
     for (int worker = 0; worker < worker_count; ++worker) {
@@ -867,6 +880,8 @@ int RunGenerate() {
             << " rollouts="
             << (teacher == "az" ? 0 : absl::GetFlag(FLAGS_rollout_count))
             << " temp=" << absl::GetFlag(FLAGS_mcts_policy_temperature)
+            << " value_is_current_player="
+            << (absl::GetFlag(FLAGS_value_is_current_player) ? "true" : "false")
             << "\n"
             << "  workers: " << absl::GetFlag(FLAGS_num_workers)
             << "\n"
@@ -1008,7 +1023,10 @@ int RunTrain() {
             << " loss_weights(policy,value,l2)="
             << absl::GetFlag(FLAGS_policy_loss_weight) << ","
             << absl::GetFlag(FLAGS_value_loss_weight) << ","
-            << absl::GetFlag(FLAGS_l2_loss_weight) << "\n"
+            << absl::GetFlag(FLAGS_l2_loss_weight)
+            << " value_is_current_player="
+            << (absl::GetFlag(FLAGS_value_is_current_player) ? "true" : "false")
+            << "\n"
             << "  device: " << absl::GetFlag(FLAGS_device) << "\n";
 
   if (absl::GetFlag(FLAGS_save_final_checkpoint)) {

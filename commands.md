@@ -1,3 +1,82 @@
+# current-player value fix
+
+# 1) regenerate data with value targets matching current-player observations
+./build/examples/alpha_zero_torch_dataset_pretrain \
+  --mode=generate \
+  --game='carcassonne(max_turns=10)' \
+  --dataset=/tmp/car10_puremcts_train_cpvalue.nop \
+  --holdout_dataset=/tmp/car10_puremcts_holdout_cpvalue.nop \
+  --samples=131072 \
+  --holdout_samples=32768 \
+  --teacher=pure_mcts \
+  --max_simulations=1600 \
+  --rollout_count=8 \
+  --mcts_policy_temperature=0.5 \
+  --value_is_current_player=true \
+  --num_workers=16 \
+  --seed=11
+
+# 2) supervised warm start with the same current-player value semantics
+./build/examples/alpha_zero_torch_dataset_pretrain \
+  --mode=train \
+  --game='carcassonne(max_turns=10)' \
+  --dataset=/tmp/car10_puremcts_train_cpvalue.nop \
+  --holdout_dataset=/tmp/car10_puremcts_holdout_cpvalue.nop \
+  --student_path=/tmp/az10_cpvalue_puremcts_64x8 \
+  --init_from_checkpoint=false \
+  --nn_model=resnet \
+  --nn_width=64 \
+  --nn_depth=8 \
+  --train_steps=8000 \
+  --batch_size=512 \
+  --learning_rate=0.001 \
+  --weight_decay=0.0001 \
+  --value_is_current_player=true \
+  --device=/cuda:0 \
+  --report_every=100 \
+  --save_final_checkpoint=true \
+  --save_best_holdout_checkpoint=true \
+  --save_checkpoint_every_report=true
+
+# 3) real training: AlphaZero self-play from the warm start, same value semantics
+./build/examples/alpha_zero_torch_example \
+  --game='carcassonne(max_turns=10)' \
+  --path=/tmp/az10_cpvalue_selfplay_64x8 \
+  --init_checkpoint=/tmp/az10_cpvalue_puremcts_64x8/checkpoint--1 \
+  --nn_model=resnet \
+  --nn_width=64 \
+  --nn_depth=8 \
+  --learning_rate=0.0001 \
+  --weight_decay=0.0001 \
+  --max_simulations=160 \
+  --actors=16 \
+  --evaluators=2 \
+  --train_batch_size=512 \
+  --replay_buffer_size=65536 \
+  --replay_buffer_reuse=3 \
+  --policy_alpha=0.15 \
+  --policy_epsilon=0.25 \
+  --temperature=1 \
+  --temperature_drop=10 \
+  --value_is_current_player=true \
+  --devices=/cuda:0 \
+  --checkpoint_freq=100 \
+  --max_steps=4000
+
+# 4) evaluate only with the matching current-player value evaluator
+./build/examples/alpha_zero_torch_game_example \
+  --game='carcassonne(max_turns=10)' \
+  --player1=az \
+  --player2=mcts \
+  --az_path=/tmp/az10_cpvalue_selfplay_64x8 \
+  --az_checkpoint=-1 \
+  --az_device=/cuda:0 \
+  --az_value_is_current_player=true \
+  --max_simulations=160 \
+  --num_games=100 \
+  --num_workers=8 \
+  --quiet=true
+
 # v8: pure-MCTS policy prior -> prior-guided rollout teacher -> final model
 
 # 1) clean pure MCTS policy labels; do not reuse terminal-return datasets
@@ -149,6 +228,7 @@
   --max_simulations=160 \
   --num_games=100 \
   --quiet=true
+  --num_workers=16
 
 
 # gen model dataset

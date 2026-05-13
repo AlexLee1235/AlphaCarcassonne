@@ -27,10 +27,12 @@ namespace torch_az {
 
 VPNetEvaluator::VPNetEvaluator(DeviceManager* device_manager, int batch_size,
                                int threads, int cache_size, int cache_shards,
-                               int batch_wait_ms)
+                               int batch_wait_ms,
+                               bool value_is_current_player)
     : device_manager_(*device_manager),
       batch_size_(batch_size),
       batch_wait_ms_(std::max(0, batch_wait_ms)),
+      value_is_current_player_(value_is_current_player),
       queue_(batch_size * threads * 4),
       batch_size_hist_(batch_size + 1) {
   if (cache_size > 0) {
@@ -76,8 +78,14 @@ LRUCacheInfo VPNetEvaluator::CacheInfo() {
 
 std::vector<double> VPNetEvaluator::Evaluate(const State& state) {
   // TODO(author5): currently assumes zero-sum.
-  double p0value = Inference(state).value;
-  return {p0value, -p0value};
+  const double value = Inference(state).value;
+  if (!value_is_current_player_) {
+    return {value, -value};
+  }
+  const Player player = state.CurrentPlayer();
+  if (player == 0) return {value, -value};
+  if (player == 1) return {-value, value};
+  return {value, -value};
 }
 
 open_spiel::ActionsAndProbs VPNetEvaluator::Prior(const State& state) {

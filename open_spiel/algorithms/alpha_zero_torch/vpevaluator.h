@@ -36,7 +36,8 @@ class VPNetEvaluator : public Evaluator {
  public:
   explicit VPNetEvaluator(DeviceManager* device_manager, int batch_size,
                           int threads, int cache_size, int cache_shards = 1,
-                          int batch_wait_ms = 1);
+                          int batch_wait_ms = 1,
+                          bool value_is_current_player = false);
   ~VPNetEvaluator() override;
 
   // Return a value of this state for each player.
@@ -62,6 +63,7 @@ class VPNetEvaluator : public Evaluator {
       cache_;
   const int batch_size_;
   const int batch_wait_ms_;
+  const bool value_is_current_player_;
 
   struct QueueItem {
     VPNetModel::InferenceInputs inputs;

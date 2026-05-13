@@ -57,6 +57,8 @@ ABSL_FLAG(int, az_cache_size, 16384, "Cache size of AZ algorithm.");
 ABSL_FLAG(int, az_cache_shards, 1, "Cache shards of AZ algorithm.");
 ABSL_FLAG(std::string, az_device, "/cpu:0", "Torch device for the AZ model, e.g. /cpu:0, cpu, cuda:0.");
 ABSL_FLAG(std::string, az2_device, "", "Optional player2 AZ device. Falls back to --az_device.");
+ABSL_FLAG(bool, az_value_is_current_player, false,
+          "Interpret AZ value output as current-player value.");
 ABSL_FLAG(bool, solve, true, "Whether to use MCTS-Solver.");
 ABSL_FLAG(uint_fast32_t, seed, 0, "Seed for MCTS.");
 ABSL_FLAG(bool, verbose, false, "Show the MCTS stats of possible moves.");
@@ -133,7 +135,9 @@ InitAZEvaluator(const open_spiel::Game &game, const AZSpec &spec,
                                                                            /*batch_size=*/absl::GetFlag(FLAGS_az_batch_size),
                                                                            /*threads=*/absl::GetFlag(FLAGS_az_threads),
                                                                            /*cache_size=*/absl::GetFlag(FLAGS_az_cache_size),
-                                                                           /*cache_shards=*/absl::GetFlag(FLAGS_az_cache_shards));
+                                                                           /*cache_shards=*/absl::GetFlag(FLAGS_az_cache_shards),
+                                                                           /*batch_wait_ms=*/1,
+                                                                           absl::GetFlag(FLAGS_az_value_is_current_player));
     device_managers->push_back(std::move(device_manager));
     return evaluator;
 }

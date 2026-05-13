@@ -57,6 +57,7 @@ struct AlphaZeroConfig {
   double temperature_drop;
   double cutoff_probability;
   double cutoff_value;
+  bool value_is_current_player;
 
   int actors;
   int evaluators;
@@ -92,6 +93,7 @@ struct AlphaZeroConfig {
         {"temperature_drop", temperature_drop},
         {"cutoff_probability", cutoff_probability},
         {"cutoff_value", cutoff_value},
+        {"value_is_current_player", value_is_current_player},
         {"actors", actors},
         {"evaluators", evaluators},
         {"eval_levels", eval_levels},
@@ -132,6 +134,11 @@ struct AlphaZeroConfig {
     temperature_drop = config_json.at("temperature_drop").GetDouble();
     cutoff_probability = config_json.at("cutoff_probability").GetDouble();
     cutoff_value = config_json.at("cutoff_value").GetDouble();
+    const auto value_is_current_player_it =
+        config_json.find("value_is_current_player");
+    value_is_current_player =
+        value_is_current_player_it != config_json.end() &&
+        value_is_current_player_it->second.GetBool();
     actors = config_json.at("actors").GetInt();
     evaluators = config_json.at("evaluators").GetInt();
     eval_levels = config_json.at("eval_levels").GetInt();

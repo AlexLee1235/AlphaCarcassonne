@@ -376,10 +376,9 @@ int main(int argc, char **argv) {
                     }
                     ++completed_games;
                     std::cerr << "[game " << (game_num + 1) << " done " << completed_games << "/" << num_games
-                              << " worker=" << worker << "] returns: " << absl::StrJoin(returns, ", ")
-                              << " | cumulative wins: " << absl::StrJoin(overall_wins, ", ") << " losses: " << overall_wins[1]
-                              << ", " << overall_wins[0] << " draws: " << overall_draws
-                              << " returns: " << absl::StrJoin(overall_returns, ", ") << std::endl;
+                              << "] return: " << absl::StrJoin(returns, ", ")
+                              << " | cumulative wins: " << absl::StrJoin(overall_wins, ", ")
+                              << ", returns: " << absl::StrJoin(overall_returns, ", ") << std::endl;
                 }
             }
         }));

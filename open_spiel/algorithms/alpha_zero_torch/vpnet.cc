@@ -221,6 +221,14 @@ std::vector<VPNetModel::InferenceOutputs> VPNetModel::Inference(
 }
 
 VPNetModel::LossInfo VPNetModel::Learn(const std::vector<TrainInputs>& inputs) {
+  return Learn(inputs, /*policy_loss_weight=*/1.0, /*value_loss_weight=*/1.0,
+               /*l2_loss_weight=*/1.0);
+}
+
+VPNetModel::LossInfo VPNetModel::Learn(const std::vector<TrainInputs>& inputs,
+                                       double policy_loss_weight,
+                                       double value_loss_weight,
+                                       double l2_loss_weight) {
   int training_batch_size = inputs.size();
 
   std::vector<float> raw_train_inputs(training_batch_size * flat_input_size_);
@@ -274,8 +282,9 @@ VPNetModel::LossInfo VPNetModel::Learn(const std::vector<TrainInputs>& inputs) {
       model_->losses(torch_train_inputs, torch_train_legal_mask,
                      torch_policy_targets, torch_value_targets);
 
-  torch::Tensor total_loss =
-      torch_outputs[0] + torch_outputs[1] + torch_outputs[2];
+  torch::Tensor total_loss = policy_loss_weight * torch_outputs[0] +
+                             value_loss_weight * torch_outputs[1] +
+                             l2_loss_weight * torch_outputs[2];
 
   total_loss.backward();
 

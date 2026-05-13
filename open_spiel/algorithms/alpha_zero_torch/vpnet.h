@@ -138,6 +138,9 @@ class VPNetModel {
 
   // Training: do one (batch) step of neural net training
   LossInfo Learn(const std::vector<TrainInputs>& inputs);
+  LossInfo Learn(const std::vector<TrainInputs>& inputs,
+                 double policy_loss_weight, double value_loss_weight,
+                 double l2_loss_weight);
 
   std::string SaveCheckpoint(int step);
   void LoadCheckpoint(int step);

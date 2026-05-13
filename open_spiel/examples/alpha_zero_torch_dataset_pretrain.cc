@@ -53,7 +53,8 @@ ABSL_FLAG(std::string, holdout_dataset, "", "Holdout dataset path.");
 ABSL_FLAG(int, samples, 256, "Number of train samples to generate.");
 ABSL_FLAG(int, holdout_samples, 0, "Number of holdout samples to generate.");
 ABSL_FLAG(std::string, teacher, "pure_mcts",
-          "Teacher used for generation: pure_mcts or az.");
+          "Teacher used for generation: pure_mcts, az, or "
+          "az_prior_rollout_value.");
 ABSL_FLAG(int, max_simulations, 320, "MCTS simulations per target.");
 ABSL_FLAG(int, rollout_count, 10, "Random rollouts per pure-MCTS leaf.");
 ABSL_FLAG(double, uct_c, 2, "UCT exploration constant.");
@@ -91,6 +92,9 @@ ABSL_FLAG(int, nn_width, 128, "Student model width.");
 ABSL_FLAG(int, nn_depth, 10, "Student model depth.");
 ABSL_FLAG(double, learning_rate, 0.001, "Student learning rate.");
 ABSL_FLAG(double, weight_decay, 0.0001, "Student weight decay.");
+ABSL_FLAG(double, policy_loss_weight, 1.0, "Policy loss multiplier.");
+ABSL_FLAG(double, value_loss_weight, 1.0, "Value loss multiplier.");
+ABSL_FLAG(double, l2_loss_weight, 1.0, "L2 loss multiplier.");
 ABSL_FLAG(std::string, device, "/cpu:0", "Torch device, e.g. /cuda:0.");
 ABSL_FLAG(int, batch_size, 64, "Training batch size.");
 ABSL_FLAG(int, train_steps, 500, "Gradient steps.");
@@ -162,6 +166,25 @@ struct SearchTarget {
   ActionsAndProbs action_policy;
   double player0_value = 0;
   Action best_action = open_spiel::kInvalidAction;
+};
+
+class SplitEvaluator : public open_spiel::algorithms::Evaluator {
+ public:
+  SplitEvaluator(std::shared_ptr<open_spiel::algorithms::Evaluator> prior,
+                 std::shared_ptr<open_spiel::algorithms::Evaluator> value)
+      : prior_(std::move(prior)), value_(std::move(value)) {}
+
+  std::vector<double> Evaluate(const State& state) override {
+    return value_->Evaluate(state);
+  }
+
+  ActionsAndProbs Prior(const State& state) override {
+    return prior_->Prior(state);
+  }
+
+ private:
+  std::shared_ptr<open_spiel::algorithms::Evaluator> prior_;
+  std::shared_ptr<open_spiel::algorithms::Evaluator> value_;
 };
 
 struct TargetStats {
@@ -399,40 +422,20 @@ std::vector<DatasetSample> CollectPureMCTSSelfPlaySamples(
 
   while (samples.size() < num_samples) {
     std::unique_ptr<State> state = game.NewInitialState();
-    std::vector<DatasetSample> pending_game_samples;
-    const int remaining_samples =
-        num_samples - static_cast<int>(samples.size());
-    pending_game_samples.reserve(
-        std::min<int>(game.MaxGameLength(), remaining_samples));
-
-    while (!state->IsTerminal()) {
+    while (!state->IsTerminal() && samples.size() < num_samples) {
       SampleChanceUntilDecision(state.get(), &rng);
       if (state->IsTerminal()) break;
       if (state->LegalActions().empty()) break;
 
       SearchTarget target = MCTSTarget(game, *state, evaluator, search_seed++);
-      if (samples.size() + pending_game_samples.size() < num_samples) {
-        pending_game_samples.push_back(
-            {state->LegalActions(), state->ObservationTensor(), target.policy,
-             /*target_value=*/0, state->CurrentPlayer()});
-      }
+      samples.push_back({state->LegalActions(), state->ObservationTensor(),
+                         target.policy, target.player0_value,
+                         state->CurrentPlayer()});
 
       Action action = open_spiel::SampleAction(target.policy, rng).first;
       state->ApplyAction(action);
     }
-
-    if (!state->IsTerminal()) {
-      continue;
-    }
-    const std::vector<double> returns = state->Returns();
-    SPIEL_CHECK_FALSE(returns.empty());
-    const double player0_return = returns[0];
-    for (DatasetSample& sample : pending_game_samples) {
-      sample.target_value = player0_return;
-      samples.push_back(std::move(sample));
-    }
   }
-  SPIEL_CHECK_EQ(samples.size(), num_samples);
   return samples;
 }
 
@@ -616,10 +619,13 @@ void ValidateDataset(const DatasetFile& dataset, const open_spiel::Game& game,
 DatasetFile GenerateDataset(const std::string& game_string, int sample_count,
                             uint_fast32_t seed) {
   const std::string teacher = absl::GetFlag(FLAGS_teacher);
-  if (teacher != "pure_mcts" && teacher != "az") {
+  const bool uses_az_prior =
+      teacher == "az" || teacher == "az_prior_rollout_value";
+  if (teacher != "pure_mcts" && !uses_az_prior) {
     open_spiel::SpielFatalError(
         absl::StrCat("Unknown --teacher=", teacher,
-                     ". Expected pure_mcts or az."));
+                     ". Expected pure_mcts, az, or "
+                     "az_prior_rollout_value."));
   }
   SPIEL_CHECK_GE(sample_count, 0);
   std::shared_ptr<const open_spiel::Game> game = open_spiel::LoadGame(game_string);
@@ -634,10 +640,11 @@ DatasetFile GenerateDataset(const std::string& game_string, int sample_count,
   std::shared_ptr<open_spiel::algorithms::Evaluator> az_evaluator;
   std::shared_ptr<VPNetEvaluator> az_vp_evaluator;
 
-  if (teacher == "az") {
+  if (uses_az_prior) {
     const std::string az_path = absl::GetFlag(FLAGS_az_path);
     if (az_path.empty()) {
-      open_spiel::SpielFatalError("--az_path is required when --teacher=az.");
+      open_spiel::SpielFatalError(
+          "--az_path is required when the teacher uses an AZ prior.");
     }
     const int inference_batch_size =
         std::max(1, absl::GetFlag(FLAGS_inference_batch_size));
@@ -666,6 +673,16 @@ DatasetFile GenerateDataset(const std::string& game_string, int sample_count,
       futures.push_back(std::async(std::launch::async, [=]() {
         std::shared_ptr<const open_spiel::Game> worker_game =
             open_spiel::LoadGame(game_string);
+        if (teacher == "az_prior_rollout_value") {
+          auto rollout_evaluator =
+              std::make_shared<open_spiel::algorithms::RandomRolloutEvaluator>(
+                  absl::GetFlag(FLAGS_rollout_count),
+                  static_cast<int>(seed + 4000037 * worker + 1));
+          auto split_evaluator =
+              std::make_shared<SplitEvaluator>(az_evaluator, rollout_evaluator);
+          return CollectAZMCTSSelfPlaySamples(*worker_game, worker_samples,
+                                              split_evaluator, worker, seed);
+        }
         return CollectAZMCTSSelfPlaySamples(*worker_game, worker_samples,
                                             az_evaluator, worker, seed);
       }));
@@ -987,7 +1004,11 @@ int RunTrain() {
             << "  optimizer: lr=" << student_config.learning_rate
             << " weight_decay=" << student_config.weight_decay
             << " batch_size=" << absl::GetFlag(FLAGS_batch_size)
-            << " steps=" << absl::GetFlag(FLAGS_train_steps) << "\n"
+            << " steps=" << absl::GetFlag(FLAGS_train_steps)
+            << " loss_weights(policy,value,l2)="
+            << absl::GetFlag(FLAGS_policy_loss_weight) << ","
+            << absl::GetFlag(FLAGS_value_loss_weight) << ","
+            << absl::GetFlag(FLAGS_l2_loss_weight) << "\n"
             << "  device: " << absl::GetFlag(FLAGS_device) << "\n";
 
   if (absl::GetFlag(FLAGS_save_final_checkpoint)) {
@@ -1018,7 +1039,9 @@ int RunTrain() {
     for (int i = 0; i < absl::GetFlag(FLAGS_batch_size); ++i) {
       batch.push_back(fixed_data[sample_dist(rng)]);
     }
-    student.Learn(batch);
+    student.Learn(batch, absl::GetFlag(FLAGS_policy_loss_weight),
+                  absl::GetFlag(FLAGS_value_loss_weight),
+                  absl::GetFlag(FLAGS_l2_loss_weight));
 
     if (step % absl::GetFlag(FLAGS_report_every) == 0 ||
         step == absl::GetFlag(FLAGS_train_steps)) {

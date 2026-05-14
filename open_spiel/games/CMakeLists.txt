@@ -20,12 +20,6 @@ set(GAME_SOURCES
   blotto/blotto.h
   breakthrough/breakthrough.cc
   breakthrough/breakthrough.h
-  bridge/bridge.cc
-  bridge/bridge.h
-  bridge/bridge_scoring.cc
-  bridge/bridge_scoring.h
-  bridge/bridge_uncontested_bidding.cc
-  bridge/bridge_uncontested_bidding.h
   catch/catch.cc
   catch/catch.h
   checkers/checkers.cc
@@ -257,68 +251,6 @@ if (${OPEN_SPIEL_BUILD_WITH_GAMUT})
   add_subdirectory(gamut)
 endif()
 
-add_library(bridge_double_dummy_solver OBJECT
-  bridge/double_dummy_solver/include/dll.h
-  bridge/double_dummy_solver/include/portab.h
-  bridge/double_dummy_solver/src/ABsearch.cpp
-  bridge/double_dummy_solver/src/ABsearch.h
-  bridge/double_dummy_solver/src/ABstats.cpp
-  bridge/double_dummy_solver/src/ABstats.h
-  bridge/double_dummy_solver/src/CalcTables.cpp
-  bridge/double_dummy_solver/src/CalcTables.h
-  bridge/double_dummy_solver/src/dds.cpp
-  bridge/double_dummy_solver/src/dds.h
-  bridge/double_dummy_solver/src/DealerPar.cpp
-  bridge/double_dummy_solver/src/debug.h
-  bridge/double_dummy_solver/src/dump.cpp
-  bridge/double_dummy_solver/src/dump.h
-  bridge/double_dummy_solver/src/File.cpp
-  bridge/double_dummy_solver/src/File.h
-  bridge/double_dummy_solver/src/Init.cpp
-  bridge/double_dummy_solver/src/Init.h
-  bridge/double_dummy_solver/src/LaterTricks.cpp
-  bridge/double_dummy_solver/src/LaterTricks.h
-  bridge/double_dummy_solver/src/Memory.cpp
-  bridge/double_dummy_solver/src/Memory.h
-  bridge/double_dummy_solver/src/Moves.cpp
-  bridge/double_dummy_solver/src/Moves.h
-  bridge/double_dummy_solver/src/Par.cpp
-  bridge/double_dummy_solver/src/parallel.h
-  bridge/double_dummy_solver/src/PBN.cpp
-  bridge/double_dummy_solver/src/PBN.h
-  bridge/double_dummy_solver/src/PlayAnalyser.cpp
-  bridge/double_dummy_solver/src/PlayAnalyser.h
-  bridge/double_dummy_solver/src/QuickTricks.cpp
-  bridge/double_dummy_solver/src/QuickTricks.h
-  bridge/double_dummy_solver/src/Scheduler.cpp
-  bridge/double_dummy_solver/src/Scheduler.h
-  bridge/double_dummy_solver/src/SolveBoard.cpp
-  bridge/double_dummy_solver/src/SolveBoard.h
-  bridge/double_dummy_solver/src/SolverIF.cpp
-  bridge/double_dummy_solver/src/SolverIF.h
-  bridge/double_dummy_solver/src/System.cpp
-  bridge/double_dummy_solver/src/System.h
-  bridge/double_dummy_solver/src/ThreadMgr.cpp
-  bridge/double_dummy_solver/src/ThreadMgr.h
-  bridge/double_dummy_solver/src/Timer.cpp
-  bridge/double_dummy_solver/src/Timer.h
-  bridge/double_dummy_solver/src/TimerGroup.cpp
-  bridge/double_dummy_solver/src/TimerGroup.h
-  bridge/double_dummy_solver/src/TimerList.cpp
-  bridge/double_dummy_solver/src/TimerList.h
-  bridge/double_dummy_solver/src/TimeStat.cpp
-  bridge/double_dummy_solver/src/TimeStat.h
-  bridge/double_dummy_solver/src/TimeStatList.cpp
-  bridge/double_dummy_solver/src/TimeStatList.h
-  bridge/double_dummy_solver/src/TransTable.h
-  bridge/double_dummy_solver/src/TransTableL.cpp
-  bridge/double_dummy_solver/src/TransTableL.h
-  bridge/double_dummy_solver/src/TransTableS.cpp
-  bridge/double_dummy_solver/src/TransTableS.h
-)
-target_include_directories (bridge_double_dummy_solver PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
-target_compile_definitions(bridge_double_dummy_solver PUBLIC DDS_NO_STATIC_INIT)
-
 add_executable(2048_test twenty_forty_eight/2048_test.cc ${OPEN_SPIEL_OBJECTS}
                $<TARGET_OBJECTS:tests>)
 add_test(2048_test 2048_test)
@@ -360,10 +292,6 @@ add_test(blotto_test blotto_test)
 add_executable(breakthrough_test breakthrough/breakthrough_test.cc ${OPEN_SPIEL_OBJECTS}
                $<TARGET_OBJECTS:tests>)
 add_test(breakthrough_test breakthrough_test)
-
-add_executable(bridge_test bridge/bridge_test.cc ${OPEN_SPIEL_OBJECTS}
-               $<TARGET_OBJECTS:tests>)
-add_test(bridge_test bridge_test)
 
 add_executable(catch_test catch/catch_test.cc ${OPEN_SPIEL_OBJECTS}
                $<TARGET_OBJECTS:tests>)

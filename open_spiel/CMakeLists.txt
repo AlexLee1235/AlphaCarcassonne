@@ -226,7 +226,6 @@ set (OPEN_SPIEL_OBJECTS
   $<TARGET_OBJECTS:bots>
   $<TARGET_OBJECTS:games>
   $<TARGET_OBJECTS:game_transforms>
-  $<TARGET_OBJECTS:bridge_double_dummy_solver>
   $<TARGET_OBJECTS:algorithms>
   $<TARGET_OBJECTS:evaluation>
   $<TARGET_OBJECTS:utils>
@@ -253,11 +252,17 @@ if (OPEN_SPIEL_BUILD_WITH_LIBNOP)
 endif()
 if (OPEN_SPIEL_BUILD_WITH_LIBTORCH)
   list(APPEND CMAKE_PREFIX_PATH "${CMAKE_CURRENT_SOURCE_DIR}/libtorch/libtorch")
-  find_package(Torch REQUIRED)
-  add_subdirectory(libtorch)
-  include_directories(${TORCH_INCLUDE_DIRS})
-  # Use following to link your_target_executable with torch libraries:
-  # target_link_libraries(your_target_executable ${TORCH_LIBRARIES})
+  if (EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/libtorch/libtorch/share/cmake/Torch/TorchConfig.cmake")
+    find_package(Torch REQUIRED)
+    include_directories(${TORCH_INCLUDE_DIRS})
+    # Use following to link your_target_executable with torch libraries:
+    # target_link_libraries(your_target_executable ${TORCH_LIBRARIES})
+  else()
+    message(FATAL_ERROR
+      "OPEN_SPIEL_BUILD_WITH_LIBTORCH is ON, but libtorch was not found under "
+      "open_spiel/libtorch/libtorch. Run the dependency install step or disable "
+      "OPEN_SPIEL_BUILD_WITH_LIBTORCH.")
+  endif()
 endif()
 if (OPEN_SPIEL_BUILD_WITH_GAMUT)
   set(OPEN_SPIEL_OBJECTS ${OPEN_SPIEL_OBJECTS} $<TARGET_OBJECTS:gamut>)

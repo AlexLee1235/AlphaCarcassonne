@@ -42,13 +42,13 @@
   --game='carcassonne(max_turns=10)' \
   --player1=mcts \
   --player2=az \
-  --az_path=/tmp/az10_pure_mcts_pretrain_64x8 \
+  --az_path=/tmp/az10_priorboost1_32x4_short \
   --az_checkpoint=-3 \
   --az_device=/cuda:0 \
   --max_simulations=160 \
   --num_games=1000 \
   --quiet=true \
-  --num_workers=4
+  --num_workers=16
 
 
 # gen model dataset
@@ -165,7 +165,7 @@
   --az_path="$CUR" \
   --az_checkpoint=$CKPT \
   --az_graph_def=vpnet.pb \
-  --max_simulations=400 \
+  --max_simulations=1600 \
   --rollout_count=8 \
   --mcts_policy_temperature=1.0 \
   --policy_epsilon=0 \
@@ -186,4 +186,6 @@
     3300 step mcts,az:42, 46 44, 42
   car10_puremcts_train2: 65536 1600 64
   az10_pure_mcts_selfplay_smoke_64x8
-    step0 一次50, 43(mcts,az) 一次52, 33 50, 45
+    step0 一次50, 43(mcts,az) 一次52, 33 50, 45\
+  priorboost1_short
+    453 wins, 438 losses, 109 draws

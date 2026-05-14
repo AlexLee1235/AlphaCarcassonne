@@ -18,7 +18,7 @@ from absl.testing import absltest
 import pyspiel
 
 
-EXPECTED_GAMES = ["carcassonne", "othello", "tic_tac_toe"]
+EXPECTED_GAMES = ["carcassonne", "connect_four", "othello", "tic_tac_toe"]
 
 
 class PyspielTest(absltest.TestCase):
@@ -37,7 +37,7 @@ class PyspielTest(absltest.TestCase):
       self.assertFalse(state.is_terminal())
 
   def test_removed_games_are_not_loadable(self):
-    for game_name in ["connect_four", "kuhn_poker", "python_tic_tac_toe"]:
+    for game_name in ["kuhn_poker", "python_tic_tac_toe"]:
       with self.assertRaisesRegex(RuntimeError, f"Unknown game '{game_name}'"):
         pyspiel.load_game(game_name)
 

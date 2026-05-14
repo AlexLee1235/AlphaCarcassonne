@@ -11,7 +11,7 @@ can be used when loading games in `load_game`.
 In this trimmed build, the returned list is:
 
 ```python
-["carcassonne", "othello", "tic_tac_toe"]
+["carcassonne", "connect_four", "othello", "tic_tac_toe"]
 ```
 
 ## Examples:

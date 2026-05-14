@@ -33,6 +33,8 @@ set(PYTHON_BINDINGS ${PYTHON_BINDINGS}
   pybind11/evaluation_elo.h
   pybind11/evaluation_sco.cc
   pybind11/evaluation_sco.h
+  pybind11/games_connect_four.cc
+  pybind11/games_connect_four.h
   pybind11/games_tic_tac_toe.cc
   pybind11/games_tic_tac_toe.h
   pybind11/observer.cc
@@ -66,6 +68,7 @@ else()
 endif()
 
 set(PYTHON_TESTS
+  tests/games_connect_four_test.py
   tests/pyspiel_test.py
 )
 

@@ -37,6 +37,7 @@
 #include "open_spiel/python/pybind11/bots.h"
 #include "open_spiel/python/pybind11/evaluation_elo.h"
 #include "open_spiel/python/pybind11/evaluation_sco.h"
+#include "open_spiel/python/pybind11/games_connect_four.h"
 #include "open_spiel/python/pybind11/games_tic_tac_toe.h"
 #include "open_spiel/python/pybind11/observer.h"
 #include "open_spiel/python/pybind11/policy.h"
@@ -743,6 +744,7 @@ PYBIND11_MODULE(pyspiel, m) {
   init_pyspiel_algorithms_trajectories(m);  // Trajectories.
   init_pyspiel_evaluation_elo(m);           // Elo rating system.
   init_pyspiel_evaluation_sco(m);           // Soft Condorcet Optimization.
+  init_pyspiel_games_connect_four(m);
   init_pyspiel_games_tic_tac_toe(m);
   init_pyspiel_observer(m);                 // Observers and observations.
   init_pyspiel_utils(m);                    // Utilities.

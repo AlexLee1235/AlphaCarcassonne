@@ -42,7 +42,7 @@
   --game='carcassonne(max_turns=10)' \
   --player1=mcts \
   --player2=az \
-  --az_path=/tmp/az10_priorboost1_32x4_short \
+  --az_path=/tmp/az10_priorboost2_32x4_fromprebest_s800_seed51 \
   --az_checkpoint=-3 \
   --az_device=/cuda:0 \
   --max_simulations=160 \

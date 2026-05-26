@@ -61,7 +61,7 @@ ABSL_FLAG(int, p2_max_memory_mb, 1000, "Player 2 maximum memory before cutting t
 ABSL_FLAG(bool, p1_solve, true, "Whether player 1 uses MCTS-Solver.");
 ABSL_FLAG(bool, p2_solve, true, "Whether player 2 uses MCTS-Solver.");
 ABSL_FLAG(int, rollout_count, 10, "How many rollouts per evaluation.");
-ABSL_FLAG(int, num_games, 1, "How many games to play.");
+ABSL_FLAG(int, num_games, 2, "How many games to play. Must be even for paired same-deck matches.");
 ABSL_FLAG(int, num_workers, 1, "How many games to play in parallel.");
 ABSL_FLAG(int, az_batch_size, 1, "Batch size of AZ inference.");
 ABSL_FLAG(int, az_threads, 1, "Number of threads to run for AZ inference.");
@@ -71,7 +71,7 @@ ABSL_FLAG(bool, az_value_is_current_player, false,
           "Interpret AZ value output as current-player value.");
 ABSL_FLAG(uint_fast32_t, seed, 0, "Seed for MCTS.");
 ABSL_FLAG(bool, verbose, false, "Show the MCTS stats of possible moves.");
-ABSL_FLAG(bool, quiet, false, "Hide per-action state traces and game actions.");
+ABSL_FLAG(bool, quiet, true, "Hide per-action state traces and game actions.");
 
 uint_fast32_t Seed() {
     uint_fast32_t seed = absl::GetFlag(FLAGS_seed);
@@ -86,7 +86,6 @@ struct ConfidenceInterval {
 };
 
 struct GameResult {
-    std::vector<double> returns;
     std::vector<std::string> history;
     std::vector<double> final_scores;
 };
@@ -151,13 +150,13 @@ std::string FormatConfidenceInterval(const ConfidenceInterval &interval) {
     return absl::StrCat("[", FormatRate(interval.low), ",", FormatRate(interval.high), "]");
 }
 
-std::vector<double> FinalScores(const open_spiel::State &state, const std::vector<double> &returns) {
+std::vector<double> FinalScores(const open_spiel::State &state) {
     const auto *carcassonne_state = dynamic_cast<const open_spiel::carcassonne::CarcassonneState *>(&state);
     if (carcassonne_state != nullptr) {
         const auto &underlying = carcassonne_state->UnderlyingState();
         return {static_cast<double>(underlying.player_scores[0]), static_cast<double>(underlying.player_scores[1])};
     }
-    return returns;
+    return state.Returns();
 }
 
 int WinnerIndex(const std::vector<double> &scores) {
@@ -175,12 +174,22 @@ int WinnerIndex(const std::vector<double> &scores) {
 
 std::string WinnerLabel(int winner) {
     if (winner == 0) {
-        return "p1";
+        return "A";
     }
     if (winner == 1) {
-        return "p2";
+        return "B";
     }
     return "draw";
+}
+
+std::string AgentLabel(int agent) {
+    if (agent == 0) {
+        return "A";
+    }
+    if (agent == 1) {
+        return "B";
+    }
+    return "?";
 }
 
 struct AZSpec {
@@ -317,16 +326,8 @@ open_spiel::Action GetAction(const open_spiel::State &state, std::string action_
     return open_spiel::kInvalidAction;
 }
 
-GameResult PlayGame(const open_spiel::Game &game, std::vector<std::unique_ptr<open_spiel::Bot>> &bots, std::mt19937 &rng,
-                    const std::vector<std::string> &initial_actions) {
-    bool quiet = absl::GetFlag(FLAGS_quiet);
-    std::unique_ptr<open_spiel::State> state = game.NewInitialState();
-    std::vector<std::string> history;
-
-    if (!quiet)
-        std::cerr << "Initial state:\n" << state << std::endl;
-
-    // Play the initial actions (if there are any).
+void ApplyInitialActions(open_spiel::State *state, const std::vector<std::string> &initial_actions,
+                         std::vector<std::string> *history, bool quiet) {
     for (const auto &action_str : initial_actions) {
         open_spiel::Player current_player = state->CurrentPlayer();
         open_spiel::Action action = GetAction(*state, action_str);
@@ -334,7 +335,9 @@ GameResult PlayGame(const open_spiel::Game &game, std::vector<std::unique_ptr<op
         if (action == open_spiel::kInvalidAction)
             open_spiel::SpielFatalError(absl::StrCat("Invalid action: ", action_str));
 
-        history.push_back(action_str);
+        if (history != nullptr) {
+            history->push_back(action_str);
+        }
         state->ApplyAction(action);
 
         if (!quiet) {
@@ -342,15 +345,85 @@ GameResult PlayGame(const open_spiel::Game &game, std::vector<std::unique_ptr<op
             std::cerr << "Next state:\n" << state->ToString() << std::endl;
         }
     }
+}
+
+std::vector<open_spiel::Action> GenerateChanceSchedule(const open_spiel::Game &game,
+                                                       const std::vector<std::string> &initial_actions,
+                                                       std::mt19937 *rng) {
+    std::unique_ptr<open_spiel::State> state = game.NewInitialState();
+    ApplyInitialActions(state.get(), initial_actions, nullptr, /*quiet=*/true);
+
+    const auto *carcassonne_state = dynamic_cast<const open_spiel::carcassonne::CarcassonneState *>(state.get());
+    if (carcassonne_state == nullptr) {
+        open_spiel::SpielFatalError("Paired same-deck matches require the carcassonne game.");
+    }
+
+    const auto &underlying = carcassonne_state->UnderlyingState();
+    int total_remaining = underlying.getTotalRemaining();
+    std::vector<int> remaining_by_type(open_spiel::carcassonne::kChanceActionCount + 1, 0);
+    for (int type_id = 1; type_id <= open_spiel::carcassonne::kChanceActionCount; ++type_id) {
+        remaining_by_type[type_id] = underlying.getRemainingTypeCount(type_id);
+    }
+
+    std::vector<open_spiel::Action> schedule;
+    schedule.reserve(total_remaining);
+    while (total_remaining > 0) {
+        const int sample = std::uniform_int_distribution<int>(1, total_remaining)(*rng);
+        int cumulative = 0;
+        int selected_type = 0;
+        for (int type_id = 1; type_id <= open_spiel::carcassonne::kChanceActionCount; ++type_id) {
+            cumulative += remaining_by_type[type_id];
+            if (sample <= cumulative) {
+                selected_type = type_id;
+                break;
+            }
+        }
+        if (selected_type == 0) {
+            open_spiel::SpielFatalError("Failed to sample a Carcassonne chance action.");
+        }
+        schedule.push_back(selected_type - 1);
+        --remaining_by_type[selected_type];
+        --total_remaining;
+    }
+    return schedule;
+}
+
+std::vector<double> ScoresByAgent(const std::vector<double> &seat_scores, const std::array<int, 2> &seat_to_agent) {
+    std::vector<double> agent_scores(2, 0.0);
+    for (int seat = 0; seat < 2 && seat < seat_scores.size(); ++seat) {
+        agent_scores[seat_to_agent[seat]] = seat_scores[seat];
+    }
+    return agent_scores;
+}
+
+GameResult PlayGame(const open_spiel::Game &game, std::vector<std::unique_ptr<open_spiel::Bot>> &bots,
+                    const std::vector<std::string> &initial_actions,
+                    const std::vector<open_spiel::Action> &chance_schedule,
+                    const std::array<int, 2> &seat_to_agent) {
+    bool quiet = absl::GetFlag(FLAGS_quiet);
+    std::unique_ptr<open_spiel::State> state = game.NewInitialState();
+    std::vector<std::string> history;
+    int chance_index = 0;
+
+    if (!quiet)
+        std::cerr << "Initial state:\n" << state << std::endl;
+
+    ApplyInitialActions(state.get(), initial_actions, &history, quiet);
 
     while (!state->IsTerminal()) {
         open_spiel::Player player = state->CurrentPlayer();
 
         open_spiel::Action action;
         if (state->IsChanceNode()) {
-            // Chance node; sample one according to underlying distribution.
-            open_spiel::ActionsAndProbs outcomes = state->ChanceOutcomes();
-            action = open_spiel::SampleAction(outcomes, rng).first;
+            if (chance_index >= chance_schedule.size()) {
+                open_spiel::SpielFatalError("Fixed chance schedule ended before the game reached a terminal state.");
+            }
+            action = chance_schedule[chance_index++];
+            const std::vector<open_spiel::Action> legal_actions = state->LegalActions();
+            if (std::find(legal_actions.begin(), legal_actions.end(), action) == legal_actions.end()) {
+                open_spiel::SpielFatalError(absl::StrCat("Fixed chance action is illegal at index ", chance_index - 1,
+                                                         ": ", state->ActionToString(player, action)));
+            }
         } else {
             // The state must be a decision node, ask the right bot to make its
             // action.
@@ -375,12 +448,10 @@ GameResult PlayGame(const open_spiel::Game &game, std::vector<std::unique_ptr<op
     }
 
     if (!quiet) {
-        std::cerr << "Returns: " << absl::StrJoin(state->Returns(), ", ") << std::endl;
         std::cerr << "Game actions: " << absl::StrJoin(history, ", ") << std::endl;
     }
 
-    const std::vector<double> returns = state->Returns();
-    return {returns, history, FinalScores(*state, returns)};
+    return {history, ScoresByAgent(FinalScores(*state), seat_to_agent)};
 }
 
 int main(int argc, char **argv) {
@@ -389,7 +460,10 @@ int main(int argc, char **argv) {
 
     // Create the game.
     std::string game_name = absl::GetFlag(FLAGS_game);
-    std::cerr << "Game: " << game_name << std::endl;
+    const bool quiet = absl::GetFlag(FLAGS_quiet);
+    if (!quiet) {
+        std::cerr << "Game: " << game_name << std::endl;
+    }
     std::shared_ptr<const open_spiel::Game> game = open_spiel::LoadGame(game_name);
 
     // Ensure the game is AlphaZero-compatible and arguments are compatible.
@@ -403,7 +477,14 @@ int main(int argc, char **argv) {
     const PlayerSpec p1_spec = GetPlayerSpec(0);
     const PlayerSpec p2_spec = GetPlayerSpec(1);
     const int num_games = absl::GetFlag(FLAGS_num_games);
-    const int worker_count = num_games > 0 ? std::min(num_games, std::max(1, absl::GetFlag(FLAGS_num_workers))) : 0;
+    if (num_games < 0) {
+        open_spiel::SpielFatalError("--num_games must be non-negative.");
+    }
+    if (num_games % 2 != 0) {
+        open_spiel::SpielFatalError("--num_games must be even for paired same-deck matches.");
+    }
+    const int pair_count = num_games / 2;
+    const int worker_count = pair_count > 0 ? std::min(pair_count, std::max(1, absl::GetFlag(FLAGS_num_workers))) : 0;
     if ((p1_spec.type == "human" || p2_spec.type == "human") && worker_count > 1) {
         open_spiel::SpielFatalError("Human players can only be used with --num_workers=1.");
     }
@@ -414,6 +495,7 @@ int main(int argc, char **argv) {
     std::vector<std::unique_ptr<open_spiel::algorithms::torch_az::DeviceManager>> device_managers;
     std::shared_ptr<open_spiel::algorithms::torch_az::VPNetEvaluator> az_evaluator1;
     std::shared_ptr<open_spiel::algorithms::torch_az::VPNetEvaluator> az_evaluator2;
+    std::array<const PlayerSpec *, 2> agent_specs = {&p1_spec, &p2_spec};
     if (player1_needs_az) {
         az_evaluator1 = InitAZEvaluator(*game, p1_spec.az, &device_managers);
     }
@@ -424,6 +506,8 @@ int main(int argc, char **argv) {
             az_evaluator2 = InitAZEvaluator(*game, p2_spec.az, &device_managers);
         }
     }
+    std::array<std::shared_ptr<open_spiel::algorithms::torch_az::VPNetEvaluator>, 2> az_evaluators = {az_evaluator1,
+                                                                                                     az_evaluator2};
 
     std::vector<std::string> initial_actions;
     for (int i = 1; i < positional_args.size(); ++i) {
@@ -438,52 +522,62 @@ int main(int argc, char **argv) {
 
     std::vector<std::future<void>> futures;
     futures.reserve(worker_count);
-    const int games_per_worker = worker_count > 0 ? num_games / worker_count : 0;
-    const int extra_games = worker_count > 0 ? num_games % worker_count : 0;
+    const int pairs_per_worker = worker_count > 0 ? pair_count / worker_count : 0;
+    const int extra_pairs = worker_count > 0 ? pair_count % worker_count : 0;
     for (int worker = 0; worker < worker_count; ++worker) {
-        const int worker_games = games_per_worker + (worker < extra_games ? 1 : 0);
-        const int first_game = worker * games_per_worker + std::min(worker, extra_games);
-        futures.push_back(std::async(std::launch::async, [&, worker, worker_games, first_game]() {
+        const int worker_pairs = pairs_per_worker + (worker < extra_pairs ? 1 : 0);
+        const int first_pair = worker * pairs_per_worker + std::min(worker, extra_pairs);
+        futures.push_back(std::async(std::launch::async, [&, worker_pairs, first_pair]() {
             std::shared_ptr<const open_spiel::Game> worker_game = open_spiel::LoadGame(game_name);
-            for (int local_game = 0; local_game < worker_games; ++local_game) {
-                const int game_num = first_game + local_game;
+            for (int local_pair = 0; local_pair < worker_pairs; ++local_pair) {
+                const int pair_num = first_pair + local_pair;
+                std::mt19937 deck_rng(SeedWithOffset(base_seed, static_cast<uint_fast32_t>(pair_num)));
+                const std::vector<open_spiel::Action> chance_schedule =
+                    GenerateChanceSchedule(*worker_game, initial_actions, &deck_rng);
 
-                const uint_fast32_t game_seed =
-                    SeedWithOffset(base_seed, static_cast<uint_fast32_t>(game_num + 1000003 * worker));
-                std::mt19937 rng(game_seed);
-                auto evaluator = std::make_shared<open_spiel::algorithms::RandomRolloutEvaluator>(
-                    absl::GetFlag(FLAGS_rollout_count), SeedWithOffset(game_seed, 101));
+                for (int leg = 0; leg < 2; ++leg) {
+                    const int game_num = pair_num * 2 + leg;
+                    const uint_fast32_t game_seed =
+                        SeedWithOffset(base_seed, static_cast<uint_fast32_t>(game_num + 1000003));
+                    const std::array<int, 2> seat_to_agent = leg == 0 ? std::array<int, 2>{0, 1}
+                                                                      : std::array<int, 2>{1, 0};
+                    auto evaluator = std::make_shared<open_spiel::algorithms::RandomRolloutEvaluator>(
+                        absl::GetFlag(FLAGS_rollout_count), SeedWithOffset(game_seed, 101));
 
-                std::vector<std::unique_ptr<open_spiel::Bot>> bots;
-                bots.push_back(InitBot(p1_spec, *worker_game, 0, evaluator, az_evaluator1, SeedWithOffset(game_seed, 201)));
-                bots.push_back(InitBot(p2_spec, *worker_game, 1, evaluator, az_evaluator2, SeedWithOffset(game_seed, 301)));
+                    std::vector<std::unique_ptr<open_spiel::Bot>> bots;
+                    bots.push_back(InitBot(*agent_specs[seat_to_agent[0]], *worker_game, 0, evaluator,
+                                           az_evaluators[seat_to_agent[0]], SeedWithOffset(game_seed, 201)));
+                    bots.push_back(InitBot(*agent_specs[seat_to_agent[1]], *worker_game, 1, evaluator,
+                                           az_evaluators[seat_to_agent[1]], SeedWithOffset(game_seed, 301)));
 
-                GameResult result = PlayGame(*worker_game, bots, rng, initial_actions);
+                    GameResult result = PlayGame(*worker_game, bots, initial_actions, chance_schedule, seat_to_agent);
 
-                {
-                    absl::MutexLock lock(&results_mutex);
-                    histories[absl::StrJoin(result.history, " ")] += 1;
-                    const int winner = WinnerIndex(result.final_scores);
-                    if (winner >= 0) {
-                        overall_wins[winner] += 1;
-                    } else {
-                        ++overall_draws;
+                    {
+                        absl::MutexLock lock(&results_mutex);
+                        histories[absl::StrJoin(result.history, " ")] += 1;
+                        const int winner = WinnerIndex(result.final_scores);
+                        if (winner >= 0) {
+                            overall_wins[winner] += 1;
+                        } else {
+                            ++overall_draws;
+                        }
+                        ++completed_games;
+                        const ConfidenceInterval a_ci =
+                            Wilson95ConfidenceInterval(overall_wins[0], completed_games);
+                        const ConfidenceInterval b_ci =
+                            Wilson95ConfidenceInterval(overall_wins[1], completed_games);
+                        std::cerr << "result id=" << (game_num + 1) << " completed=" << completed_games << "/"
+                                  << num_games << " pair=" << (pair_num + 1) << " leg=" << (leg + 1)
+                                  << " first=" << AgentLabel(seat_to_agent[0]) << " winner=" << WinnerLabel(winner)
+                                  << " final_score=" << FormatScoreVector(result.final_scores)
+                                  << " a_win_rate="
+                                  << FormatRate(static_cast<double>(overall_wins[0]) / completed_games)
+                                  << " a_ci95=" << FormatConfidenceInterval(a_ci)
+                                  << " b_win_rate="
+                                  << FormatRate(static_cast<double>(overall_wins[1]) / completed_games)
+                                  << " b_ci95=" << FormatConfidenceInterval(b_ci)
+                                  << " draws=" << overall_draws << std::endl;
                     }
-                    ++completed_games;
-                    const ConfidenceInterval p1_ci =
-                        Wilson95ConfidenceInterval(overall_wins[0], completed_games);
-                    const ConfidenceInterval p2_ci =
-                        Wilson95ConfidenceInterval(overall_wins[1], completed_games);
-                    std::cerr << "result id=" << (game_num + 1) << " completed=" << completed_games << "/"
-                              << num_games << " winner=" << WinnerLabel(winner)
-                              << " final_score=" << FormatScoreVector(result.final_scores)
-                              << " p1_win_rate="
-                              << FormatRate(static_cast<double>(overall_wins[0]) / completed_games)
-                              << " p1_ci95=" << FormatConfidenceInterval(p1_ci)
-                              << " p2_win_rate="
-                              << FormatRate(static_cast<double>(overall_wins[1]) / completed_games)
-                              << " p2_ci95=" << FormatConfidenceInterval(p2_ci)
-                              << " draws=" << overall_draws << std::endl;
                 }
             }
         }));
@@ -493,12 +587,14 @@ int main(int argc, char **argv) {
         future.get();
     }
 
-    std::cerr << "Number of games played: " << completed_games << std::endl;
-    std::cerr << "Number of distinct games played: " << histories.size() << std::endl;
-    std::cerr << "Players: " << p1_spec.type << ", " << p2_spec.type << std::endl;
-    std::cerr << "Overall wins: " << absl::StrJoin(overall_wins, ", ") << std::endl;
-    std::cerr << "Overall losses: " << overall_wins[1] << ", " << overall_wins[0] << std::endl;
-    std::cerr << "Overall draws: " << overall_draws << std::endl;
+    if (!quiet) {
+        std::cerr << "Number of games played: " << completed_games << std::endl;
+        std::cerr << "Number of distinct games played: " << histories.size() << std::endl;
+        std::cerr << "Players: A=" << p1_spec.type << ", B=" << p2_spec.type << std::endl;
+        std::cerr << "Overall wins: " << absl::StrJoin(overall_wins, ", ") << std::endl;
+        std::cerr << "Overall losses: " << overall_wins[1] << ", " << overall_wins[0] << std::endl;
+        std::cerr << "Overall draws: " << overall_draws << std::endl;
+    }
 
     return 0;
 }

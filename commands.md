@@ -1,4 +1,60 @@
 
+./build/examples/alpha_zero_torch_example \
+--actors=128  \
+--checkpoint_freq=10  \
+--cutoff_probability=0.000000  \
+--cutoff_value=0.950000  \
+--devices=cuda:0  \
+--eval_levels=1  \
+--evaluation_window=50  \
+--evaluators=0  \
+--explicit_learning=false  \
+--game=carcassonne  \
+--inference_batch_size=64  \
+--inference_threads=16  \
+--learning_rate=0.000050  \
+--max_simulations=800  \
+--nn_depth=12  \
+--nn_model=resnet  \
+--nn_width=128  \
+--path=/tmp/az_carcassonne_reuse4_sim800_buffer131072  \
+--policy_alpha=1.000000  \
+--policy_epsilon=0.250000  \
+--replay_buffer_reuse=4  \
+--replay_buffer_size=131072  \
+--temperature=1.000000  \
+--temperature_drop=10.000000  \
+--train_batch_size=2048  \
+--uct_c=2.000000  \
+--weight_decay=0.000100
+
+
+./build/examples/alpha_zero_torch_game_example \
+  --game=carcassonne \
+  --p1_type=az \
+  --p2_type=mcts \
+  --p1_az_path=/tmp/az_carcassonne_reuse4_sim800_buffer131072 \
+  --p1_az_checkpoint=-1 \
+  --p1_az_device=/cuda:0 \
+  --p1_max_simulations=160 \
+  --p2_max_simulations=160 \
+  --num_games=100 \
+  --quiet=true \
+  --num_workers=16
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 # gen mcts dataset
 ./build/examples/alpha_zero_torch_dataset_pretrain \
@@ -40,12 +96,13 @@
 # test
 ./build/examples/alpha_zero_torch_game_example \
   --game='carcassonne(max_turns=10)' \
-  --player1=mcts \
-  --player2=az \
-  --az_path=/tmp/az10_priorboost2_32x4_fromprebest_s800_seed51 \
-  --az_checkpoint=-3 \
-  --az_device=/cuda:0 \
-  --max_simulations=160 \
+  --p1_type=mcts \
+  --p2_type=az \
+  --p2_az_path=/tmp/az10_priorboost2_32x4_fromprebest_s800_seed51 \
+  --p2_az_checkpoint=-3 \
+  --p2_az_device=/cuda:0 \
+  --p1_max_simulations=160 \
+  --p2_max_simulations=160 \
   --num_games=1000 \
   --quiet=true \
   --num_workers=16

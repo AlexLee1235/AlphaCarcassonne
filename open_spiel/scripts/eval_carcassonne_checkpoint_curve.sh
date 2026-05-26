@@ -63,11 +63,14 @@ run_one() {
 
   "${BIN}" \
     --game=carcassonne \
-    --player1="${player1}" \
-    --player2="${player2}" \
-    --az_path="${MODEL_DIR}" \
-    --az_checkpoint="${checkpoint}" \
-    --max_simulations="${SIMS}" \
+    --p1_type="${player1}" \
+    --p2_type="${player2}" \
+    --p1_az_path="${MODEL_DIR}" \
+    --p2_az_path="${MODEL_DIR}" \
+    --p1_az_checkpoint="${checkpoint}" \
+    --p2_az_checkpoint="${checkpoint}" \
+    --p1_max_simulations="${SIMS}" \
+    --p2_max_simulations="${SIMS}" \
     --num_games="${NUM_GAMES}" \
     --seed="${SEED}" \
     --quiet=true \
@@ -75,7 +78,7 @@ run_one() {
 
   {
     echo "== ${label} checkpoint=${checkpoint} =="
-    grep -E "^(Number of games played|Players:|Overall wins:|Overall returns:)" "${log}" || true
+    grep -E "^(Number of games played|Players:|Overall wins:)" "${log}" || true
     echo "log=${log}"
     echo
   } >> "${DETAIL}"

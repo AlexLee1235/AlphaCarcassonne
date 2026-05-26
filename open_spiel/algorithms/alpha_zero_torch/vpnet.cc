@@ -147,6 +147,14 @@ void VPNetModel::LoadCheckpoint(const std::string& path) {
               torch_device_);
 }
 
+void VPNetModel::LoadCheckpointWeightsOnly(int step) {
+  LoadCheckpointWeightsOnly(absl::StrCat(path_, "/checkpoint-", step));
+}
+
+void VPNetModel::LoadCheckpointWeightsOnly(const std::string& path) {
+  torch::load(model_, absl::StrCat(path, ".pt"), torch_device_);
+}
+
 std::vector<VPNetModel::InferenceOutputs> VPNetModel::Inference(
     const std::vector<InferenceInputs>& inputs) {
   int inference_batch_size = inputs.size();

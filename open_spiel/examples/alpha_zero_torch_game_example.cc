@@ -14,16 +14,20 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstdio>
 #include <future>
+#include <iomanip>
 #include <map>
 #include <memory>
 #include <random>
+#include <sstream>
 #include <string>
 #include <vector>
 
 #include "open_spiel/abseil-cpp/absl/flags/flag.h"
 #include "open_spiel/abseil-cpp/absl/flags/parse.h"
+#include "open_spiel/abseil-cpp/absl/strings/str_cat.h"
 #include "open_spiel/abseil-cpp/absl/strings/str_join.h"
 #include "open_spiel/abseil-cpp/absl/synchronization/mutex.h"
 #include "open_spiel/abseil-cpp/absl/time/clock.h"
@@ -33,38 +37,41 @@
 #include "open_spiel/algorithms/alpha_zero_torch/vpnet.h"
 #include "open_spiel/algorithms/mcts.h"
 #include "open_spiel/bots/human/human_bot.h"
+#include "open_spiel/games/carcassonne/carcassonne.h"
 #include "open_spiel/spiel.h"
 #include "open_spiel/spiel_utils.h"
 
 ABSL_FLAG(std::string, game, "tic_tac_toe", "The name of the game to play.");
-ABSL_FLAG(std::string, player1, "az", "Who controls player1.");
-ABSL_FLAG(std::string, player2, "random", "Who controls player2.");
-ABSL_FLAG(std::string, az_path, "", "Path to AZ experiment.");
-ABSL_FLAG(std::string, az_graph_def, "vpnet.pb", "AZ graph definition file name.");
-ABSL_FLAG(std::string, az2_path, "", "Optional path to player2's AZ experiment. Falls back to --az_path.");
-ABSL_FLAG(std::string, az2_graph_def, "", "Optional player2 AZ graph definition. Falls back to --az_graph_def.");
-ABSL_FLAG(double, uct_c, 2, "UCT exploration constant.");
+ABSL_FLAG(std::string, p1_type, "az", "Who controls player 1.");
+ABSL_FLAG(std::string, p2_type, "random", "Who controls player 2.");
+ABSL_FLAG(std::string, p1_az_path, "", "Path to player 1's AZ experiment.");
+ABSL_FLAG(std::string, p2_az_path, "", "Path to player 2's AZ experiment.");
+ABSL_FLAG(std::string, p1_az_graph_def, "vpnet.pb", "Player 1 AZ graph definition file name.");
+ABSL_FLAG(std::string, p2_az_graph_def, "vpnet.pb", "Player 2 AZ graph definition file name.");
+ABSL_FLAG(int, p1_az_checkpoint, -1, "Checkpoint of player 1's AZ model.");
+ABSL_FLAG(int, p2_az_checkpoint, -1, "Checkpoint of player 2's AZ model.");
+ABSL_FLAG(std::string, p1_az_device, "/cpu:0", "Torch device for player 1's AZ model, e.g. /cpu:0, cpu, cuda:0.");
+ABSL_FLAG(std::string, p2_az_device, "/cpu:0", "Torch device for player 2's AZ model, e.g. /cpu:0, cpu, cuda:0.");
+ABSL_FLAG(double, p1_uct_c, 2, "Player 1 UCT exploration constant.");
+ABSL_FLAG(double, p2_uct_c, 2, "Player 2 UCT exploration constant.");
+ABSL_FLAG(int, p1_max_simulations, 10000, "How many simulations player 1 runs per move.");
+ABSL_FLAG(int, p2_max_simulations, 10000, "How many simulations player 2 runs per move.");
+ABSL_FLAG(int, p1_max_memory_mb, 1000, "Player 1 maximum memory before cutting the search short.");
+ABSL_FLAG(int, p2_max_memory_mb, 1000, "Player 2 maximum memory before cutting the search short.");
+ABSL_FLAG(bool, p1_solve, true, "Whether player 1 uses MCTS-Solver.");
+ABSL_FLAG(bool, p2_solve, true, "Whether player 2 uses MCTS-Solver.");
 ABSL_FLAG(int, rollout_count, 10, "How many rollouts per evaluation.");
-ABSL_FLAG(int, max_simulations, 10000, "How many simulations to run.");
 ABSL_FLAG(int, num_games, 1, "How many games to play.");
 ABSL_FLAG(int, num_workers, 1, "How many games to play in parallel.");
-ABSL_FLAG(int, max_memory_mb, 1000, "The maximum memory used before cutting the search short.");
-ABSL_FLAG(int, az_checkpoint, -1, "Checkpoint of AZ model.");
-ABSL_FLAG(int, az2_checkpoint, -2, "Optional player2 AZ checkpoint. Falls back to --az_checkpoint.");
 ABSL_FLAG(int, az_batch_size, 1, "Batch size of AZ inference.");
 ABSL_FLAG(int, az_threads, 1, "Number of threads to run for AZ inference.");
 ABSL_FLAG(int, az_cache_size, 16384, "Cache size of AZ algorithm.");
 ABSL_FLAG(int, az_cache_shards, 1, "Cache shards of AZ algorithm.");
-ABSL_FLAG(std::string, az_device, "/cpu:0", "Torch device for the AZ model, e.g. /cpu:0, cpu, cuda:0.");
-ABSL_FLAG(std::string, az2_device, "", "Optional player2 AZ device. Falls back to --az_device.");
 ABSL_FLAG(bool, az_value_is_current_player, false,
           "Interpret AZ value output as current-player value.");
-ABSL_FLAG(bool, solve, true, "Whether to use MCTS-Solver.");
 ABSL_FLAG(uint_fast32_t, seed, 0, "Seed for MCTS.");
 ABSL_FLAG(bool, verbose, false, "Show the MCTS stats of possible moves.");
 ABSL_FLAG(bool, quiet, false, "Hide per-action state traces and game actions.");
-
-constexpr int kUnsetAz2Checkpoint = -2;
 
 uint_fast32_t Seed() {
     uint_fast32_t seed = absl::GetFlag(FLAGS_seed);
@@ -72,6 +79,17 @@ uint_fast32_t Seed() {
 }
 
 uint_fast32_t SeedWithOffset(uint_fast32_t seed, uint_fast32_t offset) { return seed + 2654435761u * (offset + 1); }
+
+struct ConfidenceInterval {
+    double low;
+    double high;
+};
+
+struct GameResult {
+    std::vector<double> returns;
+    std::vector<std::string> history;
+    std::vector<double> final_scores;
+};
 
 class SplitEvaluator : public open_spiel::algorithms::Evaluator {
   public:
@@ -93,6 +111,78 @@ bool RequiresAZEvaluator(const std::string &type) {
            type == "uniform_prior_az_value";
 }
 
+ConfidenceInterval Wilson95ConfidenceInterval(int successes, int trials) {
+    if (trials <= 0) {
+        return {0.0, 0.0};
+    }
+    constexpr double z = 1.959963984540054;
+    const double n = static_cast<double>(trials);
+    const double p = static_cast<double>(successes) / n;
+    const double z2 = z * z;
+    const double denominator = 1.0 + z2 / n;
+    const double center = (p + z2 / (2.0 * n)) / denominator;
+    const double half_width = z * std::sqrt((p * (1.0 - p) + z2 / (4.0 * n)) / n) / denominator;
+    return {std::max(0.0, center - half_width), std::min(1.0, center + half_width)};
+}
+
+std::string FormatRate(double value) {
+    std::ostringstream out;
+    out << std::fixed << std::setprecision(4) << value;
+    return out.str();
+}
+
+std::string FormatScoreValue(double value) {
+    if (std::fabs(value - std::round(value)) < 1e-9) {
+        return std::to_string(static_cast<long long>(std::llround(value)));
+    }
+    return FormatRate(value);
+}
+
+std::string FormatScoreVector(const std::vector<double> &values) {
+    std::vector<std::string> parts;
+    parts.reserve(values.size());
+    for (double value : values) {
+        parts.push_back(FormatScoreValue(value));
+    }
+    return absl::StrJoin(parts, ",");
+}
+
+std::string FormatConfidenceInterval(const ConfidenceInterval &interval) {
+    return absl::StrCat("[", FormatRate(interval.low), ",", FormatRate(interval.high), "]");
+}
+
+std::vector<double> FinalScores(const open_spiel::State &state, const std::vector<double> &returns) {
+    const auto *carcassonne_state = dynamic_cast<const open_spiel::carcassonne::CarcassonneState *>(&state);
+    if (carcassonne_state != nullptr) {
+        const auto &underlying = carcassonne_state->UnderlyingState();
+        return {static_cast<double>(underlying.player_scores[0]), static_cast<double>(underlying.player_scores[1])};
+    }
+    return returns;
+}
+
+int WinnerIndex(const std::vector<double> &scores) {
+    if (scores.size() < 2) {
+        return -1;
+    }
+    if (scores[0] > scores[1]) {
+        return 0;
+    }
+    if (scores[1] > scores[0]) {
+        return 1;
+    }
+    return -1;
+}
+
+std::string WinnerLabel(int winner) {
+    if (winner == 0) {
+        return "p1";
+    }
+    if (winner == 1) {
+        return "p2";
+    }
+    return "draw";
+}
+
 struct AZSpec {
     std::string path;
     std::string graph_def;
@@ -100,19 +190,32 @@ struct AZSpec {
     int checkpoint;
 };
 
-AZSpec GetAZSpecForPlayer(open_spiel::Player player) {
+struct SearchSpec {
+    double uct_c;
+    int max_simulations;
+    int max_memory_mb;
+    bool solve;
+};
+
+struct PlayerSpec {
+    std::string type;
+    AZSpec az;
+    SearchSpec search;
+};
+
+PlayerSpec GetPlayerSpec(open_spiel::Player player) {
     if (player == 1) {
-        const std::string az2_path = absl::GetFlag(FLAGS_az2_path);
-        const std::string az2_graph_def = absl::GetFlag(FLAGS_az2_graph_def);
-        const std::string az2_device = absl::GetFlag(FLAGS_az2_device);
-        const int az2_checkpoint = absl::GetFlag(FLAGS_az2_checkpoint);
-        return AZSpec{az2_path.empty() ? absl::GetFlag(FLAGS_az_path) : az2_path,
-                      az2_graph_def.empty() ? absl::GetFlag(FLAGS_az_graph_def) : az2_graph_def,
-                      az2_device.empty() ? absl::GetFlag(FLAGS_az_device) : az2_device,
-                      az2_checkpoint == kUnsetAz2Checkpoint ? absl::GetFlag(FLAGS_az_checkpoint) : az2_checkpoint};
+        return PlayerSpec{absl::GetFlag(FLAGS_p2_type),
+                          AZSpec{absl::GetFlag(FLAGS_p2_az_path), absl::GetFlag(FLAGS_p2_az_graph_def),
+                                 absl::GetFlag(FLAGS_p2_az_device), absl::GetFlag(FLAGS_p2_az_checkpoint)},
+                          SearchSpec{absl::GetFlag(FLAGS_p2_uct_c), absl::GetFlag(FLAGS_p2_max_simulations),
+                                     absl::GetFlag(FLAGS_p2_max_memory_mb), absl::GetFlag(FLAGS_p2_solve)}};
     }
-    return AZSpec{absl::GetFlag(FLAGS_az_path), absl::GetFlag(FLAGS_az_graph_def), absl::GetFlag(FLAGS_az_device),
-                  absl::GetFlag(FLAGS_az_checkpoint)};
+    return PlayerSpec{absl::GetFlag(FLAGS_p1_type),
+                      AZSpec{absl::GetFlag(FLAGS_p1_az_path), absl::GetFlag(FLAGS_p1_az_graph_def),
+                             absl::GetFlag(FLAGS_p1_az_device), absl::GetFlag(FLAGS_p1_az_checkpoint)},
+                      SearchSpec{absl::GetFlag(FLAGS_p1_uct_c), absl::GetFlag(FLAGS_p1_max_simulations),
+                                 absl::GetFlag(FLAGS_p1_max_memory_mb), absl::GetFlag(FLAGS_p1_solve)}};
 }
 
 bool SameAZSpec(const AZSpec &left, const AZSpec &right) {
@@ -129,73 +232,75 @@ InitAZEvaluator(const open_spiel::Game &game, const AZSpec &spec,
 
     auto device_manager = std::make_unique<open_spiel::algorithms::torch_az::DeviceManager>();
     device_manager->AddDevice(open_spiel::algorithms::torch_az::VPNetModel(game, spec.path, spec.graph_def, spec.device));
-    device_manager->Get(0, 0)->LoadCheckpoint(spec.checkpoint);
-    auto evaluator =
-        std::make_shared<open_spiel::algorithms::torch_az::VPNetEvaluator>(device_manager.get(),
-                                                                           /*batch_size=*/absl::GetFlag(FLAGS_az_batch_size),
-                                                                           /*threads=*/absl::GetFlag(FLAGS_az_threads),
-                                                                           /*cache_size=*/absl::GetFlag(FLAGS_az_cache_size),
-                                                                           /*cache_shards=*/absl::GetFlag(FLAGS_az_cache_shards),
-                                                                           /*batch_wait_ms=*/1,
-                                                                           absl::GetFlag(FLAGS_az_value_is_current_player));
+    device_manager->Get(0, 0)->LoadCheckpointWeightsOnly(spec.checkpoint);
+    const int batch_size = std::max(1, absl::GetFlag(FLAGS_az_batch_size));
+    const int threads = batch_size > 1 ? std::max(1, absl::GetFlag(FLAGS_az_threads)) : 0;
+    auto evaluator = std::make_shared<open_spiel::algorithms::torch_az::VPNetEvaluator>(
+        device_manager.get(),
+        /*batch_size=*/batch_size,
+        /*threads=*/threads,
+        /*cache_size=*/std::max(0, absl::GetFlag(FLAGS_az_cache_size)),
+        /*cache_shards=*/std::max(1, absl::GetFlag(FLAGS_az_cache_shards)),
+        /*batch_wait_ms=*/1,
+        absl::GetFlag(FLAGS_az_value_is_current_player));
     device_managers->push_back(std::move(device_manager));
     return evaluator;
 }
 
-std::unique_ptr<open_spiel::Bot> InitBot(std::string type, const open_spiel::Game &game, open_spiel::Player player,
+std::unique_ptr<open_spiel::Bot> InitBot(const PlayerSpec &spec, const open_spiel::Game &game, open_spiel::Player player,
                                          std::shared_ptr<open_spiel::algorithms::Evaluator> evaluator,
                                          std::shared_ptr<open_spiel::algorithms::torch_az::VPNetEvaluator> az_evaluator,
                                          uint_fast32_t seed) {
-    if (type == "az") {
+    if (spec.type == "az") {
         if (az_evaluator == nullptr) {
             open_spiel::SpielFatalError("AlphaZero evaluator is not initialized.");
         }
         return std::make_unique<open_spiel::algorithms::MCTSBot>(
-            game, std::move(az_evaluator), absl::GetFlag(FLAGS_uct_c), absl::GetFlag(FLAGS_max_simulations),
-            absl::GetFlag(FLAGS_max_memory_mb), absl::GetFlag(FLAGS_solve), seed, absl::GetFlag(FLAGS_verbose),
+            game, std::move(az_evaluator), spec.search.uct_c, spec.search.max_simulations, spec.search.max_memory_mb,
+            spec.search.solve, seed, absl::GetFlag(FLAGS_verbose),
             open_spiel::algorithms::ChildSelectionPolicy::PUCT, 0, 0,
             /*dont_return_chance_node=*/true);
     }
-    if (type == "puct_mcts") {
+    if (spec.type == "puct_mcts") {
         return std::make_unique<open_spiel::algorithms::MCTSBot>(
-            game, std::move(evaluator), absl::GetFlag(FLAGS_uct_c), absl::GetFlag(FLAGS_max_simulations),
-            absl::GetFlag(FLAGS_max_memory_mb), absl::GetFlag(FLAGS_solve), seed, absl::GetFlag(FLAGS_verbose),
+            game, std::move(evaluator), spec.search.uct_c, spec.search.max_simulations, spec.search.max_memory_mb,
+            spec.search.solve, seed, absl::GetFlag(FLAGS_verbose),
             open_spiel::algorithms::ChildSelectionPolicy::PUCT, 0, 0,
             /*dont_return_chance_node=*/true);
     }
-    if (type == "az_prior_rollout_value" || type == "network_prior_rollout_value") {
+    if (spec.type == "az_prior_rollout_value" || spec.type == "network_prior_rollout_value") {
         if (az_evaluator == nullptr) {
             open_spiel::SpielFatalError("AlphaZero evaluator is not initialized.");
         }
         auto split_evaluator = std::make_shared<SplitEvaluator>(az_evaluator, evaluator);
         return std::make_unique<open_spiel::algorithms::MCTSBot>(
-            game, std::move(split_evaluator), absl::GetFlag(FLAGS_uct_c), absl::GetFlag(FLAGS_max_simulations),
-            absl::GetFlag(FLAGS_max_memory_mb), absl::GetFlag(FLAGS_solve), seed, absl::GetFlag(FLAGS_verbose),
+            game, std::move(split_evaluator), spec.search.uct_c, spec.search.max_simulations,
+            spec.search.max_memory_mb, spec.search.solve, seed, absl::GetFlag(FLAGS_verbose),
             open_spiel::algorithms::ChildSelectionPolicy::PUCT, 0, 0,
             /*dont_return_chance_node=*/true);
     }
-    if (type == "uniform_prior_az_value") {
+    if (spec.type == "uniform_prior_az_value") {
         if (az_evaluator == nullptr) {
             open_spiel::SpielFatalError("AlphaZero evaluator is not initialized.");
         }
         auto split_evaluator = std::make_shared<SplitEvaluator>(evaluator, az_evaluator);
         return std::make_unique<open_spiel::algorithms::MCTSBot>(
-            game, std::move(split_evaluator), absl::GetFlag(FLAGS_uct_c), absl::GetFlag(FLAGS_max_simulations),
-            absl::GetFlag(FLAGS_max_memory_mb), absl::GetFlag(FLAGS_solve), seed, absl::GetFlag(FLAGS_verbose),
+            game, std::move(split_evaluator), spec.search.uct_c, spec.search.max_simulations,
+            spec.search.max_memory_mb, spec.search.solve, seed, absl::GetFlag(FLAGS_verbose),
             open_spiel::algorithms::ChildSelectionPolicy::PUCT, 0, 0,
             /*dont_return_chance_node=*/true);
     }
-    if (type == "human") {
+    if (spec.type == "human") {
         return std::make_unique<open_spiel::HumanBot>();
     }
-    if (type == "mcts") {
+    if (spec.type == "mcts") {
         return std::make_unique<open_spiel::algorithms::MCTSBot>(
-            game, std::move(evaluator), absl::GetFlag(FLAGS_uct_c), absl::GetFlag(FLAGS_max_simulations),
-            absl::GetFlag(FLAGS_max_memory_mb), absl::GetFlag(FLAGS_solve), seed, absl::GetFlag(FLAGS_verbose),
+            game, std::move(evaluator), spec.search.uct_c, spec.search.max_simulations, spec.search.max_memory_mb,
+            spec.search.solve, seed, absl::GetFlag(FLAGS_verbose),
             open_spiel::algorithms::ChildSelectionPolicy::UCT, 0, 0,
             /*dont_return_chance_node=*/true);
     }
-    if (type == "random") {
+    if (spec.type == "random") {
         return open_spiel::MakeUniformRandomBot(player, seed);
     }
 
@@ -212,10 +317,8 @@ open_spiel::Action GetAction(const open_spiel::State &state, std::string action_
     return open_spiel::kInvalidAction;
 }
 
-std::pair<std::vector<double>, std::vector<std::string>> PlayGame(const open_spiel::Game &game,
-                                                                  std::vector<std::unique_ptr<open_spiel::Bot>> &bots,
-                                                                  std::mt19937 &rng,
-                                                                  const std::vector<std::string> &initial_actions) {
+GameResult PlayGame(const open_spiel::Game &game, std::vector<std::unique_ptr<open_spiel::Bot>> &bots, std::mt19937 &rng,
+                    const std::vector<std::string> &initial_actions) {
     bool quiet = absl::GetFlag(FLAGS_quiet);
     std::unique_ptr<open_spiel::State> state = game.NewInitialState();
     std::vector<std::string> history;
@@ -276,7 +379,8 @@ std::pair<std::vector<double>, std::vector<std::string>> PlayGame(const open_spi
         std::cerr << "Game actions: " << absl::StrJoin(history, ", ") << std::endl;
     }
 
-    return {state->Returns(), history};
+    const std::vector<double> returns = state->Returns();
+    return {returns, history, FinalScores(*state, returns)};
 }
 
 int main(int argc, char **argv) {
@@ -296,30 +400,28 @@ int main(int argc, char **argv) {
         open_spiel::SpielFatalError("Game must have terminal rewards.");
     if (game_type.dynamics != open_spiel::GameType::Dynamics::kSequential)
         open_spiel::SpielFatalError("Game must have sequential turns.");
-    const std::string player1 = absl::GetFlag(FLAGS_player1);
-    const std::string player2 = absl::GetFlag(FLAGS_player2);
+    const PlayerSpec p1_spec = GetPlayerSpec(0);
+    const PlayerSpec p2_spec = GetPlayerSpec(1);
     const int num_games = absl::GetFlag(FLAGS_num_games);
     const int worker_count = num_games > 0 ? std::min(num_games, std::max(1, absl::GetFlag(FLAGS_num_workers))) : 0;
-    if ((player1 == "human" || player2 == "human") && worker_count > 1) {
+    if ((p1_spec.type == "human" || p2_spec.type == "human") && worker_count > 1) {
         open_spiel::SpielFatalError("Human players can only be used with --num_workers=1.");
     }
 
-    const bool player1_needs_az = RequiresAZEvaluator(player1);
-    const bool player2_needs_az = RequiresAZEvaluator(player2);
+    const bool player1_needs_az = RequiresAZEvaluator(p1_spec.type);
+    const bool player2_needs_az = RequiresAZEvaluator(p2_spec.type);
 
     std::vector<std::unique_ptr<open_spiel::algorithms::torch_az::DeviceManager>> device_managers;
     std::shared_ptr<open_spiel::algorithms::torch_az::VPNetEvaluator> az_evaluator1;
     std::shared_ptr<open_spiel::algorithms::torch_az::VPNetEvaluator> az_evaluator2;
-    AZSpec az_spec1 = GetAZSpecForPlayer(0);
-    AZSpec az_spec2 = GetAZSpecForPlayer(1);
     if (player1_needs_az) {
-        az_evaluator1 = InitAZEvaluator(*game, az_spec1, &device_managers);
+        az_evaluator1 = InitAZEvaluator(*game, p1_spec.az, &device_managers);
     }
     if (player2_needs_az) {
-        if (player1_needs_az && SameAZSpec(az_spec1, az_spec2)) {
+        if (player1_needs_az && SameAZSpec(p1_spec.az, p2_spec.az)) {
             az_evaluator2 = az_evaluator1;
         } else {
-            az_evaluator2 = InitAZEvaluator(*game, az_spec2, &device_managers);
+            az_evaluator2 = InitAZEvaluator(*game, p2_spec.az, &device_managers);
         }
     }
 
@@ -330,7 +432,6 @@ int main(int argc, char **argv) {
 
     absl::Mutex results_mutex;
     std::map<std::string, int> histories;
-    std::vector<double> overall_returns(2, 0);
     std::vector<int> overall_wins(2, 0);
     int overall_draws = 0;
     int completed_games = 0;
@@ -354,31 +455,35 @@ int main(int argc, char **argv) {
                     absl::GetFlag(FLAGS_rollout_count), SeedWithOffset(game_seed, 101));
 
                 std::vector<std::unique_ptr<open_spiel::Bot>> bots;
-                bots.push_back(InitBot(player1, *worker_game, 0, evaluator, az_evaluator1, SeedWithOffset(game_seed, 201)));
-                bots.push_back(InitBot(player2, *worker_game, 1, evaluator, az_evaluator2, SeedWithOffset(game_seed, 301)));
+                bots.push_back(InitBot(p1_spec, *worker_game, 0, evaluator, az_evaluator1, SeedWithOffset(game_seed, 201)));
+                bots.push_back(InitBot(p2_spec, *worker_game, 1, evaluator, az_evaluator2, SeedWithOffset(game_seed, 301)));
 
-                auto [returns, history] = PlayGame(*worker_game, bots, rng, initial_actions);
+                GameResult result = PlayGame(*worker_game, bots, rng, initial_actions);
 
                 {
                     absl::MutexLock lock(&results_mutex);
-                    histories[absl::StrJoin(history, " ")] += 1;
-                    bool has_winner = false;
-                    for (int i = 0; i < returns.size(); ++i) {
-                        double v = returns[i];
-                        overall_returns[i] += v;
-                        if (v > 0) {
-                            overall_wins[i] += 1;
-                            has_winner = true;
-                        }
-                    }
-                    if (!has_winner) {
+                    histories[absl::StrJoin(result.history, " ")] += 1;
+                    const int winner = WinnerIndex(result.final_scores);
+                    if (winner >= 0) {
+                        overall_wins[winner] += 1;
+                    } else {
                         ++overall_draws;
                     }
                     ++completed_games;
-                    std::cerr << "[game " << (game_num + 1) << " done " << completed_games << "/" << num_games
-                              << "] return: " << absl::StrJoin(returns, ", ")
-                              << " | cumulative wins: " << absl::StrJoin(overall_wins, ", ")
-                              << ", returns: " << absl::StrJoin(overall_returns, ", ") << std::endl;
+                    const ConfidenceInterval p1_ci =
+                        Wilson95ConfidenceInterval(overall_wins[0], completed_games);
+                    const ConfidenceInterval p2_ci =
+                        Wilson95ConfidenceInterval(overall_wins[1], completed_games);
+                    std::cerr << "result id=" << (game_num + 1) << " completed=" << completed_games << "/"
+                              << num_games << " winner=" << WinnerLabel(winner)
+                              << " final_score=" << FormatScoreVector(result.final_scores)
+                              << " p1_win_rate="
+                              << FormatRate(static_cast<double>(overall_wins[0]) / completed_games)
+                              << " p1_ci95=" << FormatConfidenceInterval(p1_ci)
+                              << " p2_win_rate="
+                              << FormatRate(static_cast<double>(overall_wins[1]) / completed_games)
+                              << " p2_ci95=" << FormatConfidenceInterval(p2_ci)
+                              << " draws=" << overall_draws << std::endl;
                 }
             }
         }));
@@ -390,11 +495,10 @@ int main(int argc, char **argv) {
 
     std::cerr << "Number of games played: " << completed_games << std::endl;
     std::cerr << "Number of distinct games played: " << histories.size() << std::endl;
-    std::cerr << "Players: " << player1 << ", " << player2 << std::endl;
+    std::cerr << "Players: " << p1_spec.type << ", " << p2_spec.type << std::endl;
     std::cerr << "Overall wins: " << absl::StrJoin(overall_wins, ", ") << std::endl;
     std::cerr << "Overall losses: " << overall_wins[1] << ", " << overall_wins[0] << std::endl;
     std::cerr << "Overall draws: " << overall_draws << std::endl;
-    std::cerr << "Overall returns: " << absl::StrJoin(overall_returns, ", ") << std::endl;
 
     return 0;
 }

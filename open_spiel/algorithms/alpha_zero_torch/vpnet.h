@@ -145,6 +145,8 @@ class VPNetModel {
   std::string SaveCheckpoint(int step);
   void LoadCheckpoint(int step);
   void LoadCheckpoint(const std::string& path);
+  void LoadCheckpointWeightsOnly(int step);
+  void LoadCheckpointWeightsOnly(const std::string& path);
 
   std::string Device() const { return device_; }
 

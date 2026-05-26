@@ -44,17 +44,20 @@ run_match() {
 
   "${BIN}" \
     --game=carcassonne \
-    --player1="${player1}" \
-    --player2="${player2}" \
-    --az_path="${MODEL_DIR}" \
-    --az_checkpoint="${CHECKPOINT}" \
-    --max_simulations="${sims}" \
+    --p1_type="${player1}" \
+    --p2_type="${player2}" \
+    --p1_az_path="${MODEL_DIR}" \
+    --p2_az_path="${MODEL_DIR}" \
+    --p1_az_checkpoint="${CHECKPOINT}" \
+    --p2_az_checkpoint="${CHECKPOINT}" \
+    --p1_max_simulations="${sims}" \
+    --p2_max_simulations="${sims}" \
     --num_games="${NUM_GAMES}" \
     --seed="${SEED}" \
     --quiet=true \
     > "${log}" 2>&1
 
-  grep -E "^(Number of games played|Players:|Overall wins:|Overall returns:)" "${log}" | tee -a "${SUMMARY}" || true
+  grep -E "^(Number of games played|Players:|Overall wins:)" "${log}" | tee -a "${SUMMARY}" || true
   echo "log=${log}" | tee -a "${SUMMARY}"
   echo | tee -a "${SUMMARY}"
 }

@@ -76,7 +76,7 @@ $ ./build/examples/alpha_zero_torch_example /home/me/az_example/config.json
 A trained LibTorch AlphaZero can be played by running
 `alpha_zero_torch_game_example`:
 ```sh
-$ ./build/examples/alpha_zero_torch_game_example --game=tic_tac_toe --player1=az --player2=mcts --az_path=/home/me/az_example/ --az_checkpoint=-1
+$ ./build/examples/alpha_zero_torch_game_example --game=tic_tac_toe --p1_type=az --p2_type=mcts --p1_az_path=/home/me/az_example/ --p1_az_checkpoint=-1
 ```
 Run with the `--help` flag to see a complete list of flags and a brief
 description of each.
@@ -87,4 +87,3 @@ description of each.
 There was a contribution [#940](https://github.com/google-deepmind/open_spiel/pull/940)
 that added TD(lambda) returns. It was never merged and correctness never fully
 verified, but may be useful if you would like lambda returns.
-

@@ -302,21 +302,23 @@ for round in $(seq 1 "${ROUNDS}"); do
   run_to_log "${first_log}" \
     "${PLAY}" \
     --game="${GAME}" \
-    --player1=az \
-    --player2=mcts \
-    --az_path="${model}" \
-    --az_checkpoint=-3 \
-    --az_device="${DEVICE}" \
+    --p1_type=az \
+    --p2_type=mcts \
+    --p1_az_path="${model}" \
+    --p1_az_checkpoint=-3 \
+    --p1_az_device="${DEVICE}" \
     --az_value_is_current_player=true \
     --az_batch_size=64 \
     --az_threads=16 \
     --az_cache_size=65536 \
     --az_cache_shards=16 \
-    --max_simulations="${MCTS_SIMS}" \
+    --p1_max_simulations="${MCTS_SIMS}" \
+    --p2_max_simulations="${MCTS_SIMS}" \
     --rollout_count="${ROLLOUTS}" \
     --num_games="${EVAL_GAMES}" \
     --num_workers="${EVAL_WORKERS}" \
-    --solve="${SOLVE}" \
+    --p1_solve="${SOLVE}" \
+    --p2_solve="${SOLVE}" \
     --quiet=true \
     --seed=$((seed + 101))
 
@@ -324,21 +326,23 @@ for round in $(seq 1 "${ROUNDS}"); do
   run_to_log "${second_log}" \
     "${PLAY}" \
     --game="${GAME}" \
-    --player1=mcts \
-    --player2=az \
-    --az_path="${model}" \
-    --az_checkpoint=-3 \
-    --az_device="${DEVICE}" \
+    --p1_type=mcts \
+    --p2_type=az \
+    --p2_az_path="${model}" \
+    --p2_az_checkpoint=-3 \
+    --p2_az_device="${DEVICE}" \
     --az_value_is_current_player=true \
     --az_batch_size=64 \
     --az_threads=16 \
     --az_cache_size=65536 \
     --az_cache_shards=16 \
-    --max_simulations="${MCTS_SIMS}" \
+    --p1_max_simulations="${MCTS_SIMS}" \
+    --p2_max_simulations="${MCTS_SIMS}" \
     --rollout_count="${ROLLOUTS}" \
     --num_games="${EVAL_GAMES}" \
     --num_workers="${EVAL_WORKERS}" \
-    --solve="${SOLVE}" \
+    --p1_solve="${SOLVE}" \
+    --p2_solve="${SOLVE}" \
     --quiet=true \
     --seed=$((seed + 202))
 

@@ -1,5 +1,6 @@
 #include <cstdlib>
 #include <exception>
+#include <fstream>
 #include <iostream>
 #include <memory>
 #include <random>
@@ -25,6 +26,28 @@ constexpr double kDefaultUctC = 2.0;
 constexpr int kDefaultRolloutCount = 10;
 constexpr int kDefaultMaxMemoryMb = 1000;
 constexpr bool kDefaultSolve = true;
+
+std::string ShapeString(const std::vector<int> &shape) {
+    std::string result = "[";
+    for (int i = 0; i < shape.size(); ++i) {
+        if (i > 0) {
+            result += ",";
+        }
+        result += std::to_string(shape[i]);
+    }
+    result += "]";
+    return result;
+}
+
+int ShapeSize(const std::vector<int> &shape) {
+    int size = 1;
+    for (const int dim : shape) {
+        if (dim > 0) {
+            size *= dim;
+        }
+    }
+    return size;
+}
 
 std::string EnvString(const char *name, const std::string &default_value) {
     const char *value = std::getenv(name);
@@ -73,6 +96,46 @@ int DecodeMeepleAction(open_spiel::Action action) {
     return action - open_spiel::carcassonne::kMeepleActionOffset - 1;
 }
 
+open_spiel::algorithms::torch_az::ModelConfig LoadModelConfig(const std::string &path,
+                                                              const std::string &filename) {
+    const std::string full_path = path + "/" + filename;
+    std::ifstream file(full_path);
+    if (!file) {
+        throw std::runtime_error("AlphaZero model config not found: " + full_path);
+    }
+
+    open_spiel::algorithms::torch_az::ModelConfig config;
+    file >> config;
+    if (!file) {
+        throw std::runtime_error("Could not parse AlphaZero model config: " + full_path);
+    }
+    return config;
+}
+
+void ValidateModelConfig(const open_spiel::Game &game,
+                         const open_spiel::algorithms::torch_az::ModelConfig &config) {
+    const std::vector<int> game_shape = game.ObservationTensorShape();
+    if (config.observation_tensor_shape != game_shape) {
+        throw std::runtime_error("AlphaZero model observation shape " +
+                                 ShapeString(config.observation_tensor_shape) +
+                                 " does not match current game shape " + ShapeString(game_shape) +
+                                 ". Use a checkpoint trained after the latest observation-plane changes.");
+    }
+
+    const int config_size = ShapeSize(config.observation_tensor_shape);
+    if (config_size != game.ObservationTensorSize()) {
+        throw std::runtime_error("AlphaZero model observation size " + std::to_string(config_size) +
+                                 " does not match current game size " +
+                                 std::to_string(game.ObservationTensorSize()) + ".");
+    }
+
+    if (config.number_of_actions != game.NumDistinctActions()) {
+        throw std::runtime_error("AlphaZero model action count " + std::to_string(config.number_of_actions) +
+                                 " does not match current game action count " +
+                                 std::to_string(game.NumDistinctActions()) + ".");
+    }
+}
+
 class CarcassonneBotCli {
   public:
     CarcassonneBotCli()
@@ -83,6 +146,9 @@ class CarcassonneBotCli {
         if (command == "reset") {
             mirror_ = Carcassonne();
             return Ok();
+        }
+        if (command == "info") {
+            return Info();
         }
         if (command == "apply_draw") {
             mirror_.drawTile(request.at("type").get<int>());
@@ -104,6 +170,14 @@ class CarcassonneBotCli {
 
   private:
     json Ok() const { return json{{"ok", true}}; }
+
+    json Info() const {
+        const std::vector<int> shape = game_->ObservationTensorShape();
+        return json{{"ok", true},
+                    {"observation_shape", shape},
+                    {"observation_tensor_size", game_->ObservationTensorSize()},
+                    {"num_distinct_actions", game_->NumDistinctActions()}};
+    }
 
     open_spiel::carcassonne::CarcassonneState MakeState() const {
         return open_spiel::carcassonne::CarcassonneState(game_, mirror_);
@@ -131,10 +205,12 @@ class CarcassonneBotCli {
         if (az_path.empty()) {
             throw std::runtime_error("CARCASSONNE_AZ_PATH must be set for AlphaZero.");
         }
+        const std::string graph_def = EnvString("CARCASSONNE_AZ_GRAPH_DEF", "vpnet.pb");
+        ValidateModelConfig(*game_, LoadModelConfig(az_path, graph_def));
 
         az_device_manager_ = std::make_unique<open_spiel::algorithms::torch_az::DeviceManager>();
-        az_device_manager_->AddDevice(open_spiel::algorithms::torch_az::VPNetModel(
-            *game_, az_path, EnvString("CARCASSONNE_AZ_GRAPH_DEF", "vpnet.pb"), "/cpu:0"));
+        az_device_manager_->AddDevice(
+            open_spiel::algorithms::torch_az::VPNetModel(*game_, az_path, graph_def, "/cpu:0"));
         az_device_manager_->Get(0, 0)->LoadCheckpoint(EnvInt("CARCASSONNE_AZ_CHECKPOINT", -1));
         az_evaluator_ = std::make_shared<open_spiel::algorithms::torch_az::VPNetEvaluator>(
             az_device_manager_.get(), PositiveEnvInt("CARCASSONNE_AZ_BATCH_SIZE", 1),
@@ -168,7 +244,7 @@ class CarcassonneBotCli {
         } else if (bot == "mcts") {
             action = ChooseMcts(state, request.value("simulations", PositiveEnvInt("CARCASSONNE_MCTS_SIMULATIONS", 200)),
                                 seed);
-        } else if (bot == "alphazero") {
+        } else if (bot == "alphazero" || bot == "az") {
             action = ChooseAlphaZero(state, request.value("simulations", FallbackSimulations()), seed);
         } else {
             throw std::runtime_error("Unknown bot: " + bot);

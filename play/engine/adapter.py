@@ -33,7 +33,7 @@ PHASE_TILE = int(_carcassonne_cpp.PHASE_TILE)
 PHASE_MEEPLE = int(_carcassonne_cpp.PHASE_MEEPLE)
 PHASE_TERMINAL = int(_carcassonne_cpp.PHASE_TERMINAL)
 PHYSICAL_TO_CANONICAL_TYPE = list(getattr(_carcassonne_cpp, "PHYSICAL_TO_CANONICAL_TYPE", []))
-OPPONENT_MODES = {"player", "random", "mcts", "alphazero"}
+OPPONENT_MODES = {"player", "random", "mcts", "alphazero", "az"}
 DEFAULT_BOT_CLI = Path(__file__).resolve().parents[1] / "bin" / "carcassonne_bot_cli"
 
 
@@ -121,6 +121,8 @@ class CppCarcassonneAdapter:
 
     def _normalize_opponent_mode(self, opponent_mode: str) -> str:
         mode = opponent_mode.strip().lower()
+        if mode == "az":
+            mode = "alphazero"
         if mode not in OPPONENT_MODES:
             raise ValueError(f"Unknown opponent mode: {opponent_mode}")
         return mode

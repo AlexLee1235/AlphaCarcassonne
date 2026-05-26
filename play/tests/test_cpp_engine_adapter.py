@@ -82,6 +82,18 @@ def test_bot_cli_random_and_mcts_return_legal_actions() -> None:
         cli.close()
 
 
+def test_bot_cli_reports_latest_observation_shape() -> None:
+    cli = BotCliClient()
+    try:
+        response = cli.request({"cmd": "info"})
+    finally:
+        cli.close()
+
+    assert response["observation_shape"] == [80, ENGINE_BOARD_SIZE, ENGINE_BOARD_SIZE]
+    assert response["observation_tensor_size"] == 80 * ENGINE_BOARD_SIZE * ENGINE_BOARD_SIZE
+    assert response["num_distinct_actions"] == ENGINE_BOARD_SIZE * ENGINE_BOARD_SIZE * 4 + 6
+
+
 def test_bot_cli_alphazero_requires_model_path(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("CARCASSONNE_AZ_PATH", raising=False)
     engine = _carcassonne_cpp.Carcassonne()
@@ -90,6 +102,34 @@ def test_bot_cli_alphazero_requires_model_path(monkeypatch: pytest.MonkeyPatch) 
         draw_type = list(engine.get_available_draws())[0][0]
         cli.request({"cmd": "apply_draw", "type": draw_type})
         with pytest.raises(RuntimeError, match="CARCASSONNE_AZ_PATH"):
+            cli.request({"cmd": "choose", "bot": "alphazero", "seed": 123, "simulations": 1})
+    finally:
+        cli.close()
+
+
+def test_bot_cli_az_alias_requires_model_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("CARCASSONNE_AZ_PATH", raising=False)
+    cli = BotCliClient()
+    try:
+        with pytest.raises(RuntimeError, match="CARCASSONNE_AZ_PATH"):
+            cli.request({"cmd": "choose", "bot": "az", "seed": 123, "simulations": 1})
+    finally:
+        cli.close()
+
+
+def test_bot_cli_alphazero_rejects_legacy_observation_shape(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    monkeypatch.setenv("CARCASSONNE_AZ_PATH", str(tmp_path))
+    monkeypatch.setenv("CARCASSONNE_AZ_GRAPH_DEF", "vpnet.pb")
+    (tmp_path / "vpnet.pb").write_text("51 15 15 906 12 128 0.0001 0.0001 resnet")
+
+    engine = _carcassonne_cpp.Carcassonne()
+    cli = BotCliClient()
+    try:
+        draw_type = list(engine.get_available_draws())[0][0]
+        cli.request({"cmd": "apply_draw", "type": draw_type})
+        with pytest.raises(RuntimeError, match="model observation shape.*current game shape"):
             cli.request({"cmd": "choose", "bot": "alphazero", "seed": 123, "simulations": 1})
     finally:
         cli.close()
@@ -208,3 +248,11 @@ def test_adapter_alphazero_reports_missing_model_without_crashing(monkeypatch: p
 
     assert "CARCASSONNE_AZ_PATH" in adapter.ai_status
     adapter.close()
+
+
+def test_adapter_accepts_az_alias() -> None:
+    adapter = CppCarcassonneAdapter(seed=42, opponent_mode="az")
+    try:
+        assert adapter.opponent_mode == "alphazero"
+    finally:
+        adapter.close()

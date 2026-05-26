@@ -44,6 +44,24 @@
 
 
 
+  ./build/examples/alpha_zero_torch_game_example \
+  --game=carcassonne \
+  --p1_type=az \
+  --p2_type=az \
+  --p1_az_path=/tmp/az_carcassonne_reuse4_sim800_buffer131072 \
+  --p1_az_checkpoint=40 \
+  --p1_az_device=/cuda:0 \
+  --p1_max_simulations=160 \
+  --p2_az_path=/tmp/az_carcassonne_reuse4_sim800_buffer131072 \
+  --p2_az_checkpoint=50 \
+  --p2_az_device=/cuda:0 \
+  --p2_max_simulations=160 \
+  --num_games=100 \
+  --quiet=true \
+  --num_workers=16
+
+
+
 
 
 

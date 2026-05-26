@@ -63,7 +63,7 @@ ABSL_FLAG(bool, p2_solve, true, "Whether player 2 uses MCTS-Solver.");
 ABSL_FLAG(int, rollout_count, 10, "How many rollouts per evaluation.");
 ABSL_FLAG(int, num_games, 2, "How many games to play. Must be even for paired same-deck matches.");
 ABSL_FLAG(int, num_workers, 1, "How many games to play in parallel.");
-ABSL_FLAG(int, az_batch_size, 1, "Batch size of AZ inference.");
+ABSL_FLAG(int, az_batch_size, 0, "Batch size of AZ inference. 0 auto-scales from --num_workers.");
 ABSL_FLAG(int, az_threads, 1, "Number of threads to run for AZ inference.");
 ABSL_FLAG(int, az_cache_size, 16384, "Cache size of AZ algorithm.");
 ABSL_FLAG(int, az_cache_shards, 1, "Cache shards of AZ algorithm.");
@@ -242,7 +242,9 @@ InitAZEvaluator(const open_spiel::Game &game, const AZSpec &spec,
     auto device_manager = std::make_unique<open_spiel::algorithms::torch_az::DeviceManager>();
     device_manager->AddDevice(open_spiel::algorithms::torch_az::VPNetModel(game, spec.path, spec.graph_def, spec.device));
     device_manager->Get(0, 0)->LoadCheckpointWeightsOnly(spec.checkpoint);
-    const int batch_size = std::max(1, absl::GetFlag(FLAGS_az_batch_size));
+    const int requested_batch_size = absl::GetFlag(FLAGS_az_batch_size);
+    const int batch_size =
+        requested_batch_size > 0 ? requested_batch_size : std::max(1, std::min(64, absl::GetFlag(FLAGS_num_workers)));
     const int threads = batch_size > 1 ? std::max(1, absl::GetFlag(FLAGS_az_threads)) : 0;
     auto evaluator = std::make_shared<open_spiel::algorithms::torch_az::VPNetEvaluator>(
         device_manager.get(),
@@ -355,6 +357,9 @@ std::vector<open_spiel::Action> GenerateChanceSchedule(const open_spiel::Game &g
 
     const auto *carcassonne_state = dynamic_cast<const open_spiel::carcassonne::CarcassonneState *>(state.get());
     if (carcassonne_state == nullptr) {
+        if (game.GetType().chance_mode == open_spiel::GameType::ChanceMode::kDeterministic) {
+            return {};
+        }
         open_spiel::SpielFatalError("Paired same-deck matches require the carcassonne game.");
     }
 

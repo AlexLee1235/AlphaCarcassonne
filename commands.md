@@ -1,5 +1,35 @@
 
 ./build/examples/alpha_zero_torch_example \
+--actors=1024  \
+--checkpoint_freq=5  \
+--cutoff_probability=0.000000  \
+--cutoff_value=0.950000  \
+--devices=cuda:0  \
+--eval_levels=1  \
+--evaluation_window=50  \
+--evaluators=0  \
+--explicit_learning=false  \
+--game=carcassonne  \
+--inference_batch_size=64  \
+--inference_threads=16  \
+--learning_rate=0.000100  \
+--max_simulations=800  \
+--nn_model=resnet  \
+--nn_width=128  \
+--nn_depth=6  \
+--path=/tmp/az_carcassonne_reuse3_sim800_buffer65536  \
+--policy_alpha=0.300000  \
+--policy_epsilon=0.250000  \
+--replay_buffer_reuse=3  \
+--replay_buffer_size=65536  \
+--temperature=1.000000  \
+--temperature_drop=35.000000  \
+--train_batch_size=2048  \
+--uct_c=2.000000  \
+--weight_decay=0.000100
+
+
+./build/examples/alpha_zero_torch_example \
 --actors=128  \
 --checkpoint_freq=10  \
 --cutoff_probability=0.000000  \
@@ -36,7 +66,7 @@
   --p1_az_path=/tmp/az_carcassonne_reuse4_sim800_buffer131072 \
   --p1_az_checkpoint=-1 \
   --p1_az_device=/cuda:0 \
-  --p1_max_simulations=160 \
+  --p1_max_simulations=800 \
   --p2_max_simulations=160 \
   --num_games=100 \
   --quiet=true \
@@ -49,13 +79,13 @@
   --p1_type=az \
   --p2_type=az \
   --p1_az_path=/tmp/az_carcassonne_reuse4_sim800_buffer131072 \
-  --p1_az_checkpoint=40 \
+  --p1_az_checkpoint=60 \
   --p1_az_device=/cuda:0 \
   --p1_max_simulations=160 \
   --p2_az_path=/tmp/az_carcassonne_reuse4_sim800_buffer131072 \
-  --p2_az_checkpoint=50 \
+  --p2_az_checkpoint=60 \
   --p2_az_device=/cuda:0 \
-  --p2_max_simulations=160 \
+  --p2_max_simulations=1 \
   --num_games=100 \
   --quiet=true \
   --num_workers=16
@@ -64,7 +94,18 @@
 
 
 
-
+./build/examples/alpha_zero_torch_game_example \
+  --game=connect_four \
+  --p1_type=az \
+  --p2_type=mcts \
+  --p1_az_path=/mnt/c/achieve/Carcassonne/connect_four \
+  --p1_az_checkpoint=-1 \
+  --p1_az_device=/cuda:0 \
+  --p1_max_simulations=160 \
+  --p2_max_simulations=160 \
+  --num_games=100 \
+  --quiet=true \
+  --num_workers=16
 
 
 

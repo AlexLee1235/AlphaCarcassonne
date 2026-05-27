@@ -1,17 +1,19 @@
 from __future__ import annotations
 
+import argparse
 import os
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import flet as ft
 
 try:
     from domain import Move
-    from engine import BOARD_SIZE, CppCarcassonneAdapter
+    from engine import BOARD_SIZE, CppCarcassonneAdapter, PlayerSpec
 except ImportError:  # pragma: no cover - package import fallback
     from ..domain import Move
-    from ..engine import BOARD_SIZE, CppCarcassonneAdapter
+    from ..engine import BOARD_SIZE, CppCarcassonneAdapter, PlayerSpec
 
 
 IMAGE_FIT = getattr(ft, "ImageFit", ft.BoxFit)
@@ -22,10 +24,73 @@ ALIGN_BOTTOM_CENTER = ft.alignment.Alignment(0, 1)
 ALIGN_CENTER_LEFT = ft.alignment.Alignment(-1, 0)
 
 
+def _positive_int(value: str) -> int:
+    parsed = int(value)
+    if parsed < 1:
+        raise argparse.ArgumentTypeError("must be positive")
+    return parsed
+
+
+@dataclass(frozen=True)
+class PlayUiConfig:
+    game: str = "carcassonne"
+    p1_spec: PlayerSpec = field(default_factory=PlayerSpec)
+    p2_spec: PlayerSpec = field(default_factory=PlayerSpec)
+    seed: Optional[int] = None
+
+    @property
+    def player_specs(self) -> Tuple[PlayerSpec, PlayerSpec]:
+        return self.p1_spec, self.p2_spec
+
+
+def build_arg_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Carcassonne Flet UI")
+    player_types = ("human", "random", "mcts", "az", "alphazero")
+    parser.add_argument("--game", default="carcassonne")
+    parser.add_argument("--p1_type", choices=player_types, default="human")
+    parser.add_argument("--p2_type", choices=player_types, default="human")
+    parser.add_argument("--p1_az_path", default="")
+    parser.add_argument("--p2_az_path", default="")
+    parser.add_argument("--p1_az_checkpoint", type=int, default=None)
+    parser.add_argument("--p2_az_checkpoint", type=int, default=None)
+    parser.add_argument("--p1_az_graph_def", default="vpnet.pb")
+    parser.add_argument("--p2_az_graph_def", default="vpnet.pb")
+    parser.add_argument("--p1_max_simulations", type=_positive_int, default=None)
+    parser.add_argument("--p2_max_simulations", type=_positive_int, default=None)
+    parser.add_argument("--seed", type=int, default=0)
+    return parser
+
+
+def parse_ui_config(argv: Optional[Sequence[str]] = None) -> PlayUiConfig:
+    parser = build_arg_parser()
+    args = parser.parse_args(argv)
+    if args.game != "carcassonne":
+        parser.error("play UI currently supports --game=carcassonne only.")
+    return PlayUiConfig(
+        game=args.game,
+        p1_spec=PlayerSpec(
+            type=args.p1_type,
+            az_path=args.p1_az_path,
+            az_checkpoint=args.p1_az_checkpoint,
+            az_graph_def=args.p1_az_graph_def,
+            max_simulations=args.p1_max_simulations,
+        ),
+        p2_spec=PlayerSpec(
+            type=args.p2_type,
+            az_path=args.p2_az_path,
+            az_checkpoint=args.p2_az_checkpoint,
+            az_graph_def=args.p2_az_graph_def,
+            max_simulations=args.p2_max_simulations,
+        ),
+        seed=None if args.seed == 0 else args.seed,
+    )
+
+
 class CarcassonneUI:
-    def __init__(self, page: ft.Page):
+    def __init__(self, page: ft.Page, config: Optional[PlayUiConfig] = None):
         self.page = page
-        self.engine = CppCarcassonneAdapter()
+        self.config = config or PlayUiConfig()
+        self.engine = self._new_engine()
         self.state = self.engine.state
         self.view_origin = self.engine.view_origin
 
@@ -42,18 +107,6 @@ class CarcassonneUI:
         self.view_text = ft.Text()
         self.holding_image = ft.Image(src="tiles/1.png", width=140, height=140, fit=IMAGE_FIT.CONTAIN)
 
-        self.opponent_dropdown = ft.Dropdown(
-            value="player",
-            label="Opponent",
-            options=[
-                ft.DropdownOption(key="player", text="Player"),
-                ft.DropdownOption(key="random", text="Random"),
-                ft.DropdownOption(key="mcts", text="MCTS"),
-                ft.DropdownOption(key="alphazero", text="AlphaZero"),
-            ],
-            width=180,
-            on_select=self.on_opponent_change,
-        )
         self.new_game_btn = ft.ElevatedButton("New Game", on_click=self.on_new_game)
         self.confirm_btn = ft.ElevatedButton("Confirm Tile", on_click=self.on_confirm_tile)
         self.skip_btn = ft.OutlinedButton("Skip Meeple", on_click=lambda _: self.on_apply_move(-1))
@@ -93,7 +146,7 @@ class CarcassonneUI:
             content=ft.Column(
                 controls=[
                     ft.Text("Game Info", size=20, weight=ft.FontWeight.BOLD),
-                    ft.Row([self.opponent_dropdown, self.new_game_btn], wrap=True),
+                    ft.Row([self.new_game_btn], wrap=True),
                     self.turn_text,
                     self.ai_text,
                     self.holding_text,
@@ -135,6 +188,9 @@ class CarcassonneUI:
         self.page.add(self.root)
         self.refresh()
 
+    def _new_engine(self) -> CppCarcassonneAdapter:
+        return CppCarcassonneAdapter(seed=self.config.seed, player_specs=self.config.player_specs)
+
     def refresh(self) -> None:
         valid_moves = self.engine.get_valid_moves()
         self.state = self.engine.state
@@ -156,12 +212,9 @@ class CarcassonneUI:
             btn.disabled = ai_turn
 
         self.turn_text.value = f"Turn: {self.state.turn} | Player: P{self.state.current_player}"
+        self.ai_text.value = f"Mode: {self.engine.mode_label()}"
         if self.engine.ai_status:
-            self.ai_text.value = f"AI: {self.engine.ai_status}"
-        elif self.engine.opponent_mode == "player":
-            self.ai_text.value = "Mode: Player vs Player"
-        else:
-            self.ai_text.value = f"Mode: Player vs {self.engine.opponent_mode}"
+            self.ai_text.value += f"\nAI: {self.engine.ai_status}"
         self.holding_text.value = "Holding tile"
         self.view_text.value = (
             f"View X: {self.view_origin[0]}-{self.view_origin[0] + BOARD_SIZE - 1} | "
@@ -209,12 +262,16 @@ class CarcassonneUI:
 
         bg = "#ffffff"
         border_color = "#cccccc"
+        border_width = 1
         if is_valid:
             bg = "#ecfdf3"
             border_color = "#63b36f"
         if is_selected:
             bg = "#fff3cd"
             border_color = "#d18e00"
+        if tile is not None and tile.tile_owner is not None:
+            border_color = self._player_color(tile.tile_owner)
+            border_width = 3
 
         content: ft.Control
         if tile is not None:
@@ -251,14 +308,19 @@ class CarcassonneUI:
             width=36,
             height=36,
             bgcolor=bg,
-            border=ft.border.all(1, border_color),
+            border=ft.border.all(border_width, border_color),
             alignment=ALIGN_CENTER,
             content=content,
             on_click=lambda _: self.on_cell_click(x, y, moves_by_cell),
         )
 
+    def _player_color(self, owner: int) -> str:
+        if owner == 0:
+            return "#111111"
+        return "#3b82f6" if owner == 1 else "#ef4444"
+
     def _build_meeple_marker(self, owner: int, meeple_pos: int) -> ft.Container:
-        color = "#3b82f6" if owner == 1 else "#ef4444"
+        color = self._player_color(owner)
         position_align = {
             0: ALIGN_TOP_CENTER,
             1: ALIGN_CENTER_RIGHT,
@@ -335,8 +397,8 @@ class CarcassonneUI:
             return
         old_scores = dict(self.state.scores)
         try:
-            if self.engine.opponent_mode != "player":
-                self.status.value = f"{self.engine.opponent_mode} thinking..."
+            if self.engine.has_bot_players():
+                self.status.value = "Bot thinking..."
                 self.page.update()
             self.engine.apply_meeple(meeple_pos)
         except ValueError as exc:
@@ -359,14 +421,10 @@ class CarcassonneUI:
         self.meeple_options = []
         self.refresh()
 
-    def on_opponent_change(self, _: ft.ControlEvent) -> None:
-        self.status.value = "Opponent mode will apply to the next new game."
-        self.refresh()
-
     def on_new_game(self, _: ft.ControlEvent) -> None:
-        mode = self.opponent_dropdown.value or "player"
         try:
-            self.engine = CppCarcassonneAdapter(opponent_mode=mode)
+            self.engine.close()
+            self.engine = self._new_engine()
         except ValueError as exc:
             self.status.value = str(exc)
             self.refresh()
@@ -376,23 +434,25 @@ class CarcassonneUI:
         self.selected_move = None
         self.awaiting_meeple = False
         self.meeple_options = []
-        self.status.value = f"New game: Player vs {mode}."
+        self.status.value = f"New game: {self.engine.mode_label()}."
         self.refresh()
 
 
-def main(page: ft.Page) -> None:
-    CarcassonneUI(page)
+def main(page: ft.Page, config: Optional[PlayUiConfig] = None) -> None:
+    CarcassonneUI(page, config)
 
 
-def run_app() -> None:
+def run_app(argv: Optional[Sequence[str]] = None) -> None:
+    config = parse_ui_config(argv)
     assets_dir = str(Path(__file__).resolve().parent.parent.parent)
     mode = os.getenv("CARCASSONNE_UI_MODE", "web").lower()
+    app_main = lambda page: main(page, config)
     if mode == "desktop":
-        ft.run(main, assets_dir=assets_dir, view=ft.AppView.FLET_APP)
+        ft.run(app_main, assets_dir=assets_dir, view=ft.AppView.FLET_APP)
         return
 
     host = os.getenv("CARCASSONNE_UI_HOST", "127.0.0.1")
     port = int(os.getenv("CARCASSONNE_UI_PORT", os.getenv("FLET_SERVER_PORT", "8550")))
     os.environ.setdefault("FLET_FORCE_WEB_SERVER", "true")
     print(f"Carcassonne UI: http://{host}:{port}")
-    ft.run(main, assets_dir=assets_dir, host=host, port=port, view=ft.AppView.WEB_BROWSER)
+    ft.run(app_main, assets_dir=assets_dir, host=host, port=port, view=ft.AppView.WEB_BROWSER)

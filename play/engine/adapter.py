@@ -5,6 +5,7 @@ import random
 import secrets
 import os
 import subprocess
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -34,6 +35,9 @@ PHASE_MEEPLE = int(_carcassonne_cpp.PHASE_MEEPLE)
 PHASE_TERMINAL = int(_carcassonne_cpp.PHASE_TERMINAL)
 PHYSICAL_TO_CANONICAL_TYPE = list(getattr(_carcassonne_cpp, "PHYSICAL_TO_CANONICAL_TYPE", []))
 OPPONENT_MODES = {"player", "random", "mcts", "alphazero", "az"}
+PLAYER_TYPES = {"human", "random", "mcts", "alphazero", "az"}
+BOT_TYPES = {"random", "mcts", "alphazero"}
+DEFAULT_MAX_SIMULATIONS = 200
 DEFAULT_BOT_CLI = Path(__file__).resolve().parents[1] / "bin" / "carcassonne_bot_cli"
 
 
@@ -47,13 +51,68 @@ def _physical_to_art_id(physical_id: int) -> int:
     return PHYSICAL_TO_CANONICAL_TYPE[physical_id]
 
 
+def _normalize_player_type(player_type: str) -> str:
+    mode = player_type.strip().lower()
+    if mode == "player":
+        mode = "human"
+    if mode == "az":
+        mode = "alphazero"
+    if mode not in {"human", "random", "mcts", "alphazero"}:
+        raise ValueError(f"Unknown player type: {player_type}")
+    return mode
+
+
+@dataclass(frozen=True)
+class PlayerSpec:
+    type: str = "human"
+    az_path: str = ""
+    az_checkpoint: Optional[int] = None
+    az_graph_def: str = "vpnet.pb"
+    max_simulations: Optional[int] = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "type", _normalize_player_type(self.type))
+        if self.max_simulations is not None and self.max_simulations < 1:
+            raise ValueError("max_simulations must be positive.")
+
+    @property
+    def is_human(self) -> bool:
+        return self.type == "human"
+
+    @property
+    def is_bot(self) -> bool:
+        return self.type in BOT_TYPES
+
+    @property
+    def label(self) -> str:
+        return "az" if self.type == "alphazero" else self.type
+
+    def bot_env(self) -> Dict[str, str]:
+        env: Dict[str, str] = {}
+        if self.az_path:
+            env["CARCASSONNE_AZ_PATH"] = self.az_path
+        if self.az_checkpoint is not None:
+            env["CARCASSONNE_AZ_CHECKPOINT"] = str(self.az_checkpoint)
+        if self.az_graph_def:
+            env["CARCASSONNE_AZ_GRAPH_DEF"] = self.az_graph_def
+        if self.max_simulations is not None:
+            if self.type == "alphazero":
+                env["CARCASSONNE_AZ_SIMULATIONS"] = str(self.max_simulations)
+            elif self.type == "mcts":
+                env["CARCASSONNE_MCTS_SIMULATIONS"] = str(self.max_simulations)
+        return env
+
+
 class BotCliClient:
-    def __init__(self, path: Optional[str] = None):
+    def __init__(self, path: Optional[str] = None, env: Optional[Dict[str, str]] = None):
         cli_path = Path(path or os.getenv("CARCASSONNE_BOT_CLI", str(DEFAULT_BOT_CLI)))
         if not cli_path.exists():
             raise RuntimeError(
                 f"Carcassonne bot CLI not found at {cli_path}. Build it with `python play/setup.py build_ext --inplace`."
             )
+        process_env = os.environ.copy()
+        if env:
+            process_env.update(env)
         self._proc = subprocess.Popen(
             [str(cli_path)],
             stdin=subprocess.PIPE,
@@ -61,6 +120,7 @@ class BotCliClient:
             stderr=subprocess.PIPE,
             text=True,
             bufsize=1,
+            env=process_env,
         )
         self.request({"cmd": "reset"})
 
@@ -93,31 +153,56 @@ class BotCliClient:
 
 
 class CppCarcassonneAdapter:
-    def __init__(self, seed: Optional[int] = None, opponent_mode: str = "player"):
+    def __init__(
+        self,
+        seed: Optional[int] = None,
+        opponent_mode: str = "player",
+        player_specs: Optional[Tuple[PlayerSpec, PlayerSpec]] = None,
+    ):
         if seed is None:
             seed = secrets.randbits(32)
         self._rng = random.Random(seed)
-        self.opponent_mode = self._normalize_opponent_mode(opponent_mode)
+        self.player_specs = self._resolve_player_specs(opponent_mode, player_specs)
+        self.opponent_mode = "player" if self.player_specs[1].is_human else self.player_specs[1].type
         self.ai_status = ""
         self._engine = _carcassonne_cpp.Carcassonne()
-        self._bot_cli: Optional[BotCliClient] = None
+        self._bot_clis: Dict[int, BotCliClient] = {}
+        self._latest_tile_marker: Optional[Tuple[Tuple[int, int], int]] = None
         self._turn = 1
         self._pending_meeple_options: List[int] = []
         self._viewport_origin = self._default_viewport_origin()
-        self._start_bot_cli()
+        self._start_bot_clis()
         self._resolve_chance_phase()
         self.state = self._build_state()
+        self.run_ai_turns()
 
     def close(self) -> None:
-        if self._bot_cli is not None:
-            self._bot_cli.close()
-            self._bot_cli = None
+        for client in self._bot_clis.values():
+            client.close()
+        self._bot_clis = {}
 
     def __del__(self) -> None:
         try:
             self.close()
         except Exception:
             pass
+
+    def _resolve_player_specs(
+        self,
+        opponent_mode: str,
+        player_specs: Optional[Tuple[PlayerSpec, PlayerSpec]],
+    ) -> Tuple[PlayerSpec, PlayerSpec]:
+        if player_specs is not None:
+            if len(player_specs) != 2:
+                raise ValueError("player_specs must contain exactly two players.")
+            return (
+                PlayerSpec(**player_specs[0].__dict__),
+                PlayerSpec(**player_specs[1].__dict__),
+            )
+
+        mode = self._normalize_opponent_mode(opponent_mode)
+        p2_type = "human" if mode == "player" else mode
+        return PlayerSpec("human"), PlayerSpec(p2_type)
 
     def _normalize_opponent_mode(self, opponent_mode: str) -> str:
         mode = opponent_mode.strip().lower()
@@ -138,71 +223,91 @@ class CppCarcassonneAdapter:
         value = os.getenv("CARCASSONNE_AZ_SIMULATIONS", os.getenv("CARCASSONNE_MCTS_SIMULATIONS", "200"))
         return max(1, int(value))
 
-    def _start_bot_cli(self) -> None:
-        if self.opponent_mode == "player":
+    def _simulations_for(self, spec: PlayerSpec) -> int:
+        if spec.max_simulations is not None:
+            return spec.max_simulations
+        if spec.type == "alphazero":
+            return self._az_simulations()
+        if spec.type == "mcts":
+            return self._mcts_simulations()
+        return DEFAULT_MAX_SIMULATIONS
+
+    def _start_bot_clis(self) -> None:
+        for player in range(2):
+            if self.player_specs[player].is_bot:
+                self._start_bot_cli(player)
+
+    def _start_bot_cli(self, player: int) -> None:
+        if player in self._bot_clis:
+            return
+        spec = self.player_specs[player]
+        if not spec.is_bot:
             return
         try:
-            self._bot_cli = BotCliClient()
+            self._bot_clis[player] = BotCliClient(env=spec.bot_env())
         except Exception as exc:
-            self.ai_status = str(exc)
-            self._bot_cli = None
+            self.ai_status = f"P{player + 1} {spec.label}: {exc}"
 
-    def _bot_request(self, payload: dict) -> dict:
-        if self._bot_cli is None:
-            self._start_bot_cli()
-        if self._bot_cli is None:
+    def _bot_request(self, player: int, payload: dict) -> dict:
+        if player not in self._bot_clis:
+            self._start_bot_cli(player)
+        client = self._bot_clis.get(player)
+        if client is None:
             raise RuntimeError(self.ai_status or "Carcassonne bot CLI is unavailable.")
-        return self._bot_cli.request(payload)
+        return client.request(payload)
 
-    def _sync_bot(self, payload: dict) -> None:
-        if self.opponent_mode == "player":
-            return
-        try:
-            self._bot_request(payload)
-        except Exception as exc:
-            self.ai_status = str(exc)
+    def _sync_bots(self, payload: dict) -> None:
+        for player, spec in enumerate(self.player_specs):
+            if not spec.is_bot:
+                continue
+            try:
+                self._bot_request(player, payload)
+            except Exception as exc:
+                self.ai_status = f"P{player + 1} {spec.label}: {exc}"
+
+    def has_bot_players(self) -> bool:
+        return any(spec.is_bot for spec in self.player_specs)
+
+    def controller_label(self, player: int) -> str:
+        return self.player_specs[player - 1].label
+
+    def mode_label(self) -> str:
+        return f"P1 {self.controller_label(1)} vs P2 {self.controller_label(2)}"
+
+    def _current_player_index(self) -> int:
+        return int(self._engine.current_player)
+
+    def _current_player_spec(self) -> PlayerSpec:
+        return self.player_specs[self._current_player_index()]
 
     def is_ai_turn(self) -> bool:
-        return (
-            self.opponent_mode != "player"
-            and not self._engine.is_game_over
-            and self._engine.current_player == 1
-            and not self._pending_meeple_options
-        )
+        if self._engine.is_game_over or self._pending_meeple_options:
+            return False
+        return self._current_player_spec().is_bot
 
-    def _choose_ai_tile_move(self) -> Tuple[int, int, int]:
-        if self.opponent_mode in {"random", "mcts", "alphazero"}:
-            response = self._bot_request(
-                {
-                    "cmd": "choose",
-                    "bot": self.opponent_mode,
-                    "seed": self._next_seed(),
-                    "simulations": self._az_simulations()
-                    if self.opponent_mode == "alphazero"
-                    else self._mcts_simulations(),
-                }
-            )
-            if response.get("kind") != "tile":
-                raise RuntimeError(f"Expected tile action from bot CLI, got {response.get('kind')}.")
-            return int(response["x"]), int(response["y"]), int(response["rot"])
-        raise ValueError(f"Mode {self.opponent_mode} has no AI tile move")
+    def _choose_payload(self, spec: PlayerSpec) -> dict:
+        payload = {"cmd": "choose", "bot": spec.type, "seed": self._next_seed()}
+        if spec.type in {"mcts", "alphazero"}:
+            payload["simulations"] = self._simulations_for(spec)
+        return payload
 
-    def _choose_ai_meeple_move(self) -> int:
-        if self.opponent_mode in {"random", "mcts", "alphazero"}:
-            response = self._bot_request(
-                {
-                    "cmd": "choose",
-                    "bot": self.opponent_mode,
-                    "seed": self._next_seed(),
-                    "simulations": self._az_simulations()
-                    if self.opponent_mode == "alphazero"
-                    else self._mcts_simulations(),
-                }
-            )
-            if response.get("kind") != "meeple":
-                raise RuntimeError(f"Expected meeple action from bot CLI, got {response.get('kind')}.")
-            return int(response["pos"])
-        raise ValueError(f"Mode {self.opponent_mode} has no AI meeple move")
+    def _choose_bot_tile_move(self, player: int) -> Tuple[int, int, int]:
+        spec = self.player_specs[player]
+        if not spec.is_bot:
+            raise ValueError(f"P{player + 1} is not a bot.")
+        response = self._bot_request(player, self._choose_payload(spec))
+        if response.get("kind") != "tile":
+            raise RuntimeError(f"Expected tile action from bot CLI, got {response.get('kind')}.")
+        return int(response["x"]), int(response["y"]), int(response["rot"])
+
+    def _choose_bot_meeple_move(self, player: int) -> int:
+        spec = self.player_specs[player]
+        if not spec.is_bot:
+            raise ValueError(f"P{player + 1} is not a bot.")
+        response = self._bot_request(player, self._choose_payload(spec))
+        if response.get("kind") != "meeple":
+            raise RuntimeError(f"Expected meeple action from bot CLI, got {response.get('kind')}.")
+        return int(response["pos"])
 
     @property
     def view_origin(self) -> Tuple[int, int]:
@@ -243,7 +348,7 @@ class CppCarcassonneAdapter:
                 break
             draw_type = self._sample_draw_type(draws)
             self._engine.draw_tile(draw_type)
-            self._sync_bot({"cmd": "apply_draw", "type": draw_type})
+            self._sync_bots({"cmd": "apply_draw", "type": draw_type})
 
     def can_pan(self, dx: int, dy: int) -> bool:
         origin_x, origin_y = self._viewport_origin
@@ -288,7 +393,8 @@ class CppCarcassonneAdapter:
             raise ValueError(f"Invalid move: ({move.x}, {move.y}, r={move.rotation})")
 
         self._engine.place_tile(engine_x, engine_y, move.rotation)
-        self._sync_bot({"cmd": "apply_tile", "x": engine_x, "y": engine_y, "rot": move.rotation})
+        self._latest_tile_marker = ((engine_x, engine_y), self._engine.current_player + 1)
+        self._sync_bots({"cmd": "apply_tile", "x": engine_x, "y": engine_y, "rot": move.rotation})
         self._pending_meeple_options = list(self._engine.get_legal_meeple_moves())
         self.state = self._build_state()
         return list(self._pending_meeple_options)
@@ -298,7 +404,7 @@ class CppCarcassonneAdapter:
             raise ValueError(f"Invalid meeple position: {meeple_pos}")
 
         self._engine.place_meeple(meeple_pos)
-        self._sync_bot({"cmd": "apply_meeple", "pos": meeple_pos})
+        self._sync_bots({"cmd": "apply_meeple", "pos": meeple_pos})
         self._pending_meeple_options = []
         self._turn += 1
         self._resolve_chance_phase()
@@ -307,24 +413,29 @@ class CppCarcassonneAdapter:
 
     def run_ai_turns(self) -> None:
         self.ai_status = ""
-        if self.opponent_mode == "player":
+        if not self.has_bot_players():
             return
 
         ai_turns = 0
+        last_label = ""
         try:
-            while not self._engine.is_game_over and self._engine.current_player == 1:
+            while not self._engine.is_game_over and self._current_player_spec().is_bot:
+                player = self._current_player_index()
+                spec = self.player_specs[player]
+                last_label = f"P{player + 1} {spec.label}"
                 if self._engine.current_phase == PHASE_CHANCE:
                     self._resolve_chance_phase()
                     continue
                 if self._engine.current_phase == PHASE_TILE:
-                    x, y, rotation = self._choose_ai_tile_move()
+                    x, y, rotation = self._choose_bot_tile_move(player)
                     self._engine.place_tile(x, y, rotation)
-                    self._sync_bot({"cmd": "apply_tile", "x": x, "y": y, "rot": rotation})
+                    self._latest_tile_marker = ((x, y), self._engine.current_player + 1)
+                    self._sync_bots({"cmd": "apply_tile", "x": x, "y": y, "rot": rotation})
                     continue
                 if self._engine.current_phase == PHASE_MEEPLE:
-                    meeple_pos = self._choose_ai_meeple_move()
+                    meeple_pos = self._choose_bot_meeple_move(player)
                     self._engine.place_meeple(meeple_pos)
-                    self._sync_bot({"cmd": "apply_meeple", "pos": meeple_pos})
+                    self._sync_bots({"cmd": "apply_meeple", "pos": meeple_pos})
                     ai_turns += 1
                     self._turn += 1
                     self._resolve_chance_phase()
@@ -336,26 +447,47 @@ class CppCarcassonneAdapter:
             return
 
         if ai_turns:
-            self.ai_status = f"{self.opponent_mode} played {ai_turns} turn(s)."
+            self.ai_status = f"{last_label} played {ai_turns} bot turn(s)."
         self.state = self._build_state()
 
     def _build_board(self) -> Dict[Tuple[int, int], PlacedTile]:
         board: Dict[Tuple[int, int], PlacedTile] = {}
+        latest_pos = self._latest_tile_marker[0] if self._latest_tile_marker is not None else None
+        latest_owner = self._latest_tile_marker[1] if self._latest_tile_marker is not None else None
         for x, y, physical_id, rotation in self._engine.get_placed_tiles():
             board[(x, y)] = PlacedTile(
                 tile_id=_physical_to_art_id(physical_id),
                 rotation=rotation,
+                tile_owner=latest_owner if (x, y) == latest_pos else None,
             )
         for player, x, y, pos in self._engine.get_meeple_tokens():
             tile = board.get((x, y))
             if tile is None:
                 raise RuntimeError(f"Native meeple token ({player}, {x}, {y}, {pos}) has no matching tile snapshot")
-            owner = player + 1
+            owner = 0 if player < 0 else player + 1
             tile.meeple_markers.append((owner, pos))
-            if tile.meeple_owner is None:
-                tile.meeple_owner = owner
-                tile.meeple_pos = pos
+        for tile in board.values():
+            self._merge_contested_meeple_markers(tile)
         return board
+
+    def _merge_contested_meeple_markers(self, tile: PlacedTile) -> None:
+        if not tile.meeple_markers:
+            return
+
+        owners_by_pos: Dict[int, set[int]] = {}
+        for owner, pos in tile.meeple_markers:
+            owners_by_pos.setdefault(pos, set()).add(owner)
+
+        merged: List[Tuple[int, int]] = []
+        for pos in sorted(owners_by_pos):
+            owners = owners_by_pos[pos]
+            if 0 in owners or (1 in owners and 2 in owners):
+                merged.append((0, pos))
+            else:
+                merged.extend((owner, pos) for owner in sorted(owners))
+
+        tile.meeple_markers = merged
+        tile.meeple_owner, tile.meeple_pos = merged[0]
 
     def _build_state(self) -> GameState:
         game_over = bool(self._engine.is_game_over)

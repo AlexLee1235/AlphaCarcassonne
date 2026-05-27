@@ -211,7 +211,7 @@ class CarcassonneBotCli {
         az_device_manager_ = std::make_unique<open_spiel::algorithms::torch_az::DeviceManager>();
         az_device_manager_->AddDevice(
             open_spiel::algorithms::torch_az::VPNetModel(*game_, az_path, graph_def, "/cpu:0"));
-        az_device_manager_->Get(0, 0)->LoadCheckpoint(EnvInt("CARCASSONNE_AZ_CHECKPOINT", -1));
+        az_device_manager_->Get(0, 0)->LoadCheckpointWeightsOnly(EnvInt("CARCASSONNE_AZ_CHECKPOINT", -1));
         az_evaluator_ = std::make_shared<open_spiel::algorithms::torch_az::VPNetEvaluator>(
             az_device_manager_.get(), PositiveEnvInt("CARCASSONNE_AZ_BATCH_SIZE", 1),
             PositiveEnvInt("CARCASSONNE_AZ_THREADS", 1), PositiveEnvInt("CARCASSONNE_AZ_CACHE_SIZE", 16384),

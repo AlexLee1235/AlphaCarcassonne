@@ -3,9 +3,10 @@ from __future__ import annotations
 import pytest
 
 from play import _carcassonne_cpp
-from play.cpp_engine import BOARD_SIZE, CppCarcassonneAdapter, ENGINE_BOARD_SIZE, PHASE_TILE, START_POS
+from play.cpp_engine import BOARD_SIZE, CppCarcassonneAdapter, ENGINE_BOARD_SIZE, PHASE_TILE, START_POS, PlayerSpec
 from play.engine.adapter import BotCliClient
 from play.models import Move
+from play.ui.app import parse_ui_config
 
 
 def _resolve_native_to_tile_phase(engine: _carcassonne_cpp.Carcassonne) -> None:
@@ -94,6 +95,51 @@ def test_bot_cli_reports_latest_observation_shape() -> None:
     assert response["num_distinct_actions"] == ENGINE_BOARD_SIZE * ENGINE_BOARD_SIZE * 4 + 6
 
 
+def test_player_spec_builds_per_player_az_env_without_device() -> None:
+    spec = PlayerSpec(
+        type="az",
+        az_path="/tmp/model",
+        az_checkpoint=64,
+        az_graph_def="vpnet.pb",
+        max_simulations=800,
+    )
+
+    assert spec.type == "alphazero"
+    assert spec.bot_env() == {
+        "CARCASSONNE_AZ_PATH": "/tmp/model",
+        "CARCASSONNE_AZ_CHECKPOINT": "64",
+        "CARCASSONNE_AZ_GRAPH_DEF": "vpnet.pb",
+        "CARCASSONNE_AZ_SIMULATIONS": "800",
+    }
+
+
+def test_ui_parser_uses_alpha_zero_style_player_args() -> None:
+    config = parse_ui_config(
+        [
+            "--game=carcassonne",
+            "--p1_type=human",
+            "--p2_type=az",
+            "--p2_az_path=/tmp/model",
+            "--p2_az_checkpoint=64",
+            "--p2_az_graph_def=vpnet.pb",
+            "--p2_max_simulations=800",
+            "--seed=123",
+        ]
+    )
+
+    assert config.seed == 123
+    assert config.p1_spec.type == "human"
+    assert config.p2_spec.type == "alphazero"
+    assert config.p2_spec.az_path == "/tmp/model"
+    assert config.p2_spec.az_checkpoint == 64
+    assert config.p2_spec.max_simulations == 800
+
+
+def test_ui_parser_rejects_az_device_args() -> None:
+    with pytest.raises(SystemExit):
+        parse_ui_config(["--p2_az_device=/cuda:0"])
+
+
 def test_bot_cli_alphazero_requires_model_path(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("CARCASSONNE_AZ_PATH", raising=False)
     engine = _carcassonne_cpp.Carcassonne()
@@ -109,8 +155,11 @@ def test_bot_cli_alphazero_requires_model_path(monkeypatch: pytest.MonkeyPatch) 
 
 def test_bot_cli_az_alias_requires_model_path(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("CARCASSONNE_AZ_PATH", raising=False)
+    engine = _carcassonne_cpp.Carcassonne()
     cli = BotCliClient()
     try:
+        draw_type = list(engine.get_available_draws())[0][0]
+        cli.request({"cmd": "apply_draw", "type": draw_type})
         with pytest.raises(RuntimeError, match="CARCASSONNE_AZ_PATH"):
             cli.request({"cmd": "choose", "bot": "az", "seed": 123, "simulations": 1})
     finally:
@@ -156,6 +205,9 @@ def test_adapter_confirm_tile_then_apply_meeple_advances_turn() -> None:
 
     move = valid_moves[0]
     meeple_options = adapter.confirm_tile(move)
+    engine_pos = adapter.to_engine_coords(move.x, move.y)
+    assert adapter.state.board[engine_pos].tile_owner == 1
+    assert sum(tile.tile_owner is not None for tile in adapter.state.board.values()) == 1
     assert adapter.state.holding_tile_id is None
     assert meeple_options
 
@@ -163,6 +215,13 @@ def test_adapter_confirm_tile_then_apply_meeple_advances_turn() -> None:
     assert adapter.state.turn == 2
     assert adapter.state.current_player == 2
     assert adapter._engine.current_phase == PHASE_TILE
+
+    next_move = adapter.get_valid_moves()[0]
+    adapter.confirm_tile(next_move)
+    next_engine_pos = adapter.to_engine_coords(next_move.x, next_move.y)
+    assert adapter.state.board[engine_pos].tile_owner is None
+    assert adapter.state.board[next_engine_pos].tile_owner == 2
+    assert sum(tile.tile_owner is not None for tile in adapter.state.board.values()) == 1
 
 
 def test_adapter_rejects_invalid_tile_confirmation() -> None:
@@ -194,6 +253,7 @@ def test_adapter_tiles_are_mapped_to_ui_canonical_ids() -> None:
 
     assert placed.tile_id == 20
     assert placed.rotation == 0
+    assert placed.tile_owner is None
     assert placed.meeple_owner is None
     assert placed.meeple_pos is None
 
@@ -213,6 +273,24 @@ def test_adapter_maps_active_meeple_into_board_snapshot() -> None:
     assert all(tile.meeple_pos is not None and 0 <= tile.meeple_pos <= 4 for tile in marked_tiles)
 
 
+def test_adapter_merges_overlapping_player_meeple_markers_to_owner_zero() -> None:
+    class FakeEngine:
+        def get_placed_tiles(self):
+            return [(START_POS[0], START_POS[1], 1, 0)]
+
+        def get_meeple_tokens(self):
+            return [(0, START_POS[0], START_POS[1], 2), (1, START_POS[0], START_POS[1], 2)]
+
+    adapter = CppCarcassonneAdapter(seed=42)
+    adapter._engine = FakeEngine()
+
+    tile = adapter._build_board()[START_POS]
+
+    assert tile.meeple_markers == [(0, 2)]
+    assert tile.meeple_owner == 0
+    assert tile.meeple_pos == 2
+
+
 def test_adapter_random_opponent_auto_plays_back_to_human() -> None:
     adapter = CppCarcassonneAdapter(seed=42, opponent_mode="random")
     move = adapter.get_valid_moves()[0]
@@ -223,6 +301,38 @@ def test_adapter_random_opponent_auto_plays_back_to_human() -> None:
     assert adapter.state.game_over or adapter.state.current_player == 1
     assert adapter.ai_status
     assert adapter.state.game_over or adapter.get_valid_moves()
+    marked_tile_owners = [tile.tile_owner for tile in adapter.state.board.values() if tile.tile_owner is not None]
+    assert len(marked_tile_owners) == 1
+    assert adapter.state.game_over or marked_tile_owners == [2]
+
+
+def test_adapter_p1_bot_p2_human_auto_plays_to_human() -> None:
+    adapter = CppCarcassonneAdapter(
+        seed=42,
+        player_specs=(PlayerSpec(type="random"), PlayerSpec(type="human")),
+    )
+    try:
+        assert adapter.state.game_over or adapter.state.current_player == 2
+        assert adapter.ai_status
+        assert adapter.state.game_over or adapter.get_valid_moves()
+        marked_tile_owners = [tile.tile_owner for tile in adapter.state.board.values() if tile.tile_owner is not None]
+        assert len(marked_tile_owners) == 1
+        assert adapter.state.game_over or marked_tile_owners == [1]
+    finally:
+        adapter.close()
+
+
+def test_adapter_random_vs_random_auto_finishes() -> None:
+    adapter = CppCarcassonneAdapter(
+        seed=42,
+        player_specs=(PlayerSpec(type="random"), PlayerSpec(type="random")),
+    )
+    try:
+        assert adapter.state.game_over
+        assert adapter.ai_status
+        assert not adapter.get_valid_moves()
+    finally:
+        adapter.close()
 
 
 def test_adapter_mcts_opponent_auto_plays_back_to_human(monkeypatch: pytest.MonkeyPatch) -> None:

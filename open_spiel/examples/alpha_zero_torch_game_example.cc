@@ -16,6 +16,7 @@
 #include <array>
 #include <cmath>
 #include <cstdio>
+#include <fstream>
 #include <future>
 #include <iomanip>
 #include <map>
@@ -40,6 +41,8 @@
 #include "open_spiel/games/carcassonne/carcassonne.h"
 #include "open_spiel/spiel.h"
 #include "open_spiel/spiel_utils.h"
+#include "open_spiel/utils/file.h"
+#include "open_spiel/utils/json.h"
 
 ABSL_FLAG(std::string, game, "tic_tac_toe", "The name of the game to play.");
 ABSL_FLAG(std::string, p1_type, "az", "Who controls player 1.");
@@ -72,6 +75,7 @@ ABSL_FLAG(bool, az_value_is_current_player, false,
 ABSL_FLAG(uint_fast32_t, seed, 0, "Seed for MCTS.");
 ABSL_FLAG(bool, verbose, false, "Show the MCTS stats of possible moves.");
 ABSL_FLAG(bool, quiet, true, "Hide per-action state traces and game actions.");
+ABSL_FLAG(std::string, log_dir, "", "Directory for per-worker JSONL game trajectory logs. Empty disables logging.");
 
 uint_fast32_t Seed() {
     uint_fast32_t seed = absl::GetFlag(FLAGS_seed);
@@ -88,6 +92,15 @@ struct ConfidenceInterval {
 struct GameResult {
     std::vector<std::string> history;
     std::vector<double> final_scores;
+};
+
+struct GameLogContext {
+    std::ostream *out = nullptr;
+    int worker = 0;
+    int game_id = 0;
+    int pair = 0;
+    int leg = 0;
+    std::string first;
 };
 
 class SplitEvaluator : public open_spiel::algorithms::Evaluator {
@@ -190,6 +203,91 @@ std::string AgentLabel(int agent) {
         return "B";
     }
     return "?";
+}
+
+open_spiel::json::Array JsonScoreArray(const std::vector<double> &values) {
+    open_spiel::json::Array array;
+    array.reserve(values.size());
+    for (double value : values) {
+        array.push_back(value);
+    }
+    return array;
+}
+
+open_spiel::json::Array JsonStringArray(const std::vector<std::string> &values) {
+    open_spiel::json::Array array;
+    array.reserve(values.size());
+    for (const std::string &value : values) {
+        array.push_back(value);
+    }
+    return array;
+}
+
+std::string JoinPath(const std::string &dir, const std::string &file) {
+    if (dir.empty() || dir.back() == '/' || dir.back() == '\\') {
+        return absl::StrCat(dir, file);
+    }
+    return absl::StrCat(dir, "/", file);
+}
+
+std::string WorkerLogPath(const std::string &log_dir, int worker) {
+    std::ostringstream filename;
+    filename << "worker_" << std::setw(4) << std::setfill('0') << worker << ".jsonl";
+    return JoinPath(log_dir, filename.str());
+}
+
+std::string AgentForPlayer(open_spiel::Player player, const std::array<int, 2> &seat_to_agent) {
+    if (player < 0) {
+        return "chance";
+    }
+    return AgentLabel(seat_to_agent[player]);
+}
+
+void WriteStepLog(const GameLogContext *log_context, int step, const std::string &phase,
+                  const open_spiel::State &state, open_spiel::Player player, open_spiel::Action action,
+                  const std::string &action_string, const std::array<int, 2> &seat_to_agent) {
+    if (log_context == nullptr || log_context->out == nullptr) {
+        return;
+    }
+    const bool is_chance = state.IsChanceNode() || player < 0;
+    const int seat = is_chance ? -1 : player;
+    const std::string agent = is_chance ? "chance" : AgentForPlayer(player, seat_to_agent);
+    const open_spiel::json::Object record({
+        {"event", "step"},
+        {"worker", log_context->worker},
+        {"game_id", log_context->game_id},
+        {"pair", log_context->pair},
+        {"leg", log_context->leg},
+        {"first", log_context->first},
+        {"step", step},
+        {"phase", phase},
+        {"seat", seat},
+        {"agent", agent},
+        {"action_id", static_cast<int64_t>(action)},
+        {"action", action_string},
+        {"state", state.ToString()},
+    });
+    *log_context->out << open_spiel::json::ToString(record) << "\n";
+}
+
+void WriteGameEndLog(const GameLogContext *log_context, int winner, const std::vector<double> &final_scores,
+                     const std::vector<std::string> &history) {
+    if (log_context == nullptr || log_context->out == nullptr) {
+        return;
+    }
+    const open_spiel::json::Object record({
+        {"event", "game_end"},
+        {"worker", log_context->worker},
+        {"game_id", log_context->game_id},
+        {"pair", log_context->pair},
+        {"leg", log_context->leg},
+        {"first", log_context->first},
+        {"winner", WinnerLabel(winner)},
+        {"final_score", JsonScoreArray(final_scores)},
+        {"history", JsonStringArray(history)},
+    });
+    *log_context->out << open_spiel::json::ToString(record) << "\n";
+    log_context->out->flush();
 }
 
 struct AZSpec {
@@ -329,7 +427,9 @@ open_spiel::Action GetAction(const open_spiel::State &state, std::string action_
 }
 
 void ApplyInitialActions(open_spiel::State *state, const std::vector<std::string> &initial_actions,
-                         std::vector<std::string> *history, bool quiet) {
+                         std::vector<std::string> *history, bool quiet,
+                         const std::array<int, 2> *seat_to_agent = nullptr,
+                         const GameLogContext *log_context = nullptr, int *step = nullptr) {
     for (const auto &action_str : initial_actions) {
         open_spiel::Player current_player = state->CurrentPlayer();
         open_spiel::Action action = GetAction(*state, action_str);
@@ -339,6 +439,11 @@ void ApplyInitialActions(open_spiel::State *state, const std::vector<std::string
 
         if (history != nullptr) {
             history->push_back(action_str);
+        }
+        if (seat_to_agent != nullptr && step != nullptr) {
+            WriteStepLog(log_context, *step, "forced", *state, current_player, action,
+                         state->ActionToString(current_player, action), *seat_to_agent);
+            ++*step;
         }
         state->ApplyAction(action);
 
@@ -404,26 +509,29 @@ std::vector<double> ScoresByAgent(const std::vector<double> &seat_scores, const 
 GameResult PlayGame(const open_spiel::Game &game, std::vector<std::unique_ptr<open_spiel::Bot>> &bots,
                     const std::vector<std::string> &initial_actions,
                     const std::vector<open_spiel::Action> &chance_schedule,
-                    const std::array<int, 2> &seat_to_agent) {
+                    const std::array<int, 2> &seat_to_agent, const GameLogContext *log_context) {
     bool quiet = absl::GetFlag(FLAGS_quiet);
     std::unique_ptr<open_spiel::State> state = game.NewInitialState();
     std::vector<std::string> history;
     int chance_index = 0;
+    int step = 0;
 
     if (!quiet)
         std::cerr << "Initial state:\n" << state << std::endl;
 
-    ApplyInitialActions(state.get(), initial_actions, &history, quiet);
+    ApplyInitialActions(state.get(), initial_actions, &history, quiet, &seat_to_agent, log_context, &step);
 
     while (!state->IsTerminal()) {
         open_spiel::Player player = state->CurrentPlayer();
 
         open_spiel::Action action;
+        std::string phase;
         if (state->IsChanceNode()) {
             if (chance_index >= chance_schedule.size()) {
                 open_spiel::SpielFatalError("Fixed chance schedule ended before the game reached a terminal state.");
             }
             action = chance_schedule[chance_index++];
+            phase = "chance";
             const std::vector<open_spiel::Action> legal_actions = state->LegalActions();
             if (std::find(legal_actions.begin(), legal_actions.end(), action) == legal_actions.end()) {
                 open_spiel::SpielFatalError(absl::StrCat("Fixed chance action is illegal at index ", chance_index - 1,
@@ -433,9 +541,13 @@ GameResult PlayGame(const open_spiel::Game &game, std::vector<std::unique_ptr<op
             // The state must be a decision node, ask the right bot to make its
             // action.
             action = bots[player]->Step(*state);
+            phase = "decision";
         }
+        const std::string action_string = state->ActionToString(player, action);
+        WriteStepLog(log_context, step, phase, *state, player, action, action_string, seat_to_agent);
+        ++step;
         if (!quiet)
-            std::cerr << "Player " << player << " chose action: " << state->ActionToString(player, action) << std::endl;
+            std::cerr << "Player " << player << " chose action: " << action_string << std::endl;
 
         // Inform the other bot of the action performed.
         for (open_spiel::Player p = 0; p < bots.size(); ++p) {
@@ -445,7 +557,7 @@ GameResult PlayGame(const open_spiel::Game &game, std::vector<std::unique_ptr<op
         }
 
         // Update history and get the next state.
-        history.push_back(state->ActionToString(player, action));
+        history.push_back(action_string);
         state->ApplyAction(action);
 
         if (!quiet)
@@ -456,7 +568,9 @@ GameResult PlayGame(const open_spiel::Game &game, std::vector<std::unique_ptr<op
         std::cerr << "Game actions: " << absl::StrJoin(history, ", ") << std::endl;
     }
 
-    return {history, ScoresByAgent(FinalScores(*state), seat_to_agent)};
+    std::vector<double> final_scores = ScoresByAgent(FinalScores(*state), seat_to_agent);
+    WriteGameEndLog(log_context, WinnerIndex(final_scores), final_scores, history);
+    return {history, final_scores};
 }
 
 int main(int argc, char **argv) {
@@ -518,6 +632,16 @@ int main(int argc, char **argv) {
     for (int i = 1; i < positional_args.size(); ++i) {
         initial_actions.push_back(positional_args[i]);
     }
+    const std::string log_dir = absl::GetFlag(FLAGS_log_dir);
+    if (!log_dir.empty()) {
+        if (open_spiel::file::Exists(log_dir)) {
+            if (!open_spiel::file::IsDirectory(log_dir)) {
+                open_spiel::SpielFatalError(absl::StrCat("--log_dir exists but is not a directory: ", log_dir));
+            }
+        } else if (!open_spiel::file::Mkdirs(log_dir)) {
+            open_spiel::SpielFatalError(absl::StrCat("Failed to create --log_dir: ", log_dir));
+        }
+    }
 
     absl::Mutex results_mutex;
     std::map<std::string, int> histories;
@@ -532,8 +656,18 @@ int main(int argc, char **argv) {
     for (int worker = 0; worker < worker_count; ++worker) {
         const int worker_pairs = pairs_per_worker + (worker < extra_pairs ? 1 : 0);
         const int first_pair = worker * pairs_per_worker + std::min(worker, extra_pairs);
-        futures.push_back(std::async(std::launch::async, [&, worker_pairs, first_pair]() {
+        futures.push_back(std::async(std::launch::async, [&, worker, worker_pairs, first_pair]() {
             std::shared_ptr<const open_spiel::Game> worker_game = open_spiel::LoadGame(game_name);
+            std::ofstream worker_log;
+            std::ostream *worker_log_stream = nullptr;
+            if (!log_dir.empty()) {
+                worker_log.open(WorkerLogPath(log_dir, worker), std::ios::out | std::ios::trunc);
+                if (!worker_log) {
+                    open_spiel::SpielFatalError(
+                        absl::StrCat("Failed to open worker log: ", WorkerLogPath(log_dir, worker)));
+                }
+                worker_log_stream = &worker_log;
+            }
             for (int local_pair = 0; local_pair < worker_pairs; ++local_pair) {
                 const int pair_num = first_pair + local_pair;
                 std::mt19937 deck_rng(SeedWithOffset(base_seed, static_cast<uint_fast32_t>(pair_num)));
@@ -555,7 +689,10 @@ int main(int argc, char **argv) {
                     bots.push_back(InitBot(*agent_specs[seat_to_agent[1]], *worker_game, 1, evaluator,
                                            az_evaluators[seat_to_agent[1]], SeedWithOffset(game_seed, 301)));
 
-                    GameResult result = PlayGame(*worker_game, bots, initial_actions, chance_schedule, seat_to_agent);
+                    GameLogContext log_context{worker_log_stream, worker, game_num + 1, pair_num + 1, leg + 1,
+                                               AgentLabel(seat_to_agent[0])};
+                    GameResult result = PlayGame(*worker_game, bots, initial_actions, chance_schedule, seat_to_agent,
+                                                 worker_log_stream == nullptr ? nullptr : &log_context);
 
                     {
                         absl::MutexLock lock(&results_mutex);

@@ -30,6 +30,7 @@
 #include <random>
 #include <string>
 #include <system_error>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -56,7 +57,9 @@ ABSL_FLAG(std::string, teacher, "pure_mcts",
           "Teacher used for generation: pure_mcts, az, or "
           "az_prior_rollout_value.");
 ABSL_FLAG(int, max_simulations, 320, "MCTS simulations per target.");
-ABSL_FLAG(int, rollout_count, 10, "Random rollouts per pure-MCTS leaf.");
+ABSL_FLAG(int, rollout_count, 10,
+          "Random rollouts per pure-MCTS leaf. 0 disables random leaf "
+          "rollouts and uses zero leaf values.");
 ABSL_FLAG(double, uct_c, 2, "UCT exploration constant.");
 ABSL_FLAG(double, mcts_policy_temperature, 1,
           "Temperature applied to MCTS visit counts.");
@@ -67,7 +70,8 @@ ABSL_FLAG(double, temperature, 1,
 ABSL_FLAG(int, temperature_drop, 10,
           "Drop AZ self-play action temperature to 0 after this many history "
           "entries, matching alpha_zero.cc.");
-ABSL_FLAG(int, num_workers, 1, "Parallel CPU workers for generation.");
+ABSL_FLAG(int, num_workers, 0,
+          "Parallel CPU workers for generation. 0 uses hardware concurrency.");
 ABSL_FLAG(uint_fast32_t, seed, 1, "Random seed.");
 ABSL_FLAG(int, inference_batch_size, 64,
           "AZ teacher inference batch size during dataset generation.");
@@ -95,7 +99,7 @@ ABSL_FLAG(double, weight_decay, 0.0001, "Student weight decay.");
 ABSL_FLAG(double, policy_loss_weight, 1.0, "Policy loss multiplier.");
 ABSL_FLAG(double, value_loss_weight, 1.0, "Value loss multiplier.");
 ABSL_FLAG(double, l2_loss_weight, 1.0, "L2 loss multiplier.");
-ABSL_FLAG(std::string, value_target, "search",
+ABSL_FLAG(std::string, value_target, "terminal",
           "Value target source: terminal or search. search re-runs MCTS on "
           "each sampled state without root Dirichlet noise.");
 ABSL_FLAG(int, value_search_simulations, 0,
@@ -196,6 +200,35 @@ class SplitEvaluator : public open_spiel::algorithms::Evaluator {
   std::shared_ptr<open_spiel::algorithms::Evaluator> value_;
 };
 
+class UniformPriorZeroValueEvaluator : public open_spiel::algorithms::Evaluator {
+ public:
+  explicit UniformPriorZeroValueEvaluator(int num_players)
+      : num_players_(num_players) {}
+
+  std::vector<double> Evaluate(const State& /*state*/) override {
+    return std::vector<double>(num_players_, 0);
+  }
+
+  ActionsAndProbs Prior(const State& state) override {
+    if (state.IsChanceNode()) {
+      return state.ChanceOutcomes();
+    }
+    std::vector<Action> legal_actions = state.LegalActions();
+    ActionsAndProbs prior;
+    prior.reserve(legal_actions.size());
+    const double probability = legal_actions.empty()
+                                   ? 0
+                                   : 1.0 / legal_actions.size();
+    for (Action action : legal_actions) {
+      prior.emplace_back(action, probability);
+    }
+    return prior;
+  }
+
+ private:
+  int num_players_;
+};
+
 struct TargetStats {
   int count = 0;
   double sum = 0;
@@ -288,6 +321,16 @@ std::string TorchDeviceName(const std::string& device) {
   return device;
 }
 
+int GenerateWorkerCount() {
+  const int requested_workers = absl::GetFlag(FLAGS_num_workers);
+  if (requested_workers > 0) return requested_workers;
+  if (requested_workers < 0) {
+    open_spiel::SpielFatalError("--num_workers must be >= 0.");
+  }
+  const unsigned int hardware_workers = std::thread::hardware_concurrency();
+  return std::max(1, static_cast<int>(hardware_workers));
+}
+
 double Entropy(const ActionsAndProbs& policy) {
   double entropy = 0;
   for (const auto& [action, prob] : policy) {
@@ -361,6 +404,18 @@ double ValueTargetFromSearch(const SearchTarget& target) {
   return absl::GetFlag(FLAGS_value_is_current_player)
              ? target.current_player_value
              : target.player0_value;
+}
+
+std::shared_ptr<open_spiel::algorithms::Evaluator> MakeRolloutEvaluator(
+    const open_spiel::Game& game, int rollout_count, int seed) {
+  if (rollout_count < 0) {
+    open_spiel::SpielFatalError("--rollout_count must be >= 0.");
+  }
+  if (rollout_count == 0) {
+    return std::make_shared<UniformPriorZeroValueEvaluator>(game.NumPlayers());
+  }
+  return std::make_shared<open_spiel::algorithms::RandomRolloutEvaluator>(
+      rollout_count, seed);
 }
 
 void AddValueMetric(Metrics* metrics, const DatasetSample& sample,
@@ -450,8 +505,8 @@ std::vector<DatasetSample> CollectPureMCTSSelfPlaySamples(
   int search_seed = static_cast<int>(seed + 2000003 * worker_id + 1);
   int value_search_seed = static_cast<int>(seed + 4000037 * worker_id + 1);
   const bool use_search_value_targets = UseSearchValueTargets();
-  auto evaluator = std::make_shared<open_spiel::algorithms::RandomRolloutEvaluator>(
-      absl::GetFlag(FLAGS_rollout_count),
+  auto evaluator = MakeRolloutEvaluator(
+      game, absl::GetFlag(FLAGS_rollout_count),
       static_cast<int>(seed + 3000017 * worker_id + 1));
 
   while (samples.size() < num_samples) {
@@ -728,7 +783,7 @@ DatasetFile GenerateDataset(const std::string& game_string, int sample_count,
   dataset.header = MakeHeader(*game, game_string);
   if (sample_count == 0) return dataset;
 
-  const int worker_count = std::max(1, absl::GetFlag(FLAGS_num_workers));
+  const int worker_count = GenerateWorkerCount();
   std::vector<std::future<std::vector<DatasetSample>>> futures;
   futures.reserve(worker_count);
   std::shared_ptr<DeviceManager> az_device_manager;
@@ -770,10 +825,9 @@ DatasetFile GenerateDataset(const std::string& game_string, int sample_count,
         std::shared_ptr<const open_spiel::Game> worker_game =
             open_spiel::LoadGame(game_string);
         if (teacher == "az_prior_rollout_value") {
-          auto rollout_evaluator =
-              std::make_shared<open_spiel::algorithms::RandomRolloutEvaluator>(
-                  absl::GetFlag(FLAGS_rollout_count),
-                  static_cast<int>(seed + 4000037 * worker + 1));
+          auto rollout_evaluator = MakeRolloutEvaluator(
+              *worker_game, absl::GetFlag(FLAGS_rollout_count),
+              static_cast<int>(seed + 4000037 * worker + 1));
           auto split_evaluator =
               std::make_shared<SplitEvaluator>(az_evaluator, rollout_evaluator);
           return CollectAZMCTSSelfPlaySamples(*worker_game, worker_samples,
@@ -953,6 +1007,7 @@ int RunGenerate() {
 
   std::shared_ptr<const open_spiel::Game> game = open_spiel::LoadGame(game_string);
   const std::string teacher = absl::GetFlag(FLAGS_teacher);
+  const int worker_count = GenerateWorkerCount();
   std::cout << "[generate]\n"
             << "  game: " << game_string << "\n"
             << "  obs_shape: " << ShapeString(game->ObservationTensorShape())
@@ -971,7 +1026,7 @@ int RunGenerate() {
             << " value_is_current_player="
             << (absl::GetFlag(FLAGS_value_is_current_player) ? "true" : "false")
             << "\n"
-            << "  workers: " << absl::GetFlag(FLAGS_num_workers)
+            << "  workers: " << worker_count
             << "\n"
             << "  train_out: " << dataset_path << "\n";
   if (teacher == "az") {
@@ -990,8 +1045,7 @@ int RunGenerate() {
               << " cache=" << absl::GetFlag(FLAGS_inference_cache)
               << " cache_shards="
               << absl::GetFlag(FLAGS_inference_cache_shards) << "\n";
-    if (absl::GetFlag(FLAGS_num_workers) <
-        absl::GetFlag(FLAGS_inference_batch_size)) {
+    if (worker_count < absl::GetFlag(FLAGS_inference_batch_size)) {
       std::cout << "  note: num_workers < inference_batch_size; synchronous "
                    "MCTS cannot consistently fill batches.\n";
     }

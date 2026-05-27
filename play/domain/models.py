@@ -25,6 +25,7 @@ class Move:
 class PlacedTile:
     tile_id: int
     rotation: int
+    tile_owner: Optional[int] = None
     meeple_owner: Optional[int] = None
     meeple_pos: Optional[int] = None  # 0-3 edges, 4 center
     meeple_markers: List[Tuple[int, int]] = field(default_factory=list)  # (owner, pos)

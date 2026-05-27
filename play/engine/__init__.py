@@ -8,7 +8,9 @@ from .adapter import (
     PHASE_TERMINAL,
     PHASE_TILE,
     PHYSICAL_TO_CANONICAL_TYPE,
+    PLAYER_TYPES,
     OPPONENT_MODES,
+    PlayerSpec,
     START_POS,
     CppCarcassonneAdapter,
 )
@@ -21,7 +23,9 @@ __all__ = [
     "PHASE_TERMINAL",
     "PHASE_TILE",
     "PHYSICAL_TO_CANONICAL_TYPE",
+    "PLAYER_TYPES",
     "OPPONENT_MODES",
+    "PlayerSpec",
     "START_POS",
     "CppCarcassonneAdapter",
 ]

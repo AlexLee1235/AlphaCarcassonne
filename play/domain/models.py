@@ -24,6 +24,7 @@ class Move:
 @dataclass(frozen=True)
 class MoveRecord:
     player: int
+    tile_id: int
     x: int
     y: int
     rotation: int

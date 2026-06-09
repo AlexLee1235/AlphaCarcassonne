@@ -170,7 +170,7 @@ class CppCarcassonneAdapter:
         self._bot_clis: Dict[int, BotCliClient] = {}
         self._latest_tile_marker: Optional[Tuple[Tuple[int, int], int]] = None
         self.move_records: List[MoveRecord] = []
-        self._pending_tile_move: Optional[Tuple[int, int, int, int]] = None
+        self._pending_tile_move: Optional[Tuple[int, int, int, int, int]] = None
         self._turn = 1
         self._pending_meeple_options: List[int] = []
         self._viewport_origin = self._default_viewport_origin()
@@ -321,17 +321,21 @@ class CppCarcassonneAdapter:
         after = self._score_snapshot()
         return {player: after[player] - before.get(player, 0) for player in (1, 2)}
 
-    def _remember_tile_move(self, player: int, x: int, y: int, rotation: int) -> None:
-        self._pending_tile_move = (player, x, y, rotation)
+    def _current_tile_art_id(self) -> int:
+        return _physical_to_art_id(self._engine.current_tile_in_hand)
+
+    def _remember_tile_move(self, player: int, tile_id: int, x: int, y: int, rotation: int) -> None:
+        self._pending_tile_move = (player, tile_id, x, y, rotation)
 
     def _record_completed_turn(self, meeple_pos: int, score_deltas: Dict[int, int]) -> None:
         if self._pending_tile_move is None:
             return
-        player, x, y, rotation = self._pending_tile_move
+        player, tile_id, x, y, rotation = self._pending_tile_move
         self.move_records.insert(
             0,
             MoveRecord(
                 player=player,
+                tile_id=tile_id,
                 x=x,
                 y=y,
                 rotation=rotation,
@@ -425,9 +429,10 @@ class CppCarcassonneAdapter:
             raise ValueError(f"Invalid move: ({move.x}, {move.y}, r={move.rotation})")
 
         player = self._engine.current_player + 1
+        tile_id = self._current_tile_art_id()
         self._engine.place_tile(engine_x, engine_y, move.rotation)
         self._latest_tile_marker = ((engine_x, engine_y), player)
-        self._remember_tile_move(player, engine_x, engine_y, move.rotation)
+        self._remember_tile_move(player, tile_id, engine_x, engine_y, move.rotation)
         self._sync_bots({"cmd": "apply_tile", "x": engine_x, "y": engine_y, "rot": move.rotation})
         self._pending_meeple_options = list(self._engine.get_legal_meeple_moves())
         self.state = self._build_state()
@@ -447,10 +452,10 @@ class CppCarcassonneAdapter:
         self.run_ai_turns()
         self.state = self._build_state()
 
-    def run_ai_turns(self) -> None:
+    def run_ai_turns(self, max_turns: Optional[int] = None) -> int:
         self.ai_status = ""
         if not self.has_bot_players():
-            return
+            return 0
 
         ai_turns = 0
         last_label = ""
@@ -465,9 +470,10 @@ class CppCarcassonneAdapter:
                 if self._engine.current_phase == PHASE_TILE:
                     x, y, rotation = self._choose_bot_tile_move(player)
                     player_ui = player + 1
+                    tile_id = self._current_tile_art_id()
                     self._engine.place_tile(x, y, rotation)
                     self._latest_tile_marker = ((x, y), player_ui)
-                    self._remember_tile_move(player_ui, x, y, rotation)
+                    self._remember_tile_move(player_ui, tile_id, x, y, rotation)
                     self._sync_bots({"cmd": "apply_tile", "x": x, "y": y, "rot": rotation})
                     continue
                 if self._engine.current_phase == PHASE_MEEPLE:
@@ -479,16 +485,19 @@ class CppCarcassonneAdapter:
                     ai_turns += 1
                     self._turn += 1
                     self._resolve_chance_phase()
+                    if max_turns is not None and ai_turns >= max_turns:
+                        break
                     continue
                 break
         except Exception as exc:
             self.ai_status = str(exc)
             self.state = self._build_state()
-            return
+            return ai_turns
 
         if ai_turns:
             self.ai_status = f"{last_label} played {ai_turns} bot turn(s)."
         self.state = self._build_state()
+        return ai_turns
 
     def _build_board(self) -> Dict[Tuple[int, int], PlacedTile]:
         board: Dict[Tuple[int, int], PlacedTile] = {}

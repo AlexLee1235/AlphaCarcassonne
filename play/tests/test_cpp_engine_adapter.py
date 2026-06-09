@@ -142,16 +142,28 @@ def test_ui_parser_rejects_az_device_args() -> None:
 
 def test_format_move_record() -> None:
     assert (
-        format_move_record(MoveRecord(player=1, x=7, y=8, rotation=2, meeple_pos=-1, score_deltas={1: 0, 2: 0}))
-        == "P1(7,8,2,-1) +0(得分)"
+        format_move_record(
+            MoveRecord(player=1, tile_id=20, x=7, y=8, rotation=2, meeple_pos=-1, score_deltas={1: 0, 2: 0})
+        )
+        == "P1(20,7,8,2,-1) +0(得分)"
     )
     assert (
-        format_move_record(MoveRecord(player=1, x=7, y=8, rotation=2, meeple_pos=4, score_deltas={1: 4, 2: 0}))
-        == "P1(7,8,2,4) +4(得分)"
+        format_move_record(
+            MoveRecord(player=1, tile_id=20, x=7, y=8, rotation=2, meeple_pos=4, score_deltas={1: 4, 2: 0})
+        )
+        == "P1(20,7,8,2,4) +4(得分)"
     )
     assert (
-        format_move_record(MoveRecord(player=1, x=7, y=8, rotation=2, meeple_pos=4, score_deltas={1: 4, 2: 3}))
-        == "P1(7,8,2,4) P1+4/P2+3(得分)"
+        format_move_record(
+            MoveRecord(player=1, tile_id=20, x=7, y=8, rotation=2, meeple_pos=4, score_deltas={1: 0, 2: 4})
+        )
+        == "P1(20,7,8,2,4) P2+4(得分)"
+    )
+    assert (
+        format_move_record(
+            MoveRecord(player=1, tile_id=20, x=7, y=8, rotation=2, meeple_pos=4, score_deltas={1: 4, 2: 3})
+        )
+        == "P1(20,7,8,2,4) P1+4/P2+3(得分)"
     )
 
 
@@ -229,6 +241,7 @@ def test_adapter_confirm_tile_then_apply_meeple_advances_turn() -> None:
     meeple_options = adapter.confirm_tile(move)
     engine_pos = adapter.to_engine_coords(move.x, move.y)
     assert adapter.state.board[engine_pos].tile_owner == 1
+    placed_tile_id = adapter.state.board[engine_pos].tile_id
     assert sum(tile.tile_owner is not None for tile in adapter.state.board.values()) == 1
     assert adapter.state.holding_tile_id is None
     assert meeple_options
@@ -240,6 +253,7 @@ def test_adapter_confirm_tile_then_apply_meeple_advances_turn() -> None:
     assert len(adapter.move_records) == 1
     first_record = adapter.move_records[0]
     assert first_record.player == 1
+    assert first_record.tile_id == placed_tile_id
     assert (first_record.x, first_record.y, first_record.rotation, first_record.meeple_pos) == (
         engine_pos[0],
         engine_pos[1],
@@ -388,6 +402,23 @@ def test_adapter_random_vs_random_can_wait_for_start() -> None:
 
         assert adapter.state.game_over
         assert len(adapter.move_records) > 1
+    finally:
+        adapter.close()
+
+
+def test_adapter_random_vs_random_can_step_one_bot_turn() -> None:
+    adapter = CppCarcassonneAdapter(
+        seed=42,
+        player_specs=(PlayerSpec(type="random"), PlayerSpec(type="random")),
+        auto_run_bots=False,
+    )
+    try:
+        played_turns = adapter.run_ai_turns(max_turns=1)
+
+        assert played_turns == 1
+        assert not adapter.state.game_over
+        assert len(adapter.move_records) == 1
+        assert adapter.move_records[0].player == 1
     finally:
         adapter.close()
 

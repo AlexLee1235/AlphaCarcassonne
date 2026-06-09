@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -87,10 +88,12 @@ def parse_ui_config(argv: Optional[Sequence[str]] = None) -> PlayUiConfig:
 
 
 def format_move_record(record: MoveRecord) -> str:
-    base = f"P{record.player}({record.x},{record.y},{record.rotation},{record.meeple_pos})"
+    base = f"P{record.player}({record.tile_id},{record.x},{record.y},{record.rotation},{record.meeple_pos})"
     nonzero_deltas = {player: delta for player, delta in sorted(record.score_deltas.items()) if delta}
-    if len(nonzero_deltas) <= 1:
-        points = next(iter(nonzero_deltas.values()), 0)
+    if not nonzero_deltas:
+        return f"{base} +0(得分)"
+    if set(nonzero_deltas) == {record.player}:
+        points = nonzero_deltas[record.player]
         return f"{base} {points:+d}(得分)"
 
     deltas = "/".join(f"P{player}{delta:+d}" for player, delta in nonzero_deltas.items())
@@ -432,19 +435,22 @@ class CarcassonneUI:
         if not is_bot_vs_bot(self.config.player_specs) or self.bot_game_started:
             return
         self.bot_game_started = True
-        self.status.value = "Bot thinking..."
-        try:
-            self.engine.run_ai_turns()
-        except ValueError as exc:
-            self.status.value = str(exc)
-            self.refresh()
-            return
-        self.state = self.engine.state
-        self.view_origin = self.engine.view_origin
-        self.selected_move = None
-        self.awaiting_meeple = False
-        self.meeple_options = []
+        self.engine.ai_status = "Bot game running..."
         self.refresh()
+        self.page.run_task(self._run_bot_game)
+
+    async def _run_bot_game(self) -> None:
+        while not self.engine.state.game_over and self.engine.is_ai_turn():
+            played_turns = await asyncio.to_thread(self.engine.run_ai_turns, 1)
+            self.state = self.engine.state
+            self.view_origin = self.engine.view_origin
+            self.selected_move = None
+            self.awaiting_meeple = False
+            self.meeple_options = []
+            self.refresh()
+            if played_turns <= 0:
+                break
+            await asyncio.sleep(0.2)
 
 
 def main(page: ft.Page, config: Optional[PlayUiConfig] = None) -> None:

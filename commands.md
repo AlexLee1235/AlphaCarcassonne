@@ -37,8 +37,28 @@ venv/bin/python play/main.py \
     --p1_type=human \
     --p2_type=az \
     --p2_az_path=/mnt/c/achieve/Carcassonne/0607 \
-    --p2_az_checkpoint=35 \
+    --p2_az_checkpoint=70 \
     --p2_az_graph_def=vpnet.pb \
+    --p2_max_simulations=800
+
+venv/bin/python play/main.py \
+    --game=carcassonne \
+    --p1_type=az \
+    --p2_type=az \
+    --p1_az_path=/mnt/c/achieve/Carcassonne/0607 \
+    --p1_az_checkpoint=70 \
+    --p1_az_graph_def=vpnet.pb \
+    --p1_max_simulations=800 \
+    --p2_az_path=/mnt/c/achieve/Carcassonne/0607 \
+    --p2_az_checkpoint=70 \
+    --p2_az_graph_def=vpnet.pb \
+    --p2_max_simulations=800
+
+  venv/bin/python play/main.py \
+    --game=carcassonne \
+    --p1_type=mcts \
+    --p2_type=mcts \
+    --p1_max_simulations=800 \
     --p2_max_simulations=800
     
 

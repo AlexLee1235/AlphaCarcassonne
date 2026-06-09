@@ -10,9 +10,9 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 try:
-    from domain import GameState, Move, PlacedTile
+    from domain import GameState, Move, MoveRecord, PlacedTile
 except ImportError:  # pragma: no cover - package import fallback
-    from ..domain import GameState, Move, PlacedTile
+    from ..domain import GameState, Move, MoveRecord, PlacedTile
 
 try:
     from .. import _carcassonne_cpp
@@ -158,6 +158,7 @@ class CppCarcassonneAdapter:
         seed: Optional[int] = None,
         opponent_mode: str = "player",
         player_specs: Optional[Tuple[PlayerSpec, PlayerSpec]] = None,
+        auto_run_bots: bool = True,
     ):
         if seed is None:
             seed = secrets.randbits(32)
@@ -168,13 +169,16 @@ class CppCarcassonneAdapter:
         self._engine = _carcassonne_cpp.Carcassonne()
         self._bot_clis: Dict[int, BotCliClient] = {}
         self._latest_tile_marker: Optional[Tuple[Tuple[int, int], int]] = None
+        self.move_records: List[MoveRecord] = []
+        self._pending_tile_move: Optional[Tuple[int, int, int, int]] = None
         self._turn = 1
         self._pending_meeple_options: List[int] = []
         self._viewport_origin = self._default_viewport_origin()
         self._start_bot_clis()
         self._resolve_chance_phase()
         self.state = self._build_state()
-        self.run_ai_turns()
+        if auto_run_bots:
+            self.run_ai_turns()
 
     def close(self) -> None:
         for client in self._bot_clis.values():
@@ -309,6 +313,34 @@ class CppCarcassonneAdapter:
             raise RuntimeError(f"Expected meeple action from bot CLI, got {response.get('kind')}.")
         return int(response["pos"])
 
+    def _score_snapshot(self) -> Dict[int, int]:
+        scores = self._engine.player_scores
+        return {1: int(scores[0]), 2: int(scores[1])}
+
+    def _score_deltas(self, before: Dict[int, int]) -> Dict[int, int]:
+        after = self._score_snapshot()
+        return {player: after[player] - before.get(player, 0) for player in (1, 2)}
+
+    def _remember_tile_move(self, player: int, x: int, y: int, rotation: int) -> None:
+        self._pending_tile_move = (player, x, y, rotation)
+
+    def _record_completed_turn(self, meeple_pos: int, score_deltas: Dict[int, int]) -> None:
+        if self._pending_tile_move is None:
+            return
+        player, x, y, rotation = self._pending_tile_move
+        self.move_records.insert(
+            0,
+            MoveRecord(
+                player=player,
+                x=x,
+                y=y,
+                rotation=rotation,
+                meeple_pos=meeple_pos,
+                score_deltas=score_deltas,
+            ),
+        )
+        self._pending_tile_move = None
+
     @property
     def view_origin(self) -> Tuple[int, int]:
         return self._viewport_origin
@@ -392,8 +424,10 @@ class CppCarcassonneAdapter:
         if (engine_x, engine_y, move.rotation) not in legal:
             raise ValueError(f"Invalid move: ({move.x}, {move.y}, r={move.rotation})")
 
+        player = self._engine.current_player + 1
         self._engine.place_tile(engine_x, engine_y, move.rotation)
-        self._latest_tile_marker = ((engine_x, engine_y), self._engine.current_player + 1)
+        self._latest_tile_marker = ((engine_x, engine_y), player)
+        self._remember_tile_move(player, engine_x, engine_y, move.rotation)
         self._sync_bots({"cmd": "apply_tile", "x": engine_x, "y": engine_y, "rot": move.rotation})
         self._pending_meeple_options = list(self._engine.get_legal_meeple_moves())
         self.state = self._build_state()
@@ -403,8 +437,10 @@ class CppCarcassonneAdapter:
         if meeple_pos not in self._pending_meeple_options:
             raise ValueError(f"Invalid meeple position: {meeple_pos}")
 
+        score_before = self._score_snapshot()
         self._engine.place_meeple(meeple_pos)
         self._sync_bots({"cmd": "apply_meeple", "pos": meeple_pos})
+        self._record_completed_turn(meeple_pos, self._score_deltas(score_before))
         self._pending_meeple_options = []
         self._turn += 1
         self._resolve_chance_phase()
@@ -428,14 +464,18 @@ class CppCarcassonneAdapter:
                     continue
                 if self._engine.current_phase == PHASE_TILE:
                     x, y, rotation = self._choose_bot_tile_move(player)
+                    player_ui = player + 1
                     self._engine.place_tile(x, y, rotation)
-                    self._latest_tile_marker = ((x, y), self._engine.current_player + 1)
+                    self._latest_tile_marker = ((x, y), player_ui)
+                    self._remember_tile_move(player_ui, x, y, rotation)
                     self._sync_bots({"cmd": "apply_tile", "x": x, "y": y, "rot": rotation})
                     continue
                 if self._engine.current_phase == PHASE_MEEPLE:
                     meeple_pos = self._choose_bot_meeple_move(player)
+                    score_before = self._score_snapshot()
                     self._engine.place_meeple(meeple_pos)
                     self._sync_bots({"cmd": "apply_meeple", "pos": meeple_pos})
+                    self._record_completed_turn(meeple_pos, self._score_deltas(score_before))
                     ai_turns += 1
                     self._turn += 1
                     self._resolve_chance_phase()

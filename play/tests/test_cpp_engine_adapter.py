@@ -5,8 +5,8 @@ import pytest
 from play import _carcassonne_cpp
 from play.cpp_engine import BOARD_SIZE, CppCarcassonneAdapter, ENGINE_BOARD_SIZE, PHASE_TILE, START_POS, PlayerSpec
 from play.engine.adapter import BotCliClient
-from play.models import Move
-from play.ui.app import parse_ui_config
+from play.models import Move, MoveRecord
+from play.ui.app import format_move_record, parse_ui_config, should_show_start_game
 
 
 def _resolve_native_to_tile_phase(engine: _carcassonne_cpp.Carcassonne) -> None:
@@ -140,6 +140,28 @@ def test_ui_parser_rejects_az_device_args() -> None:
         parse_ui_config(["--p2_az_device=/cuda:0"])
 
 
+def test_format_move_record() -> None:
+    assert (
+        format_move_record(MoveRecord(player=1, x=7, y=8, rotation=2, meeple_pos=-1, score_deltas={1: 0, 2: 0}))
+        == "P1(7,8,2,-1) +0(得分)"
+    )
+    assert (
+        format_move_record(MoveRecord(player=1, x=7, y=8, rotation=2, meeple_pos=4, score_deltas={1: 4, 2: 0}))
+        == "P1(7,8,2,4) +4(得分)"
+    )
+    assert (
+        format_move_record(MoveRecord(player=1, x=7, y=8, rotation=2, meeple_pos=4, score_deltas={1: 4, 2: 3}))
+        == "P1(7,8,2,4) P1+4/P2+3(得分)"
+    )
+
+
+def test_should_show_start_game_only_for_unstarted_bot_vs_bot() -> None:
+    assert should_show_start_game((PlayerSpec(type="random"), PlayerSpec(type="mcts")), started=False)
+    assert not should_show_start_game((PlayerSpec(type="random"), PlayerSpec(type="mcts")), started=True)
+    assert not should_show_start_game((PlayerSpec(type="human"), PlayerSpec(type="mcts")), started=False)
+    assert not should_show_start_game((PlayerSpec(type="random"), PlayerSpec(type="human")), started=False)
+
+
 def test_bot_cli_alphazero_requires_model_path(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("CARCASSONNE_AZ_PATH", raising=False)
     engine = _carcassonne_cpp.Carcassonne()
@@ -215,6 +237,16 @@ def test_adapter_confirm_tile_then_apply_meeple_advances_turn() -> None:
     assert adapter.state.turn == 2
     assert adapter.state.current_player == 2
     assert adapter._engine.current_phase == PHASE_TILE
+    assert len(adapter.move_records) == 1
+    first_record = adapter.move_records[0]
+    assert first_record.player == 1
+    assert (first_record.x, first_record.y, first_record.rotation, first_record.meeple_pos) == (
+        engine_pos[0],
+        engine_pos[1],
+        move.rotation,
+        -1,
+    )
+    assert set(first_record.score_deltas) == {1, 2}
 
     next_move = adapter.get_valid_moves()[0]
     adapter.confirm_tile(next_move)
@@ -304,6 +336,9 @@ def test_adapter_random_opponent_auto_plays_back_to_human() -> None:
     marked_tile_owners = [tile.tile_owner for tile in adapter.state.board.values() if tile.tile_owner is not None]
     assert len(marked_tile_owners) == 1
     assert adapter.state.game_over or marked_tile_owners == [2]
+    assert len(adapter.move_records) >= 2
+    assert adapter.move_records[0].player == 2
+    assert adapter.move_records[1].player == 1
 
 
 def test_adapter_p1_bot_p2_human_auto_plays_to_human() -> None:
@@ -318,6 +353,8 @@ def test_adapter_p1_bot_p2_human_auto_plays_to_human() -> None:
         marked_tile_owners = [tile.tile_owner for tile in adapter.state.board.values() if tile.tile_owner is not None]
         assert len(marked_tile_owners) == 1
         assert adapter.state.game_over or marked_tile_owners == [1]
+        assert adapter.move_records
+        assert adapter.move_records[0].player == 1
     finally:
         adapter.close()
 
@@ -331,6 +368,26 @@ def test_adapter_random_vs_random_auto_finishes() -> None:
         assert adapter.state.game_over
         assert adapter.ai_status
         assert not adapter.get_valid_moves()
+        assert len(adapter.move_records) > 1
+        assert adapter.move_records[0].player in (1, 2)
+    finally:
+        adapter.close()
+
+
+def test_adapter_random_vs_random_can_wait_for_start() -> None:
+    adapter = CppCarcassonneAdapter(
+        seed=42,
+        player_specs=(PlayerSpec(type="random"), PlayerSpec(type="random")),
+        auto_run_bots=False,
+    )
+    try:
+        assert not adapter.state.game_over
+        assert not adapter.move_records
+
+        adapter.run_ai_turns()
+
+        assert adapter.state.game_over
+        assert len(adapter.move_records) > 1
     finally:
         adapter.close()
 

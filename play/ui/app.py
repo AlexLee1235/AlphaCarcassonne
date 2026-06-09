@@ -9,10 +9,10 @@ from typing import Dict, List, Optional, Sequence, Tuple
 import flet as ft
 
 try:
-    from domain import Move
+    from domain import Move, MoveRecord
     from engine import BOARD_SIZE, CppCarcassonneAdapter, PlayerSpec
 except ImportError:  # pragma: no cover - package import fallback
-    from ..domain import Move
+    from ..domain import Move, MoveRecord
     from ..engine import BOARD_SIZE, CppCarcassonneAdapter, PlayerSpec
 
 
@@ -86,10 +86,30 @@ def parse_ui_config(argv: Optional[Sequence[str]] = None) -> PlayUiConfig:
     )
 
 
+def format_move_record(record: MoveRecord) -> str:
+    base = f"P{record.player}({record.x},{record.y},{record.rotation},{record.meeple_pos})"
+    nonzero_deltas = {player: delta for player, delta in sorted(record.score_deltas.items()) if delta}
+    if len(nonzero_deltas) <= 1:
+        points = next(iter(nonzero_deltas.values()), 0)
+        return f"{base} {points:+d}(得分)"
+
+    deltas = "/".join(f"P{player}{delta:+d}" for player, delta in nonzero_deltas.items())
+    return f"{base} {deltas}(得分)"
+
+
+def is_bot_vs_bot(player_specs: Tuple[PlayerSpec, PlayerSpec]) -> bool:
+    return all(spec.is_bot for spec in player_specs)
+
+
+def should_show_start_game(player_specs: Tuple[PlayerSpec, PlayerSpec], started: bool) -> bool:
+    return is_bot_vs_bot(player_specs) and not started
+
+
 class CarcassonneUI:
     def __init__(self, page: ft.Page, config: Optional[PlayUiConfig] = None):
         self.page = page
         self.config = config or PlayUiConfig()
+        self.bot_game_started = False
         self.engine = self._new_engine()
         self.state = self.engine.state
         self.view_origin = self.engine.view_origin
@@ -104,16 +124,12 @@ class CarcassonneUI:
         self.holding_text = ft.Text("Holding tile")
         self.score_text = ft.Text()
         self.meeple_text = ft.Text()
-        self.view_text = ft.Text()
         self.holding_image = ft.Image(src="tiles/1.png", width=140, height=140, fit=IMAGE_FIT.CONTAIN)
+        self.records_column = ft.Column(spacing=4, scroll=ft.ScrollMode.AUTO)
 
-        self.new_game_btn = ft.ElevatedButton("New Game", on_click=self.on_new_game)
+        self.start_game_btn = ft.ElevatedButton("Start Game", on_click=self.on_start_game)
         self.confirm_btn = ft.ElevatedButton("Confirm Tile", on_click=self.on_confirm_tile)
         self.skip_btn = ft.OutlinedButton("Skip Meeple", on_click=lambda _: self.on_apply_move(-1))
-        self.pan_up_btn = ft.OutlinedButton("Up", on_click=lambda _: self.on_pan(0, -1), width=88)
-        self.pan_left_btn = ft.OutlinedButton("Left", on_click=lambda _: self.on_pan(-1, 0), width=88)
-        self.pan_right_btn = ft.OutlinedButton("Right", on_click=lambda _: self.on_pan(1, 0), width=88)
-        self.pan_down_btn = ft.OutlinedButton("Down", on_click=lambda _: self.on_pan(0, 1), width=88)
 
         self.meeple_buttons = {
             0: ft.ElevatedButton("Meeple: Up", on_click=lambda _: self.on_apply_move(0)),
@@ -146,7 +162,7 @@ class CarcassonneUI:
             content=ft.Column(
                 controls=[
                     ft.Text("Game Info", size=20, weight=ft.FontWeight.BOLD),
-                    ft.Row([self.new_game_btn], wrap=True),
+                    ft.Row([self.start_game_btn], wrap=True),
                     self.turn_text,
                     self.ai_text,
                     self.holding_text,
@@ -162,14 +178,14 @@ class CarcassonneUI:
                     self.meeple_text,
                     ft.Row([self.confirm_btn, self.skip_btn], wrap=True),
                     ft.Row(list(self.meeple_buttons.values()), wrap=True),
-                    ft.Divider(),
-                    self.status,
-                    ft.Divider(),
-                    ft.Text("Viewport", size=18, weight=ft.FontWeight.BOLD),
-                    self.view_text,
-                    ft.Row([ft.Container(width=88), self.pan_up_btn, ft.Container(width=88)]),
-                    ft.Row([self.pan_left_btn, self.pan_right_btn], alignment=ft.MainAxisAlignment.CENTER),
-                    ft.Row([ft.Container(width=88), self.pan_down_btn, ft.Container(width=88)]),
+                    ft.Text("Record", size=18, weight=ft.FontWeight.BOLD),
+                    ft.Container(
+                        height=220,
+                        border=ft.border.all(1, "#d0d7de"),
+                        border_radius=4,
+                        padding=ft.padding.all(6),
+                        content=self.records_column,
+                    ),
                 ],
                 spacing=8,
                 scroll=ft.ScrollMode.AUTO,
@@ -189,7 +205,11 @@ class CarcassonneUI:
         self.refresh()
 
     def _new_engine(self) -> CppCarcassonneAdapter:
-        return CppCarcassonneAdapter(seed=self.config.seed, player_specs=self.config.player_specs)
+        return CppCarcassonneAdapter(
+            seed=self.config.seed,
+            player_specs=self.config.player_specs,
+            auto_run_bots=not is_bot_vs_bot(self.config.player_specs),
+        )
 
     def refresh(self) -> None:
         valid_moves = self.engine.get_valid_moves()
@@ -205,7 +225,8 @@ class CarcassonneUI:
         ai_turn = self.engine.is_ai_turn()
         self.confirm_btn.disabled = self.selected_move is None or self.awaiting_meeple or self.state.game_over or ai_turn
         self.skip_btn.visible = self.awaiting_meeple and not ai_turn
-        self.new_game_btn.disabled = False
+        self.start_game_btn.visible = should_show_start_game(self.config.player_specs, self.bot_game_started)
+        self.start_game_btn.disabled = self.state.game_over
 
         for pos, btn in self.meeple_buttons.items():
             btn.visible = self.awaiting_meeple and pos in self.meeple_options
@@ -216,10 +237,6 @@ class CarcassonneUI:
         if self.engine.ai_status:
             self.ai_text.value += f"\nAI: {self.engine.ai_status}"
         self.holding_text.value = "Holding tile"
-        self.view_text.value = (
-            f"View X: {self.view_origin[0]}-{self.view_origin[0] + BOARD_SIZE - 1} | "
-            f"Y: {self.view_origin[1]}-{self.view_origin[1] + BOARD_SIZE - 1}"
-        )
         if self.state.holding_tile_id is None:
             self.holding_image.visible = False
         else:
@@ -230,11 +247,10 @@ class CarcassonneUI:
         self.meeple_text.value = (
             f"Meeples -> P1: {self.state.meeples_remaining[1]} | P2: {self.state.meeples_remaining[2]}"
         )
-        pan_disabled = self.awaiting_meeple or self.state.game_over or ai_turn
-        self.pan_up_btn.disabled = pan_disabled or not self.engine.can_pan(0, -1)
-        self.pan_left_btn.disabled = pan_disabled or not self.engine.can_pan(-1, 0)
-        self.pan_right_btn.disabled = pan_disabled or not self.engine.can_pan(1, 0)
-        self.pan_down_btn.disabled = pan_disabled or not self.engine.can_pan(0, 1)
+        record_controls: List[ft.Control] = [
+            ft.Text(format_move_record(record), selectable=True) for record in self.engine.move_records
+        ]
+        self.records_column.controls = record_controls or [ft.Text("No records.")]
 
         self.grid_column.controls = [self._build_row(y, moves_by_cell) for y in range(BOARD_SIZE)]
 
@@ -364,15 +380,6 @@ class CarcassonneUI:
         self.status.value = f"Selected ({x}, {y}) rotation={self.selected_move.rotation}."
         self.refresh()
 
-    def on_pan(self, dx: int, dy: int) -> None:
-        if self.awaiting_meeple or self.state.game_over:
-            return
-        if not self.engine.pan(dx, dy):
-            return
-        self.selected_move = None
-        self.status.value = "Viewport moved."
-        self.refresh()
-
     def on_confirm_tile(self, _: ft.ControlEvent) -> None:
         if self.selected_move is None or self.state.game_over:
             return
@@ -421,10 +428,13 @@ class CarcassonneUI:
         self.meeple_options = []
         self.refresh()
 
-    def on_new_game(self, _: ft.ControlEvent) -> None:
+    def on_start_game(self, _: ft.ControlEvent) -> None:
+        if not is_bot_vs_bot(self.config.player_specs) or self.bot_game_started:
+            return
+        self.bot_game_started = True
+        self.status.value = "Bot thinking..."
         try:
-            self.engine.close()
-            self.engine = self._new_engine()
+            self.engine.run_ai_turns()
         except ValueError as exc:
             self.status.value = str(exc)
             self.refresh()
@@ -434,7 +444,6 @@ class CarcassonneUI:
         self.selected_move = None
         self.awaiting_meeple = False
         self.meeple_options = []
-        self.status.value = f"New game: {self.engine.mode_label()}."
         self.refresh()
 
 

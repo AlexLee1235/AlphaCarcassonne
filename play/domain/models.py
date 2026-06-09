@@ -21,6 +21,16 @@ class Move:
     rotation: int
 
 
+@dataclass(frozen=True)
+class MoveRecord:
+    player: int
+    x: int
+    y: int
+    rotation: int
+    meeple_pos: int
+    score_deltas: Dict[int, int] = field(default_factory=dict)
+
+
 @dataclass
 class PlacedTile:
     tile_id: int

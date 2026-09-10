@@ -86,6 +86,11 @@ if (OPEN_SPIEL_BUILD_WITH_LIBTORCH)
   )
   target_include_directories(alpha_zero_torch PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/alpha_zero_torch)
+
+  add_executable(torch_play_test alpha_zero_torch/play_test.cc
+    ${OPEN_SPIEL_OBJECTS} $<TARGET_OBJECTS:alpha_zero_torch>)
+  target_link_libraries(torch_play_test ${TORCH_LIBRARIES})
+  add_test(torch_play_test torch_play_test)
 endif()
 
 if (${OPEN_SPIEL_BUILD_WITH_ORTOOLS})

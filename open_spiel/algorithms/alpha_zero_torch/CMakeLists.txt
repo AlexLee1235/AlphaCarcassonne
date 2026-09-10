@@ -26,7 +26,12 @@ if (OPEN_SPIEL_BUILD_WITH_LIBTORCH)
                 $<TARGET_OBJECTS:alpha_zero_torch> $<TARGET_OBJECTS:tests>)
   add_test(torch_vpnet_test torch_vpnet_test)
 
+  add_executable(torch_play_test play_test.cc ${OPEN_SPIEL_OBJECTS}
+                $<TARGET_OBJECTS:alpha_zero_torch>)
+  add_test(torch_play_test torch_play_test)
+
   target_link_libraries (alpha_zero_torch ${TORCH_LIBRARIES})
   target_link_libraries (torch_model_test ${TORCH_LIBRARIES})
   target_link_libraries (torch_vpnet_test ${TORCH_LIBRARIES})
+  target_link_libraries (torch_play_test ${TORCH_LIBRARIES})
 endif ()

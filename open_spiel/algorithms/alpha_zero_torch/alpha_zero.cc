@@ -92,29 +92,22 @@ StartInfo StartInfoFromLearnerJson(const std::string& path) {
   return start_info;
 }
 
-struct Trajectory {
-  struct State {
-    std::vector<float> observation;
-    open_spiel::Player current_player;
-    std::vector<open_spiel::Action> legal_actions;
-    open_spiel::Action action;
-    open_spiel::ActionsAndProbs policy;
-    double value;
-  };
-
-  std::vector<State> states;
-  std::vector<double> returns;
-};
-
 Trajectory PlayGame(Logger* logger, int game_num, const open_spiel::Game& game,
                     std::vector<std::unique_ptr<MCTSBot>>* bots,
                     std::mt19937* rng, double temperature, int temperature_drop,
-                    double cutoff_value, bool verbose = false) {
+                    double cutoff_value, bool verbose) {
   std::unique_ptr<open_spiel::State> state = game.NewInitialState();
   std::vector<std::string> history;
   Trajectory trajectory;
 
   while (true) {
+    // A chance action can also end the game, e.g. when Carcassonne discards
+    // its last unplaceable tile. Check before treating CurrentPlayer() as an
+    // index into bots: terminal states return kTerminalPlayerId (-4).
+    if (state->IsTerminal()) {
+      trajectory.returns = state->Returns();
+      break;
+    }
     if (state->IsChanceNode()) {
       open_spiel::ActionsAndProbs outcomes = state->ChanceOutcomes();
       open_spiel::Action action =
@@ -123,6 +116,8 @@ Trajectory PlayGame(Logger* logger, int game_num, const open_spiel::Game& game,
       state->ApplyAction(action);
     } else {
       open_spiel::Player player = state->CurrentPlayer();
+      SPIEL_CHECK_GE(player, 0);
+      SPIEL_CHECK_LT(player, bots->size());
       std::unique_ptr<SearchNode> root = (*bots)[player]->MCTSearch(*state);
       open_spiel::ActionsAndProbs policy;
       policy.reserve(root->children.size());

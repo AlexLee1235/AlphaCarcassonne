@@ -1,4 +1,5 @@
 #include "open_spiel/games/carcassonne/carcassonne.h"
+#include "open_spiel/games/carcassonne/carcassonne_test_utils.h"
 
 #include <cmath>
 #include <memory>
@@ -350,6 +351,28 @@ void ShortGameMaxTurnsTest() {
   }
 }
 
+void LastUnplaceableTileTest() {
+  auto state = LastUnplaceableTileState(LoadGame("carcassonne"));
+  const auto before = state->ToString();
+  auto clone = state->Clone();
+  clone->ApplyAction(2);
+  SPIEL_CHECK_TRUE(clone->IsTerminal());
+  SPIEL_CHECK_EQ(clone->CurrentPlayer(), kTerminalPlayerId);
+  SPIEL_CHECK_TRUE(clone->LegalActions().empty());
+  SPIEL_CHECK_EQ(clone->Returns(), (std::vector<double>{1.0, -1.0}));
+  const auto& core = dynamic_cast<const CarcassonneState&>(*clone).UnderlyingState();
+  SPIEL_CHECK_EQ(core.completed_turns, 70);
+  SPIEL_CHECK_EQ(core.getTotalRemaining(), 0);
+  SPIEL_CHECK_EQ(core.current_tile_in_hand, 0);
+  SPIEL_CHECK_EQ(core.player_scores[0], 48);
+  SPIEL_CHECK_EQ(core.player_scores[1], 39);
+  SPIEL_CHECK_EQ(clone->ObservationTensor(0).size(), kObservationTensorSize);
+  SPIEL_CHECK_EQ(clone->ObservationTensor(1).size(), kObservationTensorSize);
+  SPIEL_CHECK_EQ(state->ToString(), before);
+  state->ApplyAction(2);
+  SPIEL_CHECK_EQ(state->ToString(), clone->ToString());
+}
+
 void BasicCarcassonneTests() {
   testing::LoadGameTest("carcassonne");
   testing::LoadGameTest("carcassonne(max_turns=10)");
@@ -359,6 +382,7 @@ void BasicCarcassonneTests() {
   RelativePerspectiveTest();
   ReturnsMatchScoresTest();
   ShortGameMaxTurnsTest();
+  LastUnplaceableTileTest();
 }
 
 }  // namespace

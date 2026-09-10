@@ -1,5 +1,137 @@
       ./build/examples/alpha_zero_torch_example \
     --game=carcassonne \
+    --path=/az_carcassonne_0904 \
+    --cutoff_probability=0.000000 \
+    --nn_model=resnet \
+    --nn_width=32 \
+    --nn_depth=8 \
+    --devices=cuda:0 \
+    --actors=2048 \
+    --evaluators=1 \
+    --checkpoint_freq=1 \
+    --eval_levels=1 \
+    --evaluation_window=50 \
+    --inference_batch_size=128 \
+    --inference_cache=2621440 \
+    --inference_threads=16 \
+    --learning_rate=0.0001 \
+    --max_memory_mb=100000 \
+    --max_simulations=800 \
+    --max_steps=0 \
+    --policy_alpha=1.0 \
+    --policy_epsilon=0.25 \
+    --replay_buffer_reuse=3 \
+    --replay_buffer_size=262144 \
+    --temperature=1 \
+    --temperature_drop=10 \
+    --value_is_current_player=true \
+    --train_batch_size=2048  \
+    --uct_c=2.000000  \
+    --weight_decay=0.0001
+
+      ./build/examples/alpha_zero_torch_example \
+    --game=carcassonne \
+    --path=/az_carcassonne_0903 \
+    --cutoff_probability=0.000000 \
+    --nn_model=resnet \
+    --nn_width=32 \
+    --nn_depth=8 \
+    --devices=cuda:0 \
+    --actors=4096 \
+    --evaluators=1 \
+    --checkpoint_freq=1 \
+    --eval_levels=1 \
+    --evaluation_window=50 \
+    --inference_batch_size=64 \
+    --inference_cache=26214400 \
+    --inference_threads=16 \
+    --learning_rate=0.0001 \
+    --max_memory_mb=100000 \
+    --max_simulations=800 \
+    --max_steps=0 \
+    --policy_alpha=1.0 \
+    --policy_epsilon=0.25 \
+    --replay_buffer_reuse=3 \
+    --replay_buffer_size=262144 \
+    --temperature=1 \
+    --temperature_drop=10 \
+    --value_is_current_player=true \
+    --train_batch_size=4096  \
+    --uct_c=2.000000  \
+    --weight_decay=0.0001
+
+
+
+      ./build/examples/alpha_zero_torch_example \
+    --game=carcassonne \
+    --path=/workspace/az_carcassonne_0610 \
+    --cutoff_probability=0.000000 \
+    --nn_model=resnet \
+    --nn_width=32 \
+    --nn_depth=8 \
+    --devices=cuda:0 \
+    --actors=2048 \
+    --evaluators=1 \
+    --checkpoint_freq=1 \
+    --eval_levels=1 \
+    --evaluation_window=50 \
+    --inference_batch_size=64 \
+    --inference_cache=262144 \
+    --inference_threads=16 \
+    --learning_rate=0.0001 \
+    --max_memory_mb=100000 \
+    --max_simulations=800 \
+    --max_steps=0 \
+    --policy_alpha=1.0 \
+    --policy_epsilon=0.25 \
+    --replay_buffer_reuse=3 \
+    --replay_buffer_size=262144 \
+    --temperature=1 \
+    --temperature_drop=10 \
+    --value_is_current_player=true \
+    --train_batch_size=2048  \
+    --uct_c=2.000000  \
+    --weight_decay=0.0001
+
+
+
+
+printf '{"time_rel":0.0,"step":0,"total_trajectories":0}\n' > learner.jsonl
+
+      ./build/examples/alpha_zero_torch_example \
+    --game=carcassonne \
+    --path=/workspace/az_carcassonne_0610 \
+    --cutoff_probability=0.000000 \
+    --nn_model=resnet \
+    --nn_width=128 \
+    --nn_depth=6 \
+    --devices=cuda:0 \
+    --actors=2048 \
+    --evaluators=1 \
+    --checkpoint_freq=1 \
+    --eval_levels=1 \
+    --evaluation_window=50 \
+    --inference_batch_size=64 \
+    --inference_cache=262144 \
+    --inference_threads=16 \
+    --learning_rate=0.0001 \
+    --max_memory_mb=100000 \
+    --max_simulations=2400 \
+    --max_steps=0 \
+    --policy_alpha=1.0 \
+    --policy_epsilon=0.25 \
+    --replay_buffer_reuse=3 \
+    --replay_buffer_size=262144 \
+    --temperature=1 \
+    --temperature_drop=10 \
+    --value_is_current_player=false \
+    --train_batch_size=2048  \
+    --uct_c=2.000000  \
+    --weight_decay=0.0001
+
+
+      ./build/examples/alpha_zero_torch_example \
+    --game=carcassonne \
     --path=/tmp/az_carcassonne_reuse3_sim800_buffer262144 \
     --graph_def=vpnet.pb \
     --cutoff_probability=0.000000 \
@@ -36,10 +168,10 @@ venv/bin/python play/main.py \
     --game=carcassonne \
     --p1_type=human \
     --p2_type=az \
-    --p2_az_path=/mnt/c/achieve/Carcassonne/0607 \
-    --p2_az_checkpoint=70 \
+    --p2_az_path=/mnt/c/achieve/Carcassonne/0616 \
+    --p2_az_checkpoint=5 \
     --p2_az_graph_def=vpnet.pb \
-    --p2_max_simulations=800
+    --p2_max_simulations=2400
 
 venv/bin/python play/main.py \
     --game=carcassonne \
@@ -96,12 +228,12 @@ venv/bin/python play/main.py \
   --game=carcassonne \
   --p1_type=az \
   --p2_type=az \
-  --p1_az_path=/tmp/az_carcassonne_reuse3_sim800_buffer65536 \
-  --p1_az_checkpoint=45 \
+  --p1_az_path=/tmp/az_carcassonne_0610 \
+  --p1_az_checkpoint=0 \
   --p1_az_device=/cuda:0 \
   --p1_max_simulations=160 \
-  --p2_az_path=/tmp/az_carcassonne_reuse3_sim800_buffer65536 \
-  --p2_az_checkpoint=85 \
+  --p2_az_path=/tmp/az_carcassonne_0610 \
+  --p2_az_checkpoint=-1 \
   --p2_az_device=/cuda:0 \
   --p2_max_simulations=160 \
   --num_games=400 \
@@ -113,12 +245,13 @@ venv/bin/python play/main.py \
   --game=carcassonne \
   --p1_type=az \
   --p2_type=random \
-  --p1_az_path=/tmp/az_carcassonne_reuse3_sim800_buffer262144 \
-  --p1_az_checkpoint=5 \
+  --p1_az_path=/az_carcassonne_0904 \
+  --p1_az_checkpoint=40 \
   --p1_az_device=/cuda:0 \
   --p1_max_simulations=160 \
-  --num_games=100 \
-  --num_workers=16
+  --num_games=10 \
+  --num_workers=16 \
+  --az_value_is_current_player=true 
 
 
 ./build/examples/alpha_zero_torch_example \

@@ -16,16 +16,40 @@
 #define OPEN_SPIEL_ALGORITHMS_ALPHA_ZERO_TORCH_ALPHA_ZERO_H_
 
 #include <iostream>
+#include <memory>
+#include <random>
 #include <string>
 #include <vector>
 
+#include "open_spiel/algorithms/mcts.h"
 #include "open_spiel/utils/file.h"
 #include "open_spiel/utils/json.h"
+#include "open_spiel/utils/logger.h"
 #include "open_spiel/utils/thread.h"
 
 namespace open_spiel {
 namespace algorithms {
 namespace torch_az {
+
+struct Trajectory {
+  struct State {
+    std::vector<float> observation;
+    open_spiel::Player current_player;
+    std::vector<open_spiel::Action> legal_actions;
+    open_spiel::Action action;
+    open_spiel::ActionsAndProbs policy;
+    double value;
+  };
+
+  std::vector<State> states;
+  std::vector<double> returns;
+};
+
+// Shared by self-play actors and evaluation workers.
+Trajectory PlayGame(Logger* logger, int game_num, const open_spiel::Game& game,
+                    std::vector<std::unique_ptr<MCTSBot>>* bots,
+                    std::mt19937* rng, double temperature, int temperature_drop,
+                    double cutoff_value, bool verbose = false);
 
 struct AlphaZeroConfig {
   std::string game;

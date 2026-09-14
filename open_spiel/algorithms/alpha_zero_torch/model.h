@@ -52,7 +52,6 @@ struct ResOutputBlockConfig {
   int value_linear_out_features;
   int policy_linear_in_features;
   int policy_linear_out_features;
-  int value_observation_size;
   int policy_observation_size;
 };
 
@@ -119,9 +118,10 @@ TORCH_MODULE(ResTorsoBlock);
 
 // A block of the residual model's network that creates the output. It consists
 // of a value and policy head. The value head takes the input through one
-// convoluational layer (CONV), one batch normalization layers (BN), and two
-// linear layers (LIN). The output activation function is tanh (TANH), the
-// rectified linear activation function (RELU) is within. The policy head
+// convoluational layer (CONV), one batch normalization layers (BN), global
+// average and global max pooling over the board (POOL), and two linear layers
+// (LIN). The output activation function is tanh (TANH), the rectified linear
+// activation function (RELU) is within. The policy head
 // consists of one convolutional layer, batch normalization layer, and linear
 // layer. There is no softmax activation function in this layer. The softmax
 // on the output is applied in the forward function of the residual model.
@@ -131,8 +131,16 @@ TORCH_MODULE(ResTorsoBlock);
 // activation function, or calculate the loss using Torch's log softmax
 // function.
 //
+// The value head pools instead of flattening: a flatten + LIN readout gives
+// every board cell its own weights, which only get gradient when that cell is
+// occupied, and a single ReLU'd filter cannot carry a signed per-cell score.
+// With several filters and mean/max pooling the readout has no
+// position-dependent parameters, the mean is a hard-coded board-wide sum, and
+// the head no longer depends on the board size.
+//
 // Illustration:
-//                    --> CONV --> BN --> RELU --> LIN --> RELU --> LIN --> TANH
+//                    --> CONV --> BN --> RELU --> POOL(mean ++ max) --> LIN
+//                                                 --> RELU --> LIN --> TANH
 //   [Input Tensor] --
 //                    --> CONV --> BN --> RELU --> LIN (no SOFTMAX here)
 //
@@ -147,7 +155,6 @@ class ResOutputBlockImpl : public torch::nn::Module {
   torch::nn::BatchNorm2d value_batch_norm_;
   torch::nn::Linear value_linear1_;
   torch::nn::Linear value_linear2_;
-  int value_observation_size_;
   torch::nn::Conv2d policy_conv_;
   torch::nn::BatchNorm2d policy_batch_norm_;
   torch::nn::Linear policy_linear_;

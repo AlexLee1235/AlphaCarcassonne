@@ -164,7 +164,6 @@ ResOutputBlockImpl::ResOutputBlockImpl(const ResOutputBlockConfig& config)
                          /*in_features=*/config.value_linear_out_features,
                          /*out_features=*/1)
                          .bias(true)),
-      value_observation_size_(config.value_observation_size),
       policy_conv_(torch::nn::Conv2dOptions(
                        /*input_channels=*/config.input_channels,
                        /*output_channels=*/config.policy_filters,
@@ -198,8 +197,14 @@ ResOutputBlockImpl::ResOutputBlockImpl(const ResOutputBlockConfig& config)
 
 std::vector<torch::Tensor> ResOutputBlockImpl::forward(torch::Tensor x,
                                                        torch::Tensor mask) {
-  torch::Tensor value_output = torch::relu(value_batch_norm_(value_conv_(x)));
-  value_output = value_output.view({-1, value_observation_size_});
+  // [B, value_filters, H, W] -> [B, value_filters, H*W]
+  torch::Tensor value_output =
+      torch::relu(value_batch_norm_(value_conv_(x))).flatten(2);
+  // Global mean ++ max pooling -> [B, 2 * value_filters]. The mean is a
+  // translation-invariant board sum; the max keeps "is there one big feature".
+  value_output =
+      torch::cat({value_output.mean(/*dim=*/2), value_output.amax(/*dim=*/2)},
+                 /*dim=*/1);
   value_output = torch::relu(value_linear1_(value_output));
   value_output = torch::tanh(value_linear2_(value_output));
 
@@ -294,17 +299,21 @@ ModelImpl::ModelImpl(const ModelConfig& config, const std::string& device)
                                            /*kernel_size=*/3,
                                            /*padding=*/1};
 
+    // The value head pools over the board, so its size does not depend on
+    // height/width. With nn_width=32 it has 18,017 parameters, none of them
+    // position-dependent (the old 1-filter flatten head had 7,200 of 7,300).
+    constexpr int kValueFilters = 32;
+    constexpr int kValueHidden = 256;
     ResOutputBlockConfig output_config = {
         /*input_channels=*/config.nn_width,
-        /*value_filters=*/1,
+        /*value_filters=*/kValueFilters,
         /*policy_filters=*/2,
         /*kernel_size=*/1,
         /*padding=*/0,
-        /*value_linear_in_features=*/1 * width * height,
-        /*value_linear_out_features=*/config.nn_width,
+        /*value_linear_in_features=*/2 * kValueFilters,  // mean ++ max
+        /*value_linear_out_features=*/kValueHidden,
         /*policy_linear_in_features=*/2 * width * height,
         /*policy_linear_out_features=*/config.number_of_actions,
-        /*value_observation_size=*/1 * width * height,
         /*policy_observation_size=*/2 * width * height};
 
     layers_->push_back(ResInputBlock(input_config));

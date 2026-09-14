@@ -16,11 +16,14 @@
 
 #include <torch/torch.h>
 
+#include <cstdint>
 #include <iostream>
+#include <map>
 #include <memory>
 #include <string>
 #include <vector>
 
+#include "open_spiel/abseil-cpp/absl/strings/match.h"
 #include "open_spiel/abseil-cpp/absl/strings/str_cat.h"
 #include "open_spiel/spiel.h"
 #include "open_spiel/spiel_utils.h"
@@ -33,7 +36,8 @@ namespace {
 void TestModelCreation() {
   std::cout << "\n~-~-~-~- TestModelCreation -~-~-~-~" << std::endl;
 
-  std::shared_ptr<const Game> game = LoadGame("clobber");
+  // This fork only builds a few games (clobber is not one of them).
+  std::shared_ptr<const Game> game = LoadGame("othello");
 
   ModelConfig net_config = {
       /*observation_tensor_shape=*/game->ObservationTensorShape(),
@@ -50,14 +54,12 @@ void TestModelCreation() {
 void TestModelInference() {
   std::cout << "\n~-~-~-~- TestModelInference -~-~-~-~" << std::endl;
 
+  // Othello's observation is 3 x 8 x 8, same as the upstream clobber(8x8).
   const int channels = 3;
   const int rows = 8;
   const int columns = 8;
-  std::string game_string =
-      absl::StrCat("clobber(rows=", std::to_string(rows),
-                   ",columns=", std::to_string(columns), ")");
 
-  std::shared_ptr<const Game> game = LoadGame(game_string);
+  std::shared_ptr<const Game> game = LoadGame("othello");
   std::unique_ptr<open_spiel::State> state = game->NewInitialState();
 
   ModelConfig net_config = {
@@ -105,6 +107,78 @@ void TestModelInference() {
   std::cout << "Policy:\n" << output[1] << std::endl;
 }
 
+// The value head pools over the board instead of flattening it, so it has no
+// position-dependent parameters: its parameters must not depend on the board
+// size, and its value must not change when the board cells are permuted.
+void TestValueHeadGlobalPooling() {
+  std::cout << "\n~-~-~-~- TestValueHeadGlobalPooling -~-~-~-~" << std::endl;
+
+  const int nn_width = 32;
+  std::vector<std::map<std::string, std::vector<int64_t>>> head_shapes;
+  // Boards of different sizes: 3x3 and 6x7.
+  for (const char* game_name : {"tic_tac_toe", "connect_four"}) {
+    std::shared_ptr<const Game> game = LoadGame(game_name);
+    ModelConfig net_config = {
+        /*observation_tensor_shape=*/game->ObservationTensorShape(),
+        /*number_of_actions=*/game->NumDistinctActions(),
+        /*nn_depth=*/2,
+        /*nn_width=*/nn_width,
+        /*learning_rate=*/0.001,
+        /*weight_decay=*/0.001};
+    Model net(net_config, "cpu:0");
+
+    std::map<std::string, std::vector<int64_t>> shapes;
+    int64_t value_parameters = 0;
+    for (const auto& parameter : net->named_parameters()) {
+      if (absl::StrContains(parameter.key(), ".value_")) {
+        shapes[parameter.key()] = parameter.value().sizes().vec();
+        value_parameters += parameter.value().numel();
+      }
+    }
+    // conv 32*32+32, BN 2*32, FC 64*256+256, FC 256+1.
+    SPIEL_CHECK_EQ(value_parameters, 18017);
+    head_shapes.push_back(shapes);
+  }
+  SPIEL_CHECK_TRUE(head_shapes[0] == head_shapes[1]);
+
+  const int batch = 4;
+  const int height = 6;
+  const int width = 7;
+  const int num_actions = 10;
+  ResOutputBlockConfig config = {
+      /*input_channels=*/nn_width,
+      /*value_filters=*/32,
+      /*policy_filters=*/2,
+      /*kernel_size=*/1,
+      /*padding=*/0,
+      /*value_linear_in_features=*/2 * 32,
+      /*value_linear_out_features=*/256,
+      /*policy_linear_in_features=*/2 * height * width,
+      /*policy_linear_out_features=*/num_actions,
+      /*policy_observation_size=*/2 * height * width};
+  ResOutputBlock head(config);
+  head->eval();
+  torch::NoGradGuard no_grad;
+
+  torch::manual_seed(0);
+  torch::Tensor x = torch::randn({batch, nn_width, height, width});
+  torch::Tensor permuted = x.flatten(2)
+                               .index_select(2, torch::randperm(height * width))
+                               .view({batch, nn_width, height, width});
+  torch::Tensor mask = torch::ones(
+      {batch, num_actions}, torch::TensorOptions().dtype(torch::kBool));
+
+  torch::Tensor value = head->forward(x, mask)[0];
+  torch::Tensor permuted_value = head->forward(permuted, mask)[0];
+  std::cout << "Value:\n" << value << "\nPermuted value:\n" << permuted_value
+            << std::endl;
+  SPIEL_CHECK_TRUE(value.sizes().vec() == std::vector<int64_t>({batch, 1}));
+  SPIEL_CHECK_TRUE(torch::allclose(value, permuted_value, /*rtol=*/1e-5,
+                                   /*atol=*/1e-6));
+  // Not vacuous: different boards still give different values.
+  SPIEL_CHECK_GT((value.max() - value.min()).item<float>(), 0.0);
+}
+
 void TestCUDAAVailability() {
   if (torch::cuda::is_available()) {
     std::cout << "CUDA is available!" << std::endl;
@@ -121,5 +195,6 @@ void TestCUDAAVailability() {
 int main(int argc, char** argv) {
   open_spiel::algorithms::torch_az::TestModelCreation();
   open_spiel::algorithms::torch_az::TestModelInference();
+  open_spiel::algorithms::torch_az::TestValueHeadGlobalPooling();
   open_spiel::algorithms::torch_az::TestCUDAAVailability();
 }

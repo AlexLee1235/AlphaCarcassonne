@@ -26,6 +26,7 @@
 
 #include "open_spiel/abseil-cpp/absl/strings/match.h"
 #include "open_spiel/abseil-cpp/absl/strings/str_cat.h"
+#include "open_spiel/abseil-cpp/absl/strings/str_join.h"
 #include "open_spiel/abseil-cpp/absl/synchronization/mutex.h"
 #include "open_spiel/algorithms/alpha_zero_torch/model.h"
 #include "open_spiel/spiel.h"
@@ -55,6 +56,41 @@ absl::Mutex* InferenceMutexForDevice(const std::string& device) {
   absl::Mutex* device_mu = new absl::Mutex();
   (*mutexes)[device] = device_mu;
   return device_mu;
+}
+
+std::map<std::string, std::vector<int64_t>> TensorShapes(
+    const torch::nn::Module& module) {
+  std::map<std::string, std::vector<int64_t>> shapes;
+  for (const auto& parameter : module.named_parameters()) {
+    shapes[parameter.key()] = parameter.value().sizes().vec();
+  }
+  for (const auto& buffer : module.named_buffers()) {
+    shapes[buffer.key()] = buffer.value().sizes().vec();
+  }
+  return shapes;
+}
+
+// torch::load resizes every tensor to whatever the file holds instead of
+// rejecting a mismatch, so a checkpoint from another architecture (e.g. the
+// old 1-filter flatten value head) would only fail later, with an opaque shape
+// error inside forward(). Check the shapes right after loading instead.
+void LoadModelChecked(Model& model, const std::string& file,
+                      const torch::Device& device) {
+  const std::map<std::string, std::vector<int64_t>> expected =
+      TensorShapes(*model);
+  torch::load(model, file, device);
+  for (const auto& [name, shape] : TensorShapes(*model)) {
+    auto it = expected.find(name);
+    if (it == expected.end() || it->second != shape) {
+      SpielFatalError(absl::StrCat(
+          "Checkpoint ", file, " does not match the model architecture: ", name,
+          " is [", absl::StrJoin(shape, ","), "] in the checkpoint but [",
+          it == expected.end() ? std::string("missing")
+                               : absl::StrJoin(it->second, ","),
+          "] in the model. Checkpoints saved before the global-pooling value "
+          "head cannot be loaded; train from scratch."));
+    }
+  }
 }
 
 }  // namespace
@@ -169,7 +205,7 @@ void VPNetModel::LoadCheckpoint(int step) {
 }
 
 void VPNetModel::LoadCheckpoint(const std::string& path) {
-  torch::load(model_, absl::StrCat(path, ".pt"), torch_device_);
+  LoadModelChecked(model_, absl::StrCat(path, ".pt"), torch_device_);
   torch::load(model_optimizer_, absl::StrCat(path, "-optimizer.pt"),
               torch_device_);
 }
@@ -179,7 +215,7 @@ void VPNetModel::LoadCheckpointWeightsOnly(int step) {
 }
 
 void VPNetModel::LoadCheckpointWeightsOnly(const std::string& path) {
-  torch::load(model_, absl::StrCat(path, ".pt"), torch_device_);
+  LoadModelChecked(model_, absl::StrCat(path, ".pt"), torch_device_);
 }
 
 std::vector<VPNetModel::InferenceOutputs> VPNetModel::Inference(

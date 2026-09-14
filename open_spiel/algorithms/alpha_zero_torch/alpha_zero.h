@@ -38,7 +38,10 @@ struct Trajectory {
     std::vector<open_spiel::Action> legal_actions;
     open_spiel::Action action;
     open_spiel::ActionsAndProbs policy;
-    double value;
+    double value;  // MCTS root value, i.e. after search.
+    // The network's own value for this state, before search. NaN when
+    // PlayGame was not given a raw_value_evaluator.
+    double raw_value;
   };
 
   std::vector<State> states;
@@ -49,7 +52,8 @@ struct Trajectory {
 Trajectory PlayGame(Logger* logger, int game_num, const open_spiel::Game& game,
                     std::vector<std::unique_ptr<MCTSBot>>* bots,
                     std::mt19937* rng, double temperature, int temperature_drop,
-                    double cutoff_value, bool verbose = false);
+                    double cutoff_value, bool verbose = false,
+                    Evaluator* raw_value_evaluator = nullptr);
 
 struct AlphaZeroConfig {
   std::string game;

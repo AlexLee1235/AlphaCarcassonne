@@ -95,7 +95,8 @@ StartInfo StartInfoFromLearnerJson(const std::string& path) {
 Trajectory PlayGame(Logger* logger, int game_num, const open_spiel::Game& game,
                     std::vector<std::unique_ptr<MCTSBot>>* bots,
                     std::mt19937* rng, double temperature, int temperature_drop,
-                    double cutoff_value, bool verbose) {
+                    double cutoff_value, bool verbose,
+                    Evaluator* raw_value_evaluator) {
   std::unique_ptr<open_spiel::State> state = game.NewInitialState();
   std::vector<std::string> history;
   Trajectory trajectory;
@@ -134,9 +135,14 @@ Trajectory PlayGame(Logger* logger, int game_num, const open_spiel::Game& game,
       }
 
       double root_value = root->total_reward / root->explore_count;
+      // The search already evaluated the root, so with an inference cache this
+      // is a cache hit.
+      double raw_value = raw_value_evaluator != nullptr
+                             ? raw_value_evaluator->Evaluate(*state)[player]
+                             : std::nan("");
       trajectory.states.push_back(Trajectory::State{
           state->ObservationTensor(), player, state->LegalActions(), action,
-          std::move(policy), root_value});
+          std::move(policy), root_value, raw_value});
       std::string action_str = state->ActionToString(player, action);
       history.push_back(action_str);
       state->ApplyAction(action);
@@ -208,7 +214,8 @@ void actor(const open_spiel::Game& game, const AlphaZeroConfig& config, int num,
                                                : game.MaxUtility() + 1);
     if (!trajectory_queue->Push(
             PlayGame(logger.get(), game_num, game, &bots, &rng,
-                     config.temperature, config.temperature_drop, cutoff),
+                     config.temperature, config.temperature_drop, cutoff,
+                     /*verbose=*/false, vp_eval.get()),
             absl::Seconds(10))) {
       logger->Print("Failed to push a trajectory after 10 seconds.");
     }
@@ -332,6 +339,11 @@ void learner(const open_spiel::Game& game, const AlphaZeroConfig& config,
   const int stage_count = 7;
   std::vector<open_spiel::BasicStats> value_accuracies(stage_count);
   std::vector<open_spiel::BasicStats> value_predictions(stage_count);
+  // value_* above use the MCTS root value, which near the end of the game is
+  // mostly the search reaching terminal states. raw_value_* use the network's
+  // own output, to tell "the net can't evaluate" from "the search is shallow".
+  std::vector<open_spiel::BasicStats> raw_value_accuracies(stage_count);
+  std::vector<open_spiel::BasicStats> raw_value_predictions(stage_count);
   open_spiel::BasicStats game_lengths;
   open_spiel::HistogramNumbered game_lengths_hist(game.MaxGameLength() + 1);
 
@@ -351,6 +363,12 @@ void learner(const open_spiel::Game& game, const AlphaZeroConfig& config,
     }
     for (auto& value_prediction : value_predictions) {
       value_prediction.Reset();
+    }
+    for (auto& raw_value_accuracy : raw_value_accuracies) {
+      raw_value_accuracy.Reset();
+    }
+    for (auto& raw_value_prediction : raw_value_predictions) {
+      raw_value_prediction.Reset();
     }
 
     // Collect trajectories
@@ -384,9 +402,13 @@ void learner(const open_spiel::Game& game, const AlphaZeroConfig& config,
           int index = (trajectory->states.size() - 1) *
                       static_cast<double>(stage) / (stage_count - 1);
           const Trajectory::State& s = trajectory->states[index];
-          value_accuracies[stage].Add(
-              (s.value >= 0) == (trajectory->returns[s.current_player] >= 0));
+          const bool player_won = trajectory->returns[s.current_player] >= 0;
+          value_accuracies[stage].Add((s.value >= 0) == player_won);
           value_predictions[stage].Add(abs(s.value));
+          if (!std::isnan(s.raw_value)) {
+            raw_value_accuracies[stage].Add((s.raw_value >= 0) == player_won);
+            raw_value_predictions[stage].Add(std::abs(s.raw_value));
+          }
         }
       }
     }
@@ -464,6 +486,12 @@ void learner(const open_spiel::Game& game, const AlphaZeroConfig& config,
                                 [](auto v) { return v.ToJson(); })},
         {"value_prediction",
          json::TransformToArray(value_predictions,
+                                [](auto v) { return v.ToJson(); })},
+        {"raw_value_accuracy",
+         json::TransformToArray(raw_value_accuracies,
+                                [](auto v) { return v.ToJson(); })},
+        {"raw_value_prediction",
+         json::TransformToArray(raw_value_predictions,
                                 [](auto v) { return v.ToJson(); })},
         {"eval", json::Object({
                      {"count", eval_results->EvalCount()},

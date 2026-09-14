@@ -74,3 +74,4 @@ open_spiel/.vs
 *.swp
 
 .cache/
+commands.md

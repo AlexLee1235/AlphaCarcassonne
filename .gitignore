@@ -72,3 +72,5 @@ open_spiel/.vs
 
 # Editor swap files
 *.swp
+
+.cache/

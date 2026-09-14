@@ -1,5 +1,36 @@
       ./build/examples/alpha_zero_torch_example \
     --game=carcassonne \
+    --path=/az_carcassonne_0912 \
+    --cutoff_probability=0.000000 \
+    --nn_model=resnet \
+    --nn_width=64 \
+    --nn_depth=16 \
+    --devices=cuda:0 \
+    --actors=2048 \
+    --evaluators=1 \
+    --checkpoint_freq=1 \
+    --eval_levels=1 \
+    --evaluation_window=50 \
+    --inference_batch_size=128 \
+    --inference_cache=2621440 \
+    --inference_threads=16 \
+    --learning_rate=0.0001 \
+    --max_memory_mb=100000 \
+    --max_simulations=800 \
+    --max_steps=0 \
+    --policy_alpha=1.0 \
+    --policy_epsilon=0.25 \
+    --replay_buffer_reuse=4 \
+    --replay_buffer_size=262144 \
+    --temperature=1 \
+    --temperature_drop=10 \
+    --value_is_current_player=true \
+    --train_batch_size=2048  \
+    --uct_c=2.000000  \
+    --weight_decay=0.0001
+
+      ./build/examples/alpha_zero_torch_example \
+    --game=carcassonne \
     --path=/az_carcassonne_0904 \
     --cutoff_probability=0.000000 \
     --nn_model=resnet \
@@ -185,68 +216,47 @@ venv/bin/python play/main.py \
     --p2_az_checkpoint=70 \
     --p2_az_graph_def=vpnet.pb \
     --p2_max_simulations=800
-
-  venv/bin/python play/main.py \
-    --game=carcassonne \
-    --p1_type=mcts \
-    --p2_type=mcts \
-    --p1_max_simulations=800 \
-    --p2_max_simulations=800
     
-
+# az vs mcts
   ./build/examples/alpha_zero_torch_game_example \
   --game=carcassonne \
   --p1_type=az \
   --p2_type=mcts \
-  --p1_az_path=/tmp/az_carcassonne_reuse3_sim800_buffer262144 \
-  --p1_az_checkpoint=15 \
+  --p1_az_path=/az_carcassonne_0912 \
+  --p1_az_checkpoint=79 \
   --p1_az_device=/cuda:0 \
-  --p1_max_simulations=160 \
+  --p1_max_simulations=800 \
   --p2_max_simulations=160 \
   --num_games=100 \
   --quiet=true \
-  --num_workers=8
+  --num_workers=16 \
+  --az_value_is_current_player=true 
   
+# az vs az
   ./build/examples/alpha_zero_torch_game_example \
   --game=carcassonne \
   --p1_type=az \
   --p2_type=az \
-  --p1_az_path=/tmp/az_carcassonne_reuse3_sim800_buffer262144 \
-  --p1_az_checkpoint=45 \
+  --p1_az_path=/az_carcassonne_0912 \
+  --p1_az_checkpoint=79 \
   --p1_max_simulations=160 \
-  --p2_az_path=/tmp/az_carcassonne_reuse3_sim800_buffer262144 \
-  --p2_az_checkpoint=65 \
+  --p2_az_path=/az_carcassonne_0904 \
+  --p2_az_checkpoint=193 \
   --p2_max_simulations=160 \
-  --num_games=400 \
+  --num_games=100 \
   --p1_az_device=/cuda:0 \
   --p2_az_device=/cuda:0 \
   --quiet=true \
-  --num_workers=8
+  --num_workers=16 \
+  --az_value_is_current_player=true 
 
-
-    ./build/examples/alpha_zero_torch_game_example \
-  --game=carcassonne \
-  --p1_type=az \
-  --p2_type=az \
-  --p1_az_path=/tmp/az_carcassonne_0610 \
-  --p1_az_checkpoint=0 \
-  --p1_az_device=/cuda:0 \
-  --p1_max_simulations=160 \
-  --p2_az_path=/tmp/az_carcassonne_0610 \
-  --p2_az_checkpoint=-1 \
-  --p2_az_device=/cuda:0 \
-  --p2_max_simulations=160 \
-  --num_games=400 \
-  --quiet=true \
-  --num_workers=32
-
-
+# az vs random
   ./build/examples/alpha_zero_torch_game_example \
   --game=carcassonne \
   --p1_type=az \
   --p2_type=random \
-  --p1_az_path=/az_carcassonne_0904 \
-  --p1_az_checkpoint=40 \
+  --p1_az_path=/az_carcassonne_0912 \
+  --p1_az_checkpoint=68 \
   --p1_az_device=/cuda:0 \
   --p1_max_simulations=160 \
   --num_games=10 \

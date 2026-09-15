@@ -50,6 +50,9 @@ ABSL_FLAG(double, cutoff_value, 0.95,
           "Cut off rollouts early when above this value.");
 ABSL_FLAG(bool, value_is_current_player, false,
           "Train and evaluate value as current-player value.");
+ABSL_FLAG(bool, augment_rotations, false,
+          "Train on each sampled state in a random board rotation "
+          "(carcassonne only).");
 ABSL_FLAG(double, learning_rate, 0.0001, "Learning rate.");
 ABSL_FLAG(double, weight_decay, 0.0001, "Weight decay.");
 ABSL_FLAG(double, policy_alpha, 1, "What dirichlet noise alpha to use.");
@@ -167,6 +170,7 @@ int main(int argc, char** argv) {
     config.cutoff_value = absl::GetFlag(FLAGS_cutoff_value);
     config.value_is_current_player =
         absl::GetFlag(FLAGS_value_is_current_player);
+    config.augment_rotations = absl::GetFlag(FLAGS_augment_rotations);
     config.actors = absl::GetFlag(FLAGS_actors);
     config.evaluators = absl::GetFlag(FLAGS_evaluators);
     config.eval_levels = absl::GetFlag(FLAGS_eval_levels);

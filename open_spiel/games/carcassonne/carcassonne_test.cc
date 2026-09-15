@@ -1,11 +1,15 @@
 #include "open_spiel/games/carcassonne/carcassonne.h"
 #include "open_spiel/games/carcassonne/carcassonne_test_utils.h"
 
+#include <algorithm>
 #include <cmath>
+#include <iostream>
 #include <memory>
+#include <random>
 #include <vector>
 
 #include "open_spiel/abseil-cpp/absl/random/random.h"
+#include "open_spiel/abseil-cpp/absl/types/span.h"
 #include "open_spiel/spiel.h"
 #include "open_spiel/spiel_utils.h"
 #include "open_spiel/tests/basic_tests.h"
@@ -373,6 +377,107 @@ void LastUnplaceableTileTest() {
   SPIEL_CHECK_EQ(state->ToString(), clone->ToString());
 }
 
+// Plays a game (following `history`, then random moves) and, alongside it, the
+// same game on a board turned by k quarter turns: start tile turned, every move
+// turned with RotateAction. At every decision the twin's own observations,
+// legal moves and side groups must equal the rotation of the original's, and
+// both games must end with the same scores. Returns how many legal meeple moves
+// were renamed differently from a plain side shift (the lowest side of the
+// feature changed), so the caller can check that case was exercised.
+int CheckRotatedTwin(absl::Span<const Action> history, int k,
+                     std::mt19937* rng) {
+  std::shared_ptr<const Game> game = LoadGame("carcassonne");
+  CarcassonneState state(game);
+  CarcassonneState twin(game, ::Carcassonne(/*max_turns=*/0,
+                                            /*start_rotation=*/k));
+  // CarcassonneState's override hides State::ObservationTensor(Player).
+  const State& state_view = state;
+  const State& twin_view = twin;
+  int renamed_meeple_moves = 0;
+  for (int step = 0; !state.IsTerminal(); ++step) {
+    SPIEL_CHECK_FALSE(twin.IsTerminal());
+    const std::vector<Action> legal = state.LegalActions();
+    Action action;
+    if (step < static_cast<int>(history.size())) {
+      action = history[step];
+    } else if (state.IsChanceNode()) {
+      action = SampleAction(state.ChanceOutcomes(), *rng).first;
+    } else {
+      action = legal[std::uniform_int_distribution<int>(
+          0, legal.size() - 1)(*rng)];
+    }
+
+    if (state.IsChanceNode()) {
+      SPIEL_CHECK_TRUE(twin.IsChanceNode());
+      SPIEL_CHECK_EQ(legal, twin.LegalActions());
+      state.ApplyAction(action);
+      twin.ApplyAction(action);
+      continue;
+    }
+
+    SPIEL_CHECK_EQ(state.CurrentPlayer(), twin.CurrentPlayer());
+    const SideGroups groups = GetSideGroups(state);
+    const SideGroups rotated_groups = RotateSideGroups(groups, k);
+    SPIEL_CHECK_TRUE(rotated_groups == GetSideGroups(twin));
+    SPIEL_CHECK_TRUE(RotateSideGroups(rotated_groups, 4 - k) == groups);
+
+    for (Player player = 0; player < kNumPlayers; ++player) {
+      const std::vector<float> observation =
+          state_view.ObservationTensor(player);
+      std::vector<float> rotated(kObservationTensorSize);
+      RotateObservation(observation, k, groups, absl::MakeSpan(rotated));
+      SPIEL_CHECK_TRUE(rotated == twin_view.ObservationTensor(player));
+      std::vector<float> back(kObservationTensorSize);
+      RotateObservation(rotated, 4 - k, rotated_groups, absl::MakeSpan(back));
+      SPIEL_CHECK_TRUE(back == observation);
+    }
+
+    std::vector<Action> rotated_legal;
+    for (Action legal_action : legal) {
+      const Action rotated_action = RotateAction(legal_action, k, groups);
+      SPIEL_CHECK_EQ(RotateAction(rotated_action, 4 - k, rotated_groups),
+                     legal_action);
+      rotated_legal.push_back(rotated_action);
+      const int pos = DecodeMeepleActionForTest(legal_action);
+      if (legal_action >= kMeepleActionOffset && pos >= 0 && pos < 4 &&
+          DecodeMeepleActionForTest(rotated_action) != (pos + k) % 4) {
+        ++renamed_meeple_moves;
+      }
+    }
+    std::sort(rotated_legal.begin(), rotated_legal.end());
+    SPIEL_CHECK_EQ(rotated_legal, twin.LegalActions());
+
+    twin.ApplyAction(RotateAction(action, k, groups));
+    state.ApplyAction(action);
+  }
+
+  SPIEL_CHECK_TRUE(twin.IsTerminal());
+  SPIEL_CHECK_EQ(state.Returns(), twin.Returns());
+  const ::Carcassonne& core = state.UnderlyingState();
+  const ::Carcassonne& twin_core = twin.UnderlyingState();
+  for (Player player = 0; player < kNumPlayers; ++player) {
+    SPIEL_CHECK_EQ(core.player_scores[player], twin_core.player_scores[player]);
+    SPIEL_CHECK_EQ(core.holding_meeples[player],
+                   twin_core.holding_meeples[player]);
+  }
+  return renamed_meeple_moves;
+}
+
+void RotationEquivarianceTest() {
+  std::mt19937 rng(20260915);
+  int renamed_meeple_moves = 0;
+  for (int k = 1; k < kNumBoardRotations; ++k) {
+    renamed_meeple_moves +=
+        CheckRotatedTwin(kLastUnplaceableTileHistory, k, &rng);
+    for (int game = 0; game < 20; ++game) {
+      renamed_meeple_moves += CheckRotatedTwin({}, k, &rng);
+    }
+  }
+  std::cout << "RotationEquivarianceTest: " << renamed_meeple_moves
+            << " meeple moves renamed beyond a side shift" << std::endl;
+  SPIEL_CHECK_GT(renamed_meeple_moves, 0);
+}
+
 void BasicCarcassonneTests() {
   testing::LoadGameTest("carcassonne");
   testing::LoadGameTest("carcassonne(max_turns=10)");
@@ -383,6 +488,7 @@ void BasicCarcassonneTests() {
   ReturnsMatchScoresTest();
   ShortGameMaxTurnsTest();
   LastUnplaceableTileTest();
+  RotationEquivarianceTest();
 }
 
 }  // namespace

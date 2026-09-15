@@ -179,6 +179,9 @@ class Carcassonne {
     int max_turns = 0;
 
     explicit Carcassonne(int max_turns = 0);
+    // Starts with the start tile turned by start_rotation quarter turns: the
+    // whole game rotated about the centre. Used to test board-rotation symmetry.
+    Carcassonne(int max_turns, int start_rotation);
     int currentTileType() const;
     Carcassonne clone() const;
 
@@ -192,5 +195,9 @@ class Carcassonne {
     void getLegalTileMoves(TileMove *out, int &count) const;
     void placeTile(int x, int y, int rot);
     FixedVector<int, 6> getLegalMeepleMoves() const;
+    // For each side of the last placed tile, the lowest side of that tile in the
+    // same feature (-1 for grass or no tile). Meeple moves name a feature by that
+    // lowest side, so this is what maps meeple moves under board rotation.
+    void getLastTileSideGroups(int8_t groups[4]) const;
     void placeMeeple(int pos);
 };

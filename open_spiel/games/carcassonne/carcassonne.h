@@ -1,6 +1,8 @@
 #ifndef OPEN_SPIEL_GAMES_CARCASSONNE_CARCASSONNE_H_
 #define OPEN_SPIEL_GAMES_CARCASSONNE_CARCASSONNE_H_
 
+#include <array>
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <vector>
@@ -124,6 +126,34 @@ class CarcassonneGame : public Game {
   private:
     int max_turns_ = 0;
 };
+
+// Board rotation, for training-data augmentation. Rules, deck and the square
+// board are symmetric under turning the whole position by k quarter turns
+// clockwise about the centre cell: the rotated position has the same value, its
+// observation is a fixed rearrangement of planes and cells, and every legal
+// action maps to exactly one legal action.
+inline constexpr int kNumBoardRotations = 4;
+
+// Which sides of the just-placed tile belong to the same feature (see
+// Carcassonne::getLastTileSideGroups); all -1 outside the meeple phase. Meeple
+// actions 0-3 name a feature by its lowest side, which a rotation can change,
+// and the observation alone does not say which sides share a feature.
+using SideGroups = std::array<int8_t, 4>;
+inline constexpr SideGroups kNoSideGroups = {-1, -1, -1, -1};
+
+SideGroups GetSideGroups(const CarcassonneState &state);
+
+// A player action legal in a position -> the same move in that position
+// rotated by k quarter turns. `groups` must come from the original position.
+Action RotateAction(Action action, int k, const SideGroups &groups);
+
+// SideGroups of a position -> SideGroups of that position rotated by k.
+SideGroups RotateSideGroups(const SideGroups &groups, int k);
+
+// Observation of a position -> observation of that position rotated by k
+// quarter turns. `groups` must come from the original position.
+void RotateObservation(absl::Span<const float> observation, int k, const SideGroups &groups,
+                       absl::Span<float> rotated);
 
 } // namespace carcassonne
 } // namespace open_spiel

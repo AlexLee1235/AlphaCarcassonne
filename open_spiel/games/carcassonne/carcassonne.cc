@@ -151,6 +151,66 @@ void SetTileTerrainPlanes(absl::Span<float> values, const Tile &tile, int north_
 
 bool HasCityConnectivityPlane(int canonical_type) { return canonical_type == 14 || canonical_type == 15; }
 
+// One quarter turn clockwise maps (x, y) to (N-1-y, x): north (y-1) becomes
+// east (x+1), matching Tile::rotate().
+void RotateCell(int k, int *x, int *y) {
+    for (int i = 0; i < k; ++i) {
+        const int old_x = *x;
+        *x = BOARD_SIZE - 1 - *y;
+        *y = old_x;
+    }
+}
+
+// Planes that come in one-per-side (or one-per-rotation) blocks follow the
+// rotation; every other plane keeps its index and only its cells move.
+int RotatePlane(int plane, int k) {
+    if (plane < kShieldPlane) {
+        return ((plane / kTerrainTypes + k) % 4) * kTerrainTypes + plane % kTerrainTypes;
+    }
+    for (int first : {kMyMeeplePlane, kOpponentMeeplePlane, kLegalPlacementPlane}) {
+        if (plane >= first && plane < first + 4) {
+            return first + (plane - first + k) % 4;
+        }
+    }
+    return plane;
+}
+
+// For each k, the source index of every observation value.
+const std::array<std::vector<int>, kNumBoardRotations> &RotationSourceIndices() {
+    static const std::array<std::vector<int>, kNumBoardRotations> tables = [] {
+        std::array<std::vector<int>, kNumBoardRotations> result;
+        for (int k = 0; k < kNumBoardRotations; ++k) {
+            result[k].resize(kObservationTensorSize);
+            for (int plane = 0; plane < kObservationPlanes; ++plane) {
+                for (int y = 0; y < BOARD_SIZE; ++y) {
+                    for (int x = 0; x < BOARD_SIZE; ++x) {
+                        int rx = x;
+                        int ry = y;
+                        RotateCell(k, &rx, &ry);
+                        result[k][(RotatePlane(plane, k) * BOARD_SIZE + ry) * BOARD_SIZE + rx] =
+                            (plane * BOARD_SIZE + y) * BOARD_SIZE + x;
+                    }
+                }
+            }
+        }
+        return result;
+    }();
+    return tables;
+}
+
+// Meeple side `side` names a feature by its lowest side; after rotation the
+// feature is named by the lowest of its rotated sides.
+int RotateMeepleSide(int side, int k, const SideGroups &groups) {
+    SPIEL_CHECK_NE(groups[side], -1);
+    int rotated = 4;
+    for (int s = 0; s < 4; ++s) {
+        if (groups[s] == groups[side]) {
+            rotated = std::min(rotated, (s + k) % 4);
+        }
+    }
+    return rotated;
+}
+
 } // namespace
 
 CarcassonneState::CarcassonneState(std::shared_ptr<const Game> game) : State(std::move(game)), game_state_() {}
@@ -411,6 +471,66 @@ void CarcassonneState::DoApplyAction(Action action) {
 CarcassonneGame::CarcassonneGame(const GameParameters &params)
     : Game(kGameType, params), max_turns_(ParameterValue<int>("max_turns")) {
     SPIEL_CHECK_GE(max_turns_, 0);
+}
+
+SideGroups GetSideGroups(const CarcassonneState &state) {
+    SideGroups groups = kNoSideGroups;
+    const ::Carcassonne &core = state.UnderlyingState();
+    if (core.current_phase == PHASE_MEEPLE) {
+        core.getLastTileSideGroups(groups.data());
+    }
+    return groups;
+}
+
+Action RotateAction(Action action, int k, const SideGroups &groups) {
+    SPIEL_CHECK_GE(k, 0);
+    SPIEL_CHECK_LT(k, kNumBoardRotations);
+    if (action < kTileActionCount) {
+        int x;
+        int y;
+        int rot;
+        DecodeTileAction(action, &x, &y, &rot);
+        RotateCell(k, &x, &y);
+        return EncodeTileAction(x, y, (rot + k) % 4);
+    }
+    const int pos = DecodeMeepleAction(action);
+    if (pos < 0 || pos > 3) {
+        return action;  // Skip and monastery do not depend on orientation.
+    }
+    return EncodeMeepleAction(RotateMeepleSide(pos, k, groups));
+}
+
+SideGroups RotateSideGroups(const SideGroups &groups, int k) {
+    SideGroups rotated = kNoSideGroups;
+    for (int side = 0; side < 4; ++side) {
+        if (groups[side] != -1) {
+            rotated[(side + k) % 4] = static_cast<int8_t>(RotateMeepleSide(side, k, groups));
+        }
+    }
+    return rotated;
+}
+
+void RotateObservation(absl::Span<const float> observation, int k, const SideGroups &groups,
+                       absl::Span<float> rotated) {
+    SPIEL_CHECK_GE(k, 0);
+    SPIEL_CHECK_LT(k, kNumBoardRotations);
+    SPIEL_CHECK_EQ(observation.size(), kObservationTensorSize);
+    SPIEL_CHECK_EQ(rotated.size(), kObservationTensorSize);
+    const std::vector<int> &source = RotationSourceIndices()[k];
+    for (int i = 0; i < kObservationTensorSize; ++i) {
+        rotated[i] = observation[source[i]];
+    }
+    // Legal meeple sides are broadcast planes, so moving cells does nothing;
+    // rename each legal side instead.
+    const int plane_size = BOARD_SIZE * BOARD_SIZE;
+    for (int side = 0; side < 4; ++side) {
+        BroadcastPlane(rotated, kLegalMeeplePlane + side, 0.0f);
+    }
+    for (int side = 0; side < 4; ++side) {
+        if (observation[(kLegalMeeplePlane + side) * plane_size] != 0.0f) {
+            BroadcastPlane(rotated, kLegalMeeplePlane + RotateMeepleSide(side, k, groups), 1.0f);
+        }
+    }
 }
 
 } // namespace carcassonne

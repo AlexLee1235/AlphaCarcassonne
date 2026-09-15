@@ -55,10 +55,12 @@ void Carcassonne::placeTileOnBoard(int tile_id, int x, int y, int rot) {
     logs.placeTileOnBoard(tile_id, x, y, rot);
 }
 
-Carcassonne::Carcassonne(int max_turns) : max_turns(max_turns) {
+Carcassonne::Carcassonne(int max_turns) : Carcassonne(max_turns, START_TILE_ROTATION) {}
+
+Carcassonne::Carcassonne(int max_turns, int start_rotation) : max_turns(max_turns) {
     deck.initializeTypeCounts();
     int start_tile_id = deck.consumeType(START_TILE_TYPE);
-    placeTileOnBoard(start_tile_id, BOARD_SIZE / 2, BOARD_SIZE / 2, START_TILE_ROTATION);
+    placeTileOnBoard(start_tile_id, BOARD_SIZE / 2, BOARD_SIZE / 2, start_rotation);
     current_phase = PHASE_CHANCE;
 }
 
@@ -131,6 +133,31 @@ FixedVector<int, 6> Carcassonne::getLegalMeepleMoves() const {
         ret.push_back(4);
     }
     return ret;
+}
+
+void Carcassonne::getLastTileSideGroups(int8_t groups[4]) const {
+    for (int i = 0; i < 4; ++i) {
+        groups[i] = -1;
+    }
+    if (last_x < 0 || last_y < 0) {
+        return;
+    }
+    const Placement &placement = board.board[last_y][last_x];
+    const Tile &tile = full_deck[placement.id][placement.rotation];
+    int roots[4];
+    for (int i = 0; i < 4; ++i) {
+        if (tile.edge[i] == GRASS) {
+            continue;
+        }
+        roots[i] = features.featureMap.find(features.edgeIndex(placement.id, i));
+        groups[i] = static_cast<int8_t>(i);
+        for (int j = 0; j < i; ++j) {
+            if (groups[j] != -1 && roots[j] == roots[i]) {
+                groups[i] = groups[j];
+                break;
+            }
+        }
+    }
 }
 
 void Carcassonne::placeMeeple(int pos) {

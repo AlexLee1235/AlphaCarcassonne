@@ -40,6 +40,7 @@
 #include "open_spiel/algorithms/alpha_zero_torch/vpevaluator.h"
 #include "open_spiel/algorithms/alpha_zero_torch/vpnet.h"
 #include "open_spiel/algorithms/mcts.h"
+#include "open_spiel/games/carcassonne/carcassonne.h"
 #include "open_spiel/spiel.h"
 #include "open_spiel/spiel_utils.h"
 #include "open_spiel/utils/circular_buffer.h"
@@ -140,9 +141,14 @@ Trajectory PlayGame(Logger* logger, int game_num, const open_spiel::Game& game,
       double raw_value = raw_value_evaluator != nullptr
                              ? raw_value_evaluator->Evaluate(*state)[player]
                              : std::nan("");
+      std::array<int8_t, 4> symmetry_context = carcassonne::kNoSideGroups;
+      if (const auto* carcassonne_state =
+              dynamic_cast<const carcassonne::CarcassonneState*>(state.get())) {
+        symmetry_context = carcassonne::GetSideGroups(*carcassonne_state);
+      }
       trajectory.states.push_back(Trajectory::State{
           state->ObservationTensor(), player, state->LegalActions(), action,
-          std::move(policy), root_value, raw_value});
+          std::move(policy), root_value, raw_value, symmetry_context});
       std::string action_str = state->ActionToString(player, action);
       history.push_back(action_str);
       state->ApplyAction(action);
@@ -313,6 +319,28 @@ void evaluator(const open_spiel::Game& game, const AlphaZeroConfig& config,
   logger.Print("Got a quit.");
 }
 
+namespace {
+
+// Rewrites a Carcassonne training sample as the same position rotated by k
+// quarter turns. The value target does not change.
+void RotateTrainInputs(int k, VPNetModel::TrainInputs* sample) {
+  if (k == 0) return;
+  const carcassonne::SideGroups groups = sample->symmetry_context;
+  std::vector<float> rotated(sample->observations.size());
+  carcassonne::RotateObservation(sample->observations, k, groups,
+                                 absl::MakeSpan(rotated));
+  sample->observations.swap(rotated);
+  for (Action& action : sample->legal_actions) {
+    action = carcassonne::RotateAction(action, k, groups);
+  }
+  for (auto& [action, probability] : sample->policy) {
+    action = carcassonne::RotateAction(action, k, groups);
+  }
+  sample->symmetry_context = carcassonne::RotateSideGroups(groups, k);
+}
+
+}  // namespace
+
 void learner(const open_spiel::Game& game, const AlphaZeroConfig& config,
              DeviceManager* device_manager,
              std::shared_ptr<VPNetEvaluator> eval,
@@ -335,6 +363,8 @@ void learner(const open_spiel::Game& game, const AlphaZeroConfig& config,
   }
   int learn_rate = config.replay_buffer_size / config.replay_buffer_reuse;
   int64_t total_trajectories = start_info.total_trajectories;
+  std::uniform_int_distribution<int> rotation_dist(
+      0, carcassonne::kNumBoardRotations - 1);
 
   const int stage_count = 7;
   std::vector<open_spiel::BasicStats> value_accuracies(stage_count);
@@ -391,9 +421,9 @@ void learner(const open_spiel::Game& game, const AlphaZeroConfig& config,
               config.value_is_current_player
                   ? trajectory->returns[state.current_player]
                   : p1_outcome;
-          replay_buffer.Add(VPNetModel::TrainInputs{state.legal_actions,
-                                                    state.observation,
-                                                    state.policy, value_target});
+          replay_buffer.Add(VPNetModel::TrainInputs{
+              state.legal_actions, state.observation, state.policy,
+              value_target, state.symmetry_context});
           num_states += 1;
         }
 
@@ -445,8 +475,15 @@ void learner(const open_spiel::Game& game, const AlphaZeroConfig& config,
 
       // Learn from them.
       for (int i = 0; i < replay_buffer.Size() / config.train_batch_size; i++) {
-        losses += learn_model->Learn(
-            replay_buffer.Sample(&rng, config.train_batch_size));
+        std::vector<VPNetModel::TrainInputs> batch =
+            replay_buffer.Sample(&rng, config.train_batch_size);
+        if (config.augment_rotations) {
+          // A fresh random orientation every time a state is sampled.
+          for (VPNetModel::TrainInputs& sample : batch) {
+            RotateTrainInputs(rotation_dist(rng), &sample);
+          }
+        }
+        losses += learn_model->Learn(batch);
       }
 
       // The device manager can now once again use the first device for
@@ -553,6 +590,9 @@ bool AlphaZero(AlphaZeroConfig config, StopToken* stop, bool resuming) {
     open_spiel::SpielFatalError("Game must have terminal rewards.");
   if (game_type.dynamics != open_spiel::GameType::Dynamics::kSequential)
     open_spiel::SpielFatalError("Game must have sequential turns.");
+  if (config.augment_rotations && game_type.short_name != "carcassonne")
+    open_spiel::SpielFatalError(
+        "augment_rotations is only implemented for carcassonne.");
 
   file::Mkdirs(config.path);
   if (!file::IsDirectory(config.path)) {

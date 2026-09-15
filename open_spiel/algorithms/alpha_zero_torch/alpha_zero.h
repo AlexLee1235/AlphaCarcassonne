@@ -15,6 +15,8 @@
 #ifndef OPEN_SPIEL_ALGORITHMS_ALPHA_ZERO_TORCH_ALPHA_ZERO_H_
 #define OPEN_SPIEL_ALGORITHMS_ALPHA_ZERO_TORCH_ALPHA_ZERO_H_
 
+#include <array>
+#include <cstdint>
 #include <iostream>
 #include <memory>
 #include <random>
@@ -42,6 +44,8 @@ struct Trajectory {
     // The network's own value for this state, before search. NaN when
     // PlayGame was not given a raw_value_evaluator.
     double raw_value;
+    // See VPNetModel::TrainInputs::symmetry_context.
+    std::array<int8_t, 4> symmetry_context;
   };
 
   std::vector<State> states;
@@ -87,6 +91,8 @@ struct AlphaZeroConfig {
   double cutoff_probability;
   double cutoff_value;
   bool value_is_current_player;
+  // Train on each sampled state in a random board rotation (carcassonne only).
+  bool augment_rotations;
 
   int actors;
   int evaluators;
@@ -124,6 +130,7 @@ struct AlphaZeroConfig {
         {"cutoff_probability", cutoff_probability},
         {"cutoff_value", cutoff_value},
         {"value_is_current_player", value_is_current_player},
+        {"augment_rotations", augment_rotations},
         {"actors", actors},
         {"evaluators", evaluators},
         {"eval_levels", eval_levels},
@@ -173,6 +180,9 @@ struct AlphaZeroConfig {
     value_is_current_player =
         value_is_current_player_it != config_json.end() &&
         value_is_current_player_it->second.GetBool();
+    const auto augment_rotations_it = config_json.find("augment_rotations");
+    augment_rotations = augment_rotations_it != config_json.end() &&
+                        augment_rotations_it->second.GetBool();
     actors = config_json.at("actors").GetInt();
     evaluators = config_json.at("evaluators").GetInt();
     eval_levels = config_json.at("eval_levels").GetInt();

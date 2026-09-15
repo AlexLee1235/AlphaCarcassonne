@@ -64,6 +64,22 @@ void PlayerTerminalAndCutoffTest() {
       const auto& sample = trajectory.states.back();
       SPIEL_CHECK_EQ(trajectory.returns[sample.current_player], sample.value);
     }
+    // The recorded side groups must agree with the legal meeple moves: each
+    // legal meeple side is the lowest side of its feature.
+    for (const auto& sample : trajectory.states) {
+      const auto& groups = sample.symmetry_context;
+      for (int side = 0; side < 4; ++side) {
+        if (groups[side] != -1) SPIEL_CHECK_EQ(groups[groups[side]], groups[side]);
+      }
+      for (Action action : sample.legal_actions) {
+        const int pos = action - carcassonne::kMeepleActionOffset - 1;
+        if (action < carcassonne::kMeepleActionOffset) {
+          SPIEL_CHECK_TRUE(groups == carcassonne::kNoSideGroups);
+        } else if (pos >= 0 && pos < 4) {
+          SPIEL_CHECK_EQ(groups[pos], pos);
+        }
+      }
+    }
   }
 }
 

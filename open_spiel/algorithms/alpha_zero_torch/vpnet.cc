@@ -29,6 +29,7 @@
 #include "open_spiel/abseil-cpp/absl/strings/str_join.h"
 #include "open_spiel/abseil-cpp/absl/synchronization/mutex.h"
 #include "open_spiel/algorithms/alpha_zero_torch/model.h"
+#include "open_spiel/games/carcassonne/carcassonne.h"
 #include "open_spiel/spiel.h"
 #include "open_spiel/spiel_utils.h"
 
@@ -151,6 +152,13 @@ std::string TorchDeviceName(const std::string& device) {
   return device;
 }
 
+int LastPlacedObservationPlane(const Game& game) {
+  if (game.GetType().short_name == "carcassonne") {
+    return carcassonne::kLastPlacedPlane;
+  }
+  return -1;
+}
+
 bool CreateGraphDef(const Game& game, double learning_rate, double weight_decay,
                     const std::string& path, const std::string& filename,
                     std::string nn_model, int nn_width, int nn_depth,
@@ -162,7 +170,8 @@ bool CreateGraphDef(const Game& game, double learning_rate, double weight_decay,
       /*nn_width=*/nn_width,
       /*learning_rate=*/learning_rate,
       /*weight_decay=*/weight_decay,
-      /*nn_model=*/nn_model};
+      /*nn_model=*/nn_model,
+      /*last_placed_plane=*/LastPlacedObservationPlane(game)};
 
   return SaveModelConfig(path, filename, net_config);
 }

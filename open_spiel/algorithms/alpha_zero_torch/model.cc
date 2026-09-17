@@ -36,6 +36,13 @@ std::istream& operator>>(std::istream& stream, ModelConfig& config) {
       config.nn_depth >> config.nn_width >> config.learning_rate >>
       config.weight_decay >> config.nn_model;
 
+  // Written by newer versions only; a file without it predates the conv policy
+  // head and describes a game with no last-placed plane.
+  if (!(stream >> config.last_placed_plane)) {
+    config.last_placed_plane = -1;
+    stream.clear();
+  }
+
   config.observation_tensor_shape = {channels, height, width};
 
   return stream;
@@ -49,7 +56,8 @@ std::ostream& operator<<(std::ostream& stream, const ModelConfig& config) {
   stream << config.observation_tensor_shape[0] << " " << height << " " << width
          << " " << config.number_of_actions << " " << config.nn_depth << " "
          << config.nn_width << " " << config.learning_rate << " "
-         << config.weight_decay << " " << config.nn_model;
+         << config.weight_decay << " " << config.nn_model << " "
+         << config.last_placed_plane;
   return stream;
 }
 
@@ -181,22 +189,62 @@ ResOutputBlockImpl::ResOutputBlockImpl(const ResOutputBlockConfig& config)
               .momentum(0.01)  // Torch momentum = 1 - TF momentum.
               .affine(true)
               .track_running_stats(true)),
-      policy_linear_(torch::nn::LinearOptions(
-                         /*in_features=*/config.policy_linear_in_features,
-                         /*out_features=*/config.policy_linear_out_features)
-                         .bias(true)),
-      policy_observation_size_(config.policy_observation_size) {
+      policy_observation_size_(config.policy_observation_size),
+      policy_conv_planes_(config.policy_conv_planes),
+      policy_extra_actions_(config.policy_extra_actions) {
   register_module("value_conv", value_conv_);
   register_module("value_batch_norm", value_batch_norm_);
   register_module("value_linear_1", value_linear1_);
   register_module("value_linear_2", value_linear2_);
   register_module("policy_conv", policy_conv_);
   register_module("policy_batch_norm", policy_batch_norm_);
-  register_module("policy_linear", policy_linear_);
+
+  if (policy_conv_planes_ > 0) {
+    auto one_by_one = [](int in_channels, int out_channels) {
+      return torch::nn::Conv2d(torch::nn::Conv2dOptions(in_channels,
+                                                        out_channels,
+                                                        /*kernel_size=*/1)
+                                   .stride(1)
+                                   .padding(0)
+                                   .dilation(1)
+                                   .groups(1)
+                                   .bias(true)
+                                   .padding_mode(torch::kZeros));
+    };
+    // Whether a move is good depends on board-wide counts (tiles left, meeples
+    // left, the score gap) that the trunk cannot carry to every cell, so a
+    // pooled branch adds them back as a per-channel bias.
+    policy_gpool_conv_ =
+        one_by_one(config.input_channels, config.policy_filters);
+    policy_gpool_linear_ = torch::nn::Linear(
+        torch::nn::LinearOptions(2 * config.policy_filters,
+                                 config.policy_filters)
+            .bias(true));
+    register_module("policy_gpool_conv", policy_gpool_conv_);
+    register_module("policy_gpool_linear", policy_gpool_linear_);
+    // One 1x1 filter per per-cell action, shared by every cell.
+    policy_placement_conv_ =
+        one_by_one(config.policy_filters, policy_conv_planes_);
+    register_module("policy_placement_conv", policy_placement_conv_);
+    if (policy_extra_actions_ > 0) {
+      // The remaining actions belong to the cell just played, so they are read
+      // from that cell instead of from the whole board.
+      policy_cell_conv_ =
+          one_by_one(config.policy_filters, policy_extra_actions_);
+      register_module("policy_cell_conv", policy_cell_conv_);
+    }
+  } else {
+    policy_linear_ = torch::nn::Linear(
+        torch::nn::LinearOptions(
+            /*in_features=*/config.policy_linear_in_features,
+            /*out_features=*/config.policy_linear_out_features)
+            .bias(true));
+    register_module("policy_linear", policy_linear_);
+  }
 }
 
-std::vector<torch::Tensor> ResOutputBlockImpl::forward(torch::Tensor x,
-                                                       torch::Tensor mask) {
+std::vector<torch::Tensor> ResOutputBlockImpl::forward(
+    torch::Tensor x, torch::Tensor mask, torch::Tensor last_placed_plane) {
   // [B, value_filters, H, W] -> [B, value_filters, H*W]
   torch::Tensor value_output =
       torch::relu(value_batch_norm_(value_conv_(x))).flatten(2);
@@ -208,10 +256,40 @@ std::vector<torch::Tensor> ResOutputBlockImpl::forward(torch::Tensor x,
   value_output = torch::relu(value_linear1_(value_output));
   value_output = torch::tanh(value_linear2_(value_output));
 
-  torch::Tensor policy_logits =
-      torch::relu(policy_batch_norm_(policy_conv_(x)));
-  policy_logits = policy_logits.view({-1, policy_observation_size_});
-  policy_logits = policy_linear_(policy_logits);
+  torch::Tensor policy_hidden = policy_conv_(x);
+  torch::Tensor policy_logits;
+  if (policy_conv_planes_ > 0) {
+    torch::Tensor pooled = policy_gpool_conv_(x).flatten(2);
+    pooled = torch::cat({pooled.mean(/*dim=*/2), pooled.amax(/*dim=*/2)},
+                        /*dim=*/1);
+    // [B, policy_filters] -> the same bias on every cell.
+    policy_hidden = policy_hidden + policy_gpool_linear_(pooled)
+                                        .unsqueeze(/*dim=*/2)
+                                        .unsqueeze(/*dim=*/3);
+    policy_hidden = torch::relu(policy_batch_norm_(policy_hidden));
+    // [B, planes, H, W] -> [B, H * W * planes]. The game indexes an action as
+    // (cell * planes + plane), so the planes have to be the fastest axis.
+    policy_logits = policy_placement_conv_(policy_hidden)
+                        .permute({0, 2, 3, 1})
+                        .contiguous()
+                        .view({policy_hidden.size(0), -1});
+    if (policy_extra_actions_ > 0) {
+      if (!last_placed_plane.defined()) {
+        throw std::runtime_error(
+            "The conv policy head needs the last-placed plane.");
+      }
+      // The plane is a one-hot of the cell just played, so multiplying by it
+      // and summing reads that cell's logits without an index lookup.
+      torch::Tensor cell_logits =
+          (policy_cell_conv_(policy_hidden) * last_placed_plane)
+              .sum(/*dim=*/{2, 3});
+      policy_logits = torch::cat({policy_logits, cell_logits}, /*dim=*/1);
+    }
+  } else {
+    policy_hidden = torch::relu(policy_batch_norm_(policy_hidden));
+    policy_logits =
+        policy_linear_(policy_hidden.view({-1, policy_observation_size_}));
+  }
   policy_logits = torch::where(mask, policy_logits,
                                -(1 << 16) * torch::ones_like(policy_logits));
 
@@ -273,6 +351,7 @@ ModelImpl::ModelImpl(const ModelConfig& config, const std::string& device)
       weight_decay_(config.weight_decay) {
   // Save config.nn_model to class
   nn_model_ = config.nn_model;
+  last_placed_plane_ = config.last_placed_plane;
 
   int input_size = 1;
   for (const auto& num : config.observation_tensor_shape) {
@@ -286,6 +365,9 @@ ModelImpl::ModelImpl(const ModelConfig& config, const std::string& device)
     int channels = config.observation_tensor_shape[0];
     int height = obs_dims > 1 ? config.observation_tensor_shape[1] : 1;
     int width = obs_dims > 2 ? config.observation_tensor_shape[2] : 1;
+    input_channels_ = channels;
+    input_height_ = height;
+    input_width_ = width;
 
     ResInputBlockConfig input_config = {/*input_channels=*/channels,
                                         /*input_height=*/height,
@@ -304,17 +386,36 @@ ModelImpl::ModelImpl(const ModelConfig& config, const std::string& device)
     // position-dependent (the old 1-filter flatten head had 7,200 of 7,300).
     constexpr int kValueFilters = 32;
     constexpr int kValueHidden = 256;
+
+    // A conv policy head needs the actions to factor into a few choices per
+    // board cell plus a handful that belong to no cell. Carcassonne's do: four
+    // tile rotations per cell (900) and then six meeple moves. Games whose
+    // action count is nothing like 4 * height * width (tic_tac_toe,
+    // connect_four, othello) keep the dense head.
+    constexpr int kPolicyRotations = 4;
+    constexpr int kMaxExtraActions = 16;
+    constexpr int kPolicyConvFilters = 32;
+    const int placement_actions = kPolicyRotations * height * width;
+    const int extra_actions = config.number_of_actions - placement_actions;
+    // The per-cell actions alone are not enough: the actions tied to the cell
+    // just played are read from the plane that marks it.
+    const bool conv_policy =
+        extra_actions >= 0 && extra_actions <= kMaxExtraActions &&
+        (extra_actions == 0 || config.last_placed_plane >= 0);
+
     ResOutputBlockConfig output_config = {
         /*input_channels=*/config.nn_width,
         /*value_filters=*/kValueFilters,
-        /*policy_filters=*/2,
+        /*policy_filters=*/conv_policy ? kPolicyConvFilters : 2,
         /*kernel_size=*/1,
         /*padding=*/0,
         /*value_linear_in_features=*/2 * kValueFilters,  // mean ++ max
         /*value_linear_out_features=*/kValueHidden,
         /*policy_linear_in_features=*/2 * width * height,
         /*policy_linear_out_features=*/config.number_of_actions,
-        /*policy_observation_size=*/2 * width * height};
+        /*policy_observation_size=*/2 * width * height,
+        /*policy_conv_planes=*/conv_policy ? kPolicyRotations : 0,
+        /*policy_extra_actions=*/conv_policy ? extra_actions : 0};
 
     layers_->push_back(ResInputBlock(input_config));
     for (int i = 0; i < num_torso_blocks_; i++) {
@@ -401,11 +502,20 @@ std::vector<torch::Tensor> ModelImpl::forward_(torch::Tensor x,
                                                torch::Tensor mask) {
   std::vector<torch::Tensor> output;
   if (this->nn_model_ == "resnet") {
+    // The policy head reads the actions that belong to the cell just played
+    // from this plane of the observation, so keep it before the trunk runs.
+    torch::Tensor last_placed_plane;
+    if (last_placed_plane_ >= 0) {
+      last_placed_plane =
+          x.view({-1, input_channels_, input_height_, input_width_})
+              .slice(/*dim=*/1, last_placed_plane_, last_placed_plane_ + 1);
+    }
     for (int i = 0; i < num_torso_blocks_ + 2; i++) {
       if (i == 0) {
         x = layers_[i]->as<ResInputBlock>()->forward(x);
       } else if (i >= num_torso_blocks_ + 1) {
-        output = layers_[i]->as<ResOutputBlock>()->forward(x, mask);
+        output = layers_[i]->as<ResOutputBlock>()->forward(x, mask,
+                                                           last_placed_plane);
       } else {
         x = layers_[i]->as<ResTorsoBlock>()->forward(x);
       }

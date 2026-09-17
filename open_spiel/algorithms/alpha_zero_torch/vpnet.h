@@ -40,6 +40,11 @@ bool CreateGraphDef(const Game& game, double learning_rate, double weight_decay,
                     std::string nn_model, int nn_width, int nn_depth,
                     bool verbose = false);
 
+// The observation plane that marks the cell just played, or -1 for games with
+// no such plane. The conv policy head reads the actions belonging to that cell
+// (Carcassonne's meeple moves) from it, so it belongs in the model config.
+int LastPlacedObservationPlane(const Game& game);
+
 class VPNetModel {
  public:
   // A class to handle the network's loss.

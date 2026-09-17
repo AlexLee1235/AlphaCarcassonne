@@ -402,6 +402,7 @@ void learner(const open_spiel::Game& game, const AlphaZeroConfig& config,
     }
 
     // Collect trajectories
+    absl::Time phase_start = absl::Now();
     int queue_size = trajectory_queue->Size();
     int num_states = 0;
     int num_trajectories = 0;
@@ -444,6 +445,7 @@ void learner(const open_spiel::Game& game, const AlphaZeroConfig& config,
     }
     absl::Time now = absl::Now();
     double seconds = absl::ToDoubleSeconds(now - last);
+    double collect_s = absl::ToDoubleSeconds(now - phase_start);
 
     logger.Print("Step: %d", step);
     logger.Print(
@@ -461,9 +463,16 @@ void learner(const open_spiel::Game& game, const AlphaZeroConfig& config,
 
     last = now;
 
+    phase_start = absl::Now();
     replay_buffer.SaveBuffer(config.path + "/replay_buffer.data");
+    double buffer_save_s = absl::ToDoubleSeconds(absl::Now() - phase_start);
 
     VPNetModel::LossInfo losses;
+    double augment_s = 0;
+    double sample_s = 0;
+    double train_s = 0;
+    int num_batches = 0;
+    phase_start = absl::Now();
     {  // Extra scope to return the device for use for inference asap.
       DeviceManager::DeviceLoan learn_model =
           device_manager->Get(config.train_batch_size, device_id);
@@ -475,22 +484,31 @@ void learner(const open_spiel::Game& game, const AlphaZeroConfig& config,
 
       // Learn from them.
       for (int i = 0; i < replay_buffer.Size() / config.train_batch_size; i++) {
+        absl::Time batch_start = absl::Now();
         std::vector<VPNetModel::TrainInputs> batch =
             replay_buffer.Sample(&rng, config.train_batch_size);
+        sample_s += absl::ToDoubleSeconds(absl::Now() - batch_start);
         if (config.augment_rotations) {
           // A fresh random orientation every time a state is sampled.
+          absl::Time augment_start = absl::Now();
           for (VPNetModel::TrainInputs& sample : batch) {
             RotateTrainInputs(rotation_dist(rng), &sample);
           }
+          augment_s += absl::ToDoubleSeconds(absl::Now() - augment_start);
         }
+        batch_start = absl::Now();
         losses += learn_model->Learn(batch);
+        train_s += absl::ToDoubleSeconds(absl::Now() - batch_start);
+        num_batches += 1;
       }
 
       // The device manager can now once again use the first device for
       // inference (if it could not before).
       device_manager->SetLearning(false);
     }
+    double learn_s = absl::ToDoubleSeconds(absl::Now() - phase_start);
 
+    phase_start = absl::Now();
     // Always save a checkpoint, either for keeping or for loading the weights
     // to the other sessions. It only allows numbers, so use -1 as "latest".
     std::string checkpoint_path = device_manager->Get(0, device_id)
@@ -505,7 +523,14 @@ void learner(const open_spiel::Game& game, const AlphaZeroConfig& config,
         }
       }
     }
+    double checkpoint_s = absl::ToDoubleSeconds(absl::Now() - phase_start);
     logger.Print("Checkpoint saved: %s", checkpoint_path);
+    logger.Print(
+        "Timing: collect: %.1fs, buffer save: %.1fs, learn: %.1fs "
+        "(%d batches: sample %.1fs, augment %.1fs, train %.1fs), "
+        "checkpoint: %.1fs",
+        collect_s, buffer_save_s, learn_s, num_batches, sample_s, augment_s,
+        train_s, checkpoint_s);
 
     DataLogger::Record record = {
         {"step", step},
@@ -534,6 +559,16 @@ void learner(const open_spiel::Game& game, const AlphaZeroConfig& config,
                      {"count", eval_results->EvalCount()},
                      {"results", json::CastToArray(eval_results->AvgResults())},
                  })},
+        {"timing", json::Object({
+                       {"collect", collect_s},
+                       {"buffer_save", buffer_save_s},
+                       {"learn", learn_s},
+                       {"sample", sample_s},
+                       {"augment", augment_s},
+                       {"train", train_s},
+                       {"batches", num_batches},
+                       {"checkpoint", checkpoint_s},
+                   })},
         {"batch_size", eval->BatchSizeStats().ToJson()},
         {"batch_size_hist", eval->BatchSizeHistogram().ToJson()},
         {"loss", json::Object({

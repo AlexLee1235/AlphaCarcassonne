@@ -13,14 +13,17 @@
 // limitations under the License.
 
 #include "open_spiel/algorithms/alpha_zero_torch/model.h"
+#include "open_spiel/algorithms/alpha_zero_torch/vpnet.h"
 
 #include <torch/torch.h>
 
+#include <algorithm>
 #include <cstdint>
 #include <iostream>
 #include <map>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "open_spiel/abseil-cpp/absl/strings/match.h"
@@ -155,7 +158,9 @@ void TestValueHeadGlobalPooling() {
       /*value_linear_out_features=*/256,
       /*policy_linear_in_features=*/2 * height * width,
       /*policy_linear_out_features=*/num_actions,
-      /*policy_observation_size=*/2 * height * width};
+      /*policy_observation_size=*/2 * height * width,
+      /*policy_conv_planes=*/0,
+      /*policy_extra_actions=*/0};
   ResOutputBlock head(config);
   head->eval();
   torch::NoGradGuard no_grad;
@@ -179,6 +184,155 @@ void TestValueHeadGlobalPooling() {
   SPIEL_CHECK_GT((value.max() - value.min()).item<float>(), 0.0);
 }
 
+// The conv policy head scores each board cell with shared 1x1 filters, so a
+// logit has to land on the action the game means: the game reads action
+// (cell * planes + plane), which only holds if the planes are the fastest axis
+// when the conv output is flattened. The meeple actions are read from the cell
+// the last-placed plane marks, and a pooled branch biases every cell with
+// board-wide information.
+void TestConvPolicyHead() {
+  std::cout << "\n~-~-~-~- TestConvPolicyHead -~-~-~-~" << std::endl;
+
+  const int batch = 2;
+  const int nn_width = 32;
+  const int height = 6;
+  const int width = 7;
+  const int planes = 4;
+  const int cell_actions = 6;
+  const int placement_actions = planes * height * width;
+  const int num_actions = placement_actions + cell_actions;
+
+  ResOutputBlockConfig config = {
+      /*input_channels=*/nn_width,
+      /*value_filters=*/32,
+      /*policy_filters=*/32,
+      /*kernel_size=*/1,
+      /*padding=*/0,
+      /*value_linear_in_features=*/2 * 32,
+      /*value_linear_out_features=*/256,
+      /*policy_linear_in_features=*/2 * height * width,
+      /*policy_linear_out_features=*/num_actions,
+      /*policy_observation_size=*/2 * height * width,
+      /*policy_conv_planes=*/planes,
+      /*policy_extra_actions=*/cell_actions};
+  ResOutputBlock head(config);
+  head->eval();
+  torch::NoGradGuard no_grad;
+
+  torch::manual_seed(0);
+  torch::Tensor x = torch::randn({batch, nn_width, height, width});
+  torch::Tensor mask = torch::ones(
+      {batch, num_actions}, torch::TensorOptions().dtype(torch::kBool));
+  // The cell the game just played on, as a one-hot plane.
+  const int played_y = 2;
+  const int played_x = 5;
+  torch::Tensor last_placed = torch::zeros({batch, 1, height, width});
+  last_placed.index_put_({torch::indexing::Slice(), 0, played_y, played_x}, 1.0);
+
+  torch::Tensor logits = head->forward(x, mask, last_placed)[1];
+  SPIEL_CHECK_TRUE(logits.sizes().vec() ==
+                   std::vector<int64_t>({batch, num_actions}));
+
+  // The pooled branch biases every cell from the whole board, so a cell's
+  // logits move when any cell changes. That is the point of it, but it hides
+  // which logits belong to which cell, so check it separately: with the pooled
+  // branch silenced every layer left is 1x1.
+  torch::Tensor far = x.clone();
+  far.index_put_({torch::indexing::Slice(), torch::indexing::Slice(), 0, 0},
+                 x.index({torch::indexing::Slice(), torch::indexing::Slice(),
+                          0, 0}) + 1.0);
+  const float pooled_effect =
+      (head->forward(far, mask, last_placed)[1] - logits)
+          .abs()
+          .index({torch::indexing::Slice(), planes * (3 * width + 3)})
+          .max()
+          .item<float>();
+  SPIEL_CHECK_GT(pooled_effect, 1e-5);
+
+  for (auto& parameter : head->named_parameters()) {
+    if (absl::StrContains(parameter.key(), "policy_gpool_linear")) {
+      parameter.value().zero_();
+    }
+  }
+  logits = head->forward(x, mask, last_placed)[1];
+
+  // Changing one cell now moves exactly that cell's per-cell logits, and the
+  // meeple logits only when it is the cell the last-placed plane marks.
+  for (const std::pair<int, int>& cell : {std::make_pair(3, 4),
+                                          std::make_pair(played_y, played_x)}) {
+    torch::Tensor changed = x.clone();
+    changed.index_put_({torch::indexing::Slice(), torch::indexing::Slice(),
+                        cell.first, cell.second},
+                       x.index({torch::indexing::Slice(),
+                                torch::indexing::Slice(), cell.first,
+                                cell.second}) + 1.0);
+    torch::Tensor moved =
+        (head->forward(changed, mask, last_placed)[1] - logits).abs().amax(0);
+    const int index = cell.first * width + cell.second;
+    for (int action = 0; action < placement_actions; ++action) {
+      const float delta = moved[action].item<float>();
+      if (action / planes == index) {
+        SPIEL_CHECK_GT(delta, 1e-5);
+      } else {
+        SPIEL_CHECK_LT(delta, 1e-5);
+      }
+    }
+    const float meeple_moved =
+        moved.slice(0, placement_actions, num_actions).max().item<float>();
+    if (index == played_y * width + played_x) {
+      SPIEL_CHECK_GT(meeple_moved, 1e-5);
+    } else {
+      SPIEL_CHECK_LT(meeple_moved, 1e-5);
+    }
+  }
+  std::cout << "Per-cell logits follow the cell, meeple logits follow the "
+               "last-placed plane." << std::endl;
+
+  // A real Carcassonne model: 906 actions = 4 * 15 * 15 cells + 6 meeple moves,
+  // and a policy head that no longer holds most of the network's parameters.
+  std::shared_ptr<const Game> game = LoadGame("carcassonne");
+  ModelConfig net_config = {
+      /*observation_tensor_shape=*/game->ObservationTensorShape(),
+      /*number_of_actions=*/game->NumDistinctActions(),
+      /*nn_depth=*/2,
+      /*nn_width=*/nn_width,
+      /*learning_rate=*/0.001,
+      /*weight_decay=*/0.001,
+      /*nn_model=*/"resnet",
+      /*last_placed_plane=*/LastPlacedObservationPlane(*game)};
+  SPIEL_CHECK_GE(net_config.last_placed_plane, 0);
+  Model net(net_config, "cpu:0");
+  int64_t policy_parameters = 0;
+  int64_t largest_tensor = 0;
+  for (const auto& parameter : net->named_parameters()) {
+    if (absl::StrContains(parameter.key(), ".policy_")) {
+      policy_parameters += parameter.value().numel();
+    }
+    largest_tensor = std::max(largest_tensor, parameter.value().numel());
+  }
+  // conv 32*32+32, gpool conv 32*32+32, gpool FC 64*32+32, BN 2*32,
+  // placement conv 4*32+4, meeple conv 6*32+6.
+  SPIEL_CHECK_EQ(policy_parameters, 4586);
+  // The dense head's Linear(450 -> 906) was 407,700 on its own.
+  SPIEL_CHECK_LT(largest_tensor, 50000);
+
+  // A game whose actions do not factor per cell keeps the dense head.
+  std::shared_ptr<const Game> othello = LoadGame("othello");
+  ModelConfig othello_config = {
+      /*observation_tensor_shape=*/othello->ObservationTensorShape(),
+      /*number_of_actions=*/othello->NumDistinctActions(),
+      /*nn_depth=*/2,
+      /*nn_width=*/nn_width,
+      /*learning_rate=*/0.001,
+      /*weight_decay=*/0.001};
+  Model othello_net(othello_config, "cpu:0");
+  bool has_dense_policy = false;
+  for (const auto& parameter : othello_net->named_parameters()) {
+    has_dense_policy |= absl::StrContains(parameter.key(), "policy_linear");
+  }
+  SPIEL_CHECK_TRUE(has_dense_policy);
+}
+
 void TestCUDAAVailability() {
   if (torch::cuda::is_available()) {
     std::cout << "CUDA is available!" << std::endl;
@@ -196,5 +350,6 @@ int main(int argc, char** argv) {
   open_spiel::algorithms::torch_az::TestModelCreation();
   open_spiel::algorithms::torch_az::TestModelInference();
   open_spiel::algorithms::torch_az::TestValueHeadGlobalPooling();
+  open_spiel::algorithms::torch_az::TestConvPolicyHead();
   open_spiel::algorithms::torch_az::TestCUDAAVailability();
 }

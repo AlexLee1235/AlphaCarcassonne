@@ -265,7 +265,10 @@ ModelConfig NewModelConfig(const open_spiel::Game& game) {
                      /*nn_width=*/absl::GetFlag(FLAGS_nn_width),
                      /*learning_rate=*/absl::GetFlag(FLAGS_learning_rate),
                      /*weight_decay=*/absl::GetFlag(FLAGS_weight_decay),
-                     /*nn_model=*/absl::GetFlag(FLAGS_nn_model)};
+                     /*nn_model=*/absl::GetFlag(FLAGS_nn_model),
+                     /*last_placed_plane=*/
+                     open_spiel::algorithms::torch_az::
+                         LastPlacedObservationPlane(game)};
 }
 
 ModelConfig BaseModelConfig(const open_spiel::Game& game,

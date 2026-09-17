@@ -53,6 +53,12 @@ struct ResOutputBlockConfig {
   int policy_linear_in_features;
   int policy_linear_out_features;
   int policy_observation_size;
+  // Logits per board cell, e.g. one per tile rotation. 0 keeps the dense head
+  // that maps flattened board features to every action with one linear layer.
+  int policy_conv_planes;
+  // Actions that belong to no cell (Carcassonne: the meeple moves). They come
+  // after the per-cell actions, as the game's action encoding has them.
+  int policy_extra_actions;
 };
 
 // Information for the model. This should be enough for any type of model
@@ -66,6 +72,10 @@ struct ModelConfig {
   double learning_rate;
   double weight_decay;
   std::string nn_model = "resnet";
+  // Observation plane holding a one-hot of the cell just played, or -1 when the
+  // game has none. The conv policy head reads the actions that belong to that
+  // cell (Carcassonne's meeple moves) from it.
+  int last_placed_plane = -1;
 };
 std::istream& operator>>(std::istream& stream, ModelConfig& config);
 std::ostream& operator<<(std::ostream& stream, const ModelConfig& config);
@@ -138,17 +148,33 @@ TORCH_MODULE(ResTorsoBlock);
 // position-dependent parameters, the mean is a hard-coded board-wide sum, and
 // the head no longer depends on the board size.
 //
+// The policy head has two forms. When the actions factor into a few choices
+// per board cell (policy_conv_planes), 1x1 CONVs score every cell directly:
+// the weights are shared by all cells, so the head neither has to learn which
+// action index belongs to which cell nor needs one weight per (cell, action).
+// A pooled branch adds a board-wide bias to every cell, because whether a move
+// is good depends on global counts the trunk cannot carry that far. The actions
+// tied to the cell just played (Carcassonne's meeple moves) are read from that
+// cell with the last-placed plane as a one-hot. Games whose actions do not
+// factor that way keep the dense readout.
+//
 // Illustration:
 //                    --> CONV --> BN --> RELU --> POOL(mean ++ max) --> LIN
 //                                                 --> RELU --> LIN --> TANH
 //   [Input Tensor] --
-//                    --> CONV --> BN --> RELU --> LIN (no SOFTMAX here)
+//                    --> CONV --+--> BN --> RELU --> CONV --> per-cell actions
+//                    |          |                 \-> CONV * last_placed_plane
+//                    |          |                     --> the cell's actions
+//                    \-> CONV --> POOL --> LIN (bias added above)
+//                                       (or, dense: --> LIN)  (no SOFTMAX here)
 //
 // There is only one output block per model.
 class ResOutputBlockImpl : public torch::nn::Module {
  public:
   ResOutputBlockImpl(const ResOutputBlockConfig& config);
-  std::vector<torch::Tensor> forward(torch::Tensor x, torch::Tensor mask);
+  // last_placed_plane is [B, 1, H, W], required by the conv policy head.
+  std::vector<torch::Tensor> forward(torch::Tensor x, torch::Tensor mask,
+                                     torch::Tensor last_placed_plane = {});
 
  private:
   torch::nn::Conv2d value_conv_;
@@ -157,8 +183,15 @@ class ResOutputBlockImpl : public torch::nn::Module {
   torch::nn::Linear value_linear2_;
   torch::nn::Conv2d policy_conv_;
   torch::nn::BatchNorm2d policy_batch_norm_;
-  torch::nn::Linear policy_linear_;
+  // Only one of these two policy readouts is built and registered.
+  torch::nn::Linear policy_linear_{nullptr};
+  torch::nn::Conv2d policy_gpool_conv_{nullptr};
+  torch::nn::Linear policy_gpool_linear_{nullptr};
+  torch::nn::Conv2d policy_placement_conv_{nullptr};
+  torch::nn::Conv2d policy_cell_conv_{nullptr};
   int policy_observation_size_;
+  int policy_conv_planes_;
+  int policy_extra_actions_;
 };
 TORCH_MODULE(ResOutputBlock);
 
@@ -203,6 +236,12 @@ class ModelImpl : public torch::nn::Module {
   int num_torso_blocks_;
   double weight_decay_;
   std::string nn_model_;
+  // Shape of one observation, and the plane the conv policy head reads the
+  // cell's own actions from (-1 when the game has no such plane).
+  int input_channels_ = 0;
+  int input_height_ = 0;
+  int input_width_ = 0;
+  int last_placed_plane_ = -1;
 };
 TORCH_MODULE(Model);
 

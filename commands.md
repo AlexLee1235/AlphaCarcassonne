@@ -1,6 +1,6 @@
 ./build/examples/alpha_zero_torch_example \
     --game=carcassonne \
-    --path=/az_carcassonne_0914 \
+    --path=/az_carcassonne_0916 \
     --cutoff_probability=0.000000 \
     --nn_model=resnet \
     --nn_width=32 \
@@ -20,14 +20,15 @@
     --max_steps=0 \
     --policy_alpha=1.0 \
     --policy_epsilon=0.25 \
-    --replay_buffer_reuse=3 \
+    --replay_buffer_reuse=4 \
     --replay_buffer_size=262144 \
     --temperature=1 \
     --temperature_drop=10 \
     --value_is_current_player=true \
     --train_batch_size=2048  \
     --uct_c=2.000000  \
-    --weight_decay=0.0001
+    --weight_decay=0.0001 \
+    --augment_rotations=true
 
       ./build/examples/alpha_zero_torch_example \
     --game=carcassonne \

@@ -19,7 +19,7 @@ SRCS25   := $(G25)/Feature.cpp $(G25)/FeatureModule.cpp $(G25)/MonasteryModule.c
             $(G25)/BoardModule.cpp $(G25)/FrontierModule.cpp $(G25)/DeckModule.cpp \
             $(G25)/game.cpp
 
-TOOLS    := diag_value_gap diag_local_decomp diag_board diag_opens diag_occupancy
+TOOLS    := diag_value_gap diag_local_decomp diag_board diag_opens diag_occupancy diag_branching diag_pending_scale
 BINS     := $(addprefix build/,$(TOOLS)) build/diag_board25
 
 .PHONY: all run clean
@@ -48,6 +48,7 @@ run: all
 	cd results && ../build/diag_board          | tee diag_board.txt
 	cd results && ../build/diag_board25        | tee diag_board25.txt
 	cd results && ../build/diag_opens          | tee diag_opens.txt
+	cd results && ../build/diag_branching      | tee diag_branching.txt
 	@echo
 	@echo "輸出在 results/ ，occupancy.csv 也在那裡（給 erf.py / check_value_head.py 用）"
 

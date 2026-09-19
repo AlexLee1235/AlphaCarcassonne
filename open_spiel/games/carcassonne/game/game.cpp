@@ -160,6 +160,31 @@ void Carcassonne::getLastTileSideGroups(int8_t groups[4]) const {
     }
 }
 
+void Carcassonne::getPendingScore(int pending[2]) const {
+    pending[0] = pending[1] = 0;
+    if (current_phase == PHASE_TERMINAL) {
+        return;  // The end-game scoring is already in player_scores.
+    }
+    features.accumulatePendingScore(pending);
+    monasteries.accumulatePendingScore(pending);
+}
+
+void Carcassonne::getPendingScoreByResolving(int pending[2]) const {
+    pending[0] = pending[1] = 0;
+    if (current_phase == PHASE_TERMINAL) {
+        return;
+    }
+    Carcassonne copy = *this;
+    if (copy.current_phase == PHASE_MEEPLE) {
+        // What placeMeeple settles whatever the move is.
+        copy.features.settleAfterPlaceMeeple(last_x, last_y, copy.board, copy.player_scores, copy.holding_meeples);
+        copy.monasteries.settleCompletedMonasteries(copy.player_scores, copy.holding_meeples);
+    }
+    copy.resolveEndGameScore();
+    pending[0] = copy.player_scores[0] - player_scores[0];
+    pending[1] = copy.player_scores[1] - player_scores[1];
+}
+
 void Carcassonne::placeMeeple(int pos) {
     int x = last_x;
     int y = last_y;

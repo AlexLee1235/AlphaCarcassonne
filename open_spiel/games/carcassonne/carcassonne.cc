@@ -19,7 +19,18 @@ namespace {
 
 constexpr float kMeepleNormalization = 7.0f;
 constexpr float kRemainingNormalization = TOTAL_TILE_COUNT;
-constexpr float kScoreDiffNormalization = 30.0f;
+constexpr float kScoreNormalization = 40.0f;
+constexpr float kScoreDiffNormalization = 20.0f;
+constexpr float kPendingNormalization = 20.0f;
+constexpr std::array<float, kStaticDiffScales> kStaticDiffNormalizations = {3.0f, 10.0f, 30.0f};
+constexpr float kTurnNormalization = 36.0f;
+constexpr float kLegalPlacementNormalization = 100.0f;
+constexpr int kMaxOpens = 6;
+constexpr float kFeatureScoreNormalization = 12.0f;
+constexpr float kMonasteryCoverageNormalization = 9.0f;
+
+// The side pairs of the side-link planes, in plane order.
+constexpr std::array<std::array<int, 2>, kNumSidePairs> kSidePairs = {{{0, 1}, {0, 2}, {0, 3}, {1, 2}, {1, 3}, {2, 3}}};
 
 const GameType kGameType{/*short_name=*/"carcassonne",
                          /*long_name=*/"Carcassonne",
@@ -134,22 +145,23 @@ void SetPlaneValue(absl::Span<float> values, int plane, int x, int y, float valu
     values[index] = value;
 }
 
-void BroadcastPlane(absl::Span<float> values, int plane, float value) {
-    const int plane_offset = plane * BOARD_SIZE * BOARD_SIZE;
-    for (int i = 0; i < BOARD_SIZE * BOARD_SIZE; ++i) {
-        values[plane_offset + i] = value;
+void SetTileTerrainPlanes(absl::Span<float> values, const Tile &tile, int x, int y) {
+    for (int side = 0; side < 4; ++side) {
+        SetPlaneValue(values, kNorthTerrainPlane + side * kTerrainTypes + TerrainIndex(tile.edge[side]), x, y, 1.0f);
     }
 }
 
-void SetTileTerrainPlanes(absl::Span<float> values, const Tile &tile, int north_plane, int east_plane, int south_plane,
-                          int west_plane, int x, int y) {
-    SetPlaneValue(values, north_plane + TerrainIndex(tile.edge[0]), x, y, 1.0f);
-    SetPlaneValue(values, east_plane + TerrainIndex(tile.edge[1]), x, y, 1.0f);
-    SetPlaneValue(values, south_plane + TerrainIndex(tile.edge[2]), x, y, 1.0f);
-    SetPlaneValue(values, west_plane + TerrainIndex(tile.edge[3]), x, y, 1.0f);
-}
+float Clip(float value) { return std::max(-1.0f, std::min(1.0f, value)); }
 
-bool HasCityConnectivityPlane(int canonical_type) { return canonical_type == 14 || canonical_type == 15; }
+int SidePairIndex(int a, int b) {
+    for (int pair = 0; pair < kNumSidePairs; ++pair) {
+        if ((kSidePairs[pair][0] == a && kSidePairs[pair][1] == b) ||
+            (kSidePairs[pair][0] == b && kSidePairs[pair][1] == a)) {
+            return pair;
+        }
+    }
+    SpielFatalError("Not a pair of distinct sides.");
+}
 
 // One quarter turn clockwise maps (x, y) to (N-1-y, x): north (y-1) becomes
 // east (x+1), matching Tile::rotate().
@@ -162,12 +174,19 @@ void RotateCell(int k, int *x, int *y) {
 }
 
 // Planes that come in one-per-side (or one-per-rotation) blocks follow the
-// rotation; every other plane keeps its index and only its cells move.
+// rotation, and so do the side pairs; every other plane keeps its index and
+// only its cells move.
 int RotatePlane(int plane, int k) {
-    if (plane < kShieldPlane) {
-        return ((plane / kTerrainTypes + k) % 4) * kTerrainTypes + plane % kTerrainTypes;
+    if (plane >= kNorthTerrainPlane && plane < kShieldPlane) {
+        const int offset = plane - kNorthTerrainPlane;
+        return kNorthTerrainPlane + ((offset / kTerrainTypes + k) % 4) * kTerrainTypes + offset % kTerrainTypes;
     }
-    for (int first : {kMyMeeplePlane, kOpponentMeeplePlane, kLegalPlacementPlane}) {
+    if (plane >= kSideLinkPlane && plane < kSideLinkPlane + kNumSidePairs) {
+        const std::array<int, 2> &pair = kSidePairs[plane - kSideLinkPlane];
+        return kSideLinkPlane + SidePairIndex((pair[0] + k) % 4, (pair[1] + k) % 4);
+    }
+    for (int first : {kLegalPlacementPlane, kFeatureOpensPlane, kFeatureScorePlane, kFeatureMyMeeplesPlane,
+                      kFeatureOpponentMeeplesPlane, kFeatureSignedScorePlane}) {
         if (plane >= first && plane < first + 4) {
             return first + (plane - first + k) % 4;
         }
@@ -186,7 +205,10 @@ const std::array<std::vector<int>, kNumBoardRotations> &RotationSourceIndices() 
                     for (int x = 0; x < BOARD_SIZE; ++x) {
                         int rx = x;
                         int ry = y;
-                        RotateCell(k, &rx, &ry);
+                        // The global vector is not a picture of the board.
+                        if (plane != kGlobalFeaturePlane) {
+                            RotateCell(k, &rx, &ry);
+                        }
                         result[k][(RotatePlane(plane, k) * BOARD_SIZE + ry) * BOARD_SIZE + rx] =
                             (plane * BOARD_SIZE + y) * BOARD_SIZE + x;
                     }
@@ -305,91 +327,109 @@ void CarcassonneState::ObservationTensor(Player player, absl::Span<float> values
     SPIEL_CHECK_LT(player, kNumPlayers);
     SPIEL_CHECK_EQ(values.size(), kObservationTensorSize);
     std::fill(values.begin(), values.end(), 0.0f);
+    const int opponent = 1 - player;
+
     for (int y = 0; y < BOARD_SIZE; ++y) {
         for (int x = 0; x < BOARD_SIZE; ++x) {
-            const Placement &placement = game_state_.getPlacement(x,y);
+            if (game_state_.isFrontier(x, y)) {
+                SetPlaneValue(values, kFrontierPlane, x, y, 1.0f);
+            }
+            const Placement &placement = game_state_.getPlacement(x, y);
             if (placement.id == 0) {
                 continue;
             }
             const Tile &tile = full_deck[placement.id][placement.rotation];
-            SetTileTerrainPlanes(values, tile, kNorthTerrainPlane, kEastTerrainPlane, kSouthTerrainPlane, kWestTerrainPlane, x,
-                                 y);
+            SetPlaneValue(values, kOccupiedPlane, x, y, 1.0f);
+            SetTileTerrainPlanes(values, tile, x, y);
             if (tile.shield) {
                 SetPlaneValue(values, kShieldPlane, x, y, 1.0f);
             }
             if (tile.monastery) {
                 SetPlaneValue(values, kMonasteryPlane, x, y, 1.0f);
+                SetPlaneValue(values, kMonasteryCoveragePlane, x, y,
+                              game_state_.coverage3x3(x, y) / kMonasteryCoverageNormalization);
+                const int owner = game_state_.monasteryOwner(x, y);
+                if (owner != -1) {
+                    SetPlaneValue(values, kMonasteryOwnerPlane, x, y, owner == player ? 1.0f : -1.0f);
+                }
             }
-            if (HasCityConnectivityPlane(PHYSICAL_TO_CANONICAL_TYPE[placement.id])) {
-                SetPlaneValue(values, kCityConnectivityPlane, x, y, 1.0f);
+            for (int pair = 0; pair < kNumSidePairs; ++pair) {
+                const int a = kSidePairs[pair][0];
+                const int b = kSidePairs[pair][1];
+                if (tile.edge[a] != GRASS && tile.edge[b] != GRASS && tile.link[a] == tile.link[b]) {
+                    SetPlaneValue(values, kSideLinkPlane + pair, x, y, 1.0f);
+                }
             }
             if (game_state_.last_x == x && game_state_.last_y == y) {
                 SetPlaneValue(values, kLastPlacedPlane, x, y, 1.0f);
             }
-        }
-    }
-
-    game_state_.WriteMeepleMap(player, values.data() + kMyMeeplePlane * BOARD_SIZE * BOARD_SIZE);
-
-    if (game_state_.current_tile_in_hand != 0) {
-        const Tile &current_tile = full_deck[game_state_.current_tile_in_hand][0];
-        const bool has_current_city_connectivity =
-            HasCityConnectivityPlane(PHYSICAL_TO_CANONICAL_TYPE[game_state_.current_tile_in_hand]);
-        for (int y = 0; y < BOARD_SIZE; ++y) {
-            for (int x = 0; x < BOARD_SIZE; ++x) {
-                SetTileTerrainPlanes(values, current_tile, kCurrentTileNorthPlane, kCurrentTileEastPlane, kCurrentTileSouthPlane,
-                                     kCurrentTileWestPlane, x, y);
-                if (current_tile.shield) {
-                    SetPlaneValue(values, kCurrentTileShieldPlane, x, y, 1.0f);
+            for (int side = 0; side < 4; ++side) {
+                if (tile.edge[side] == GRASS) {
+                    continue;
                 }
-                if (current_tile.monastery) {
-                    SetPlaneValue(values, kCurrentTileMonasteryPlane, x, y, 1.0f);
-                }
-                if (has_current_city_connectivity) {
-                    SetPlaneValue(values, kCurrentTileCityConnectivityPlane, x, y, 1.0f);
-                }
+                const Feature &feature = game_state_.featureAt(placement.id, side);
+                const float score = static_cast<float>(feature.getScore());
+                const int mine = feature.meeple_count[player];
+                const int theirs = feature.meeple_count[opponent];
+                // Equal meeples score for both, which leaves the difference alone.
+                const float holder = mine > theirs ? 1.0f : (theirs > mine ? -1.0f : 0.0f);
+                SetPlaneValue(values, kFeatureOpensPlane + side, x, y,
+                              std::min<int>(feature.opens, kMaxOpens) / static_cast<float>(kMaxOpens));
+                SetPlaneValue(values, kFeatureScorePlane + side, x, y, std::min(score / kFeatureScoreNormalization, 1.0f));
+                SetPlaneValue(values, kFeatureMyMeeplesPlane + side, x, y, mine / kMeepleNormalization);
+                SetPlaneValue(values, kFeatureOpponentMeeplesPlane + side, x, y, theirs / kMeepleNormalization);
+                SetPlaneValue(values, kFeatureSignedScorePlane + side, x, y,
+                              Clip(holder * score / kFeatureScoreNormalization));
             }
         }
     }
 
+    int legal_placements = 0;
     if (game_state_.current_phase == PHASE_TILE && game_state_.current_tile_in_hand != 0) {
         std::array<TileMove, kTileActionCount> tile_moves{};
-        int count = 0;
-        game_state_.getLegalTileMoves(tile_moves.data(), count);
-        for (int i = 0; i < count; ++i) {
+        game_state_.getLegalTileMoves(tile_moves.data(), legal_placements);
+        for (int i = 0; i < legal_placements; ++i) {
             SetPlaneValue(values, kLegalPlacementPlane + tile_moves[i].rot, tile_moves[i].x, tile_moves[i].y, 1.0f);
         }
     }
 
+    absl::Span<float> global = values.subspan(kGlobalFeaturePlane * BOARD_SIZE * BOARD_SIZE, kGlobalFeatures);
+    const int *scores = game_state_.player_scores;
+    int pending[2];
+    game_state_.getPendingScore(pending);
+    const float score_diff = static_cast<float>(scores[player] - scores[opponent]);
+    const float static_diff = score_diff + static_cast<float>(pending[player] - pending[opponent]);
+    global[kGlobalMyScore] = scores[player] / kScoreNormalization;
+    global[kGlobalOpponentScore] = scores[opponent] / kScoreNormalization;
+    global[kGlobalScoreDiff] = Clip(score_diff / kScoreDiffNormalization);
+    global[kGlobalMyPending] = pending[player] / kPendingNormalization;
+    global[kGlobalOpponentPending] = pending[opponent] / kPendingNormalization;
+    for (int scale = 0; scale < kStaticDiffScales; ++scale) {
+        global[kGlobalStaticDiff + scale] = Clip(static_diff / kStaticDiffNormalizations[scale]);
+    }
+    global[kGlobalMyMeeples] = game_state_.holding_meeples[player] / kMeepleNormalization;
+    global[kGlobalOpponentMeeples] = game_state_.holding_meeples[opponent] / kMeepleNormalization;
+    global[kGlobalRemainingTiles] = game_state_.getTotalRemaining() / kRemainingNormalization;
+    global[kGlobalCompletedTurns] = game_state_.completed_turns / kTurnNormalization;
+    for (int type_id = 1; type_id <= CANONICAL_TILE_TYPE_COUNT; ++type_id) {
+        const int initial_count = tile_type_tables.draw_count_by_type[type_id];
+        global[kGlobalRemainingByType + type_id - 1] =
+            static_cast<float>(game_state_.getRemainingTypeCount(type_id)) / initial_count;
+    }
+    const int type_in_hand = game_state_.currentTileType();
+    if (type_in_hand != 0) {
+        global[kGlobalTileInHand + type_in_hand - 1] = 1.0f;
+    }
+    global[kGlobalTilePhase] = game_state_.current_phase == PHASE_TILE ? 1.0f : 0.0f;
+    global[kGlobalMeeplePhase] = game_state_.current_phase == PHASE_MEEPLE ? 1.0f : 0.0f;
     if (game_state_.current_phase == PHASE_MEEPLE) {
         FixedVector<int, kMeepleActionCount> meeple_moves = game_state_.getLegalMeepleMoves();
         for (int i = 0; i < meeple_moves.size(); ++i) {
-            const int pos = meeple_moves[i];
-            if (pos >= 0 && pos < kLegalMeeplePlanes) {
-                BroadcastPlane(values, kLegalMeeplePlane + pos, 1.0f);
-            }
+            global[kGlobalLegalMeeple + meeple_moves[i] + 1] = 1.0f;
         }
     }
-
-    for (int type_id = 1; type_id <= CANONICAL_TILE_TYPE_COUNT; ++type_id) {
-        const int initial_count = tile_type_tables.draw_count_by_type[type_id];
-        const float remaining = static_cast<float>(game_state_.getRemainingTypeCount(type_id));
-        BroadcastPlane(values, kRemainingTileTypePlane + type_id - 1, remaining / initial_count);
-    }
-
-    const int opponent = 1 - player;
-    BroadcastPlane(values, kMyHoldingMeeplesPlane, game_state_.holding_meeples[player] / kMeepleNormalization);
-    BroadcastPlane(values, kOpponentHoldingMeeplesPlane, game_state_.holding_meeples[opponent] / kMeepleNormalization);
-    BroadcastPlane(values, kRemainingTilesPlane, game_state_.getTotalRemaining() / kRemainingNormalization);
-
-    const float score_diff = static_cast<float>(game_state_.player_scores[player] - game_state_.player_scores[opponent]);
-    BroadcastPlane(values, kScoreDiffPlane, std::tanh(score_diff / kScoreDiffNormalization));
-    BroadcastPlane(values, kIsMeeplePhasePlane, game_state_.current_phase == PHASE_MEEPLE ? 1.0f : 0.0f);
-    BroadcastPlane(values, kCurrentPlayerIsPlayer0Plane, game_state_.currentPlayer == 0 ? 1.0f : 0.0f);
-
-    if (game_state_.current_phase != PHASE_MEEPLE) {
-        SPIEL_CHECK_EQ(values[kIsMeeplePhasePlane * BOARD_SIZE * BOARD_SIZE], 0.0f);
-    }
+    global[kGlobalLegalPlacements] = legal_placements / kLegalPlacementNormalization;
+    global[kGlobalIsPlayer0] = game_state_.currentPlayer == 0 ? 1.0f : 0.0f;
 }
 
 std::unique_ptr<State> CarcassonneState::Clone() const { return std::unique_ptr<State>(new CarcassonneState(*this)); }
@@ -520,15 +560,15 @@ void RotateObservation(absl::Span<const float> observation, int k, const SideGro
     for (int i = 0; i < kObservationTensorSize; ++i) {
         rotated[i] = observation[source[i]];
     }
-    // Legal meeple sides are broadcast planes, so moving cells does nothing;
-    // rename each legal side instead.
-    const int plane_size = BOARD_SIZE * BOARD_SIZE;
+    // The legal meeple sides sit in the global vector, which the table leaves
+    // in place; rename each legal side instead.
+    const int legal_sides = kGlobalFeaturePlane * BOARD_SIZE * BOARD_SIZE + kGlobalLegalMeeple + 1;
     for (int side = 0; side < 4; ++side) {
-        BroadcastPlane(rotated, kLegalMeeplePlane + side, 0.0f);
+        rotated[legal_sides + side] = 0.0f;
     }
     for (int side = 0; side < 4; ++side) {
-        if (observation[(kLegalMeeplePlane + side) * plane_size] != 0.0f) {
-            BroadcastPlane(rotated, kLegalMeeplePlane + RotateMeepleSide(side, k, groups), 1.0f);
+        if (observation[legal_sides + side] != 0.0f) {
+            rotated[legal_sides + RotateMeepleSide(side, k, groups)] = 1.0f;
         }
     }
 }

@@ -22,6 +22,7 @@
 #include <iostream>
 #include <map>
 #include <memory>
+#include <sstream>
 #include <string>
 #include <utility>
 #include <vector>
@@ -160,7 +161,8 @@ void TestValueHeadGlobalPooling() {
       /*policy_linear_out_features=*/num_actions,
       /*policy_observation_size=*/2 * height * width,
       /*policy_conv_planes=*/0,
-      /*policy_extra_actions=*/0};
+      /*policy_extra_actions=*/0,
+      /*global_features=*/0};
   ResOutputBlock head(config);
   head->eval();
   torch::NoGradGuard no_grad;
@@ -214,7 +216,8 @@ void TestConvPolicyHead() {
       /*policy_linear_out_features=*/num_actions,
       /*policy_observation_size=*/2 * height * width,
       /*policy_conv_planes=*/planes,
-      /*policy_extra_actions=*/cell_actions};
+      /*policy_extra_actions=*/cell_actions,
+      /*global_features=*/0};
   ResOutputBlock head(config);
   head->eval();
   torch::NoGradGuard no_grad;
@@ -288,8 +291,9 @@ void TestConvPolicyHead() {
   std::cout << "Per-cell logits follow the cell, meeple logits follow the "
                "last-placed plane." << std::endl;
 
-  // A real Carcassonne model: 906 actions = 4 * 15 * 15 cells + 6 meeple moves,
-  // and a policy head that no longer holds most of the network's parameters.
+  // A real Carcassonne model: 1770 actions = 4 * 21 * 21 cells + 6 meeple
+  // moves, and a policy head that no longer holds most of the network's
+  // parameters.
   std::shared_ptr<const Game> game = LoadGame("carcassonne");
   ModelConfig net_config = {
       /*observation_tensor_shape=*/game->ObservationTensorShape(),
@@ -299,7 +303,8 @@ void TestConvPolicyHead() {
       /*learning_rate=*/0.001,
       /*weight_decay=*/0.001,
       /*nn_model=*/"resnet",
-      /*last_placed_plane=*/LastPlacedObservationPlane(*game)};
+      /*last_placed_plane=*/LastPlacedObservationPlane(*game),
+      /*global_features=*/GlobalObservationFeatures(*game)};
   SPIEL_CHECK_GE(net_config.last_placed_plane, 0);
   Model net(net_config, "cpu:0");
   int64_t policy_parameters = 0;
@@ -310,10 +315,11 @@ void TestConvPolicyHead() {
     }
     largest_tensor = std::max(largest_tensor, parameter.value().numel());
   }
-  // conv 32*32+32, gpool conv 32*32+32, gpool FC 64*32+32, BN 2*32,
-  // placement conv 4*32+4, meeple conv 6*32+6.
-  SPIEL_CHECK_EQ(policy_parameters, 4586);
-  // The dense head's Linear(450 -> 906) was 407,700 on its own.
+  // conv 32*32+32, gpool conv 32*32+32, gpool FC (64+70)*32+32, BN 2*32,
+  // placement conv 4*32+4, meeple conv 6*32+6. The 70 are the global
+  // features joined to the pooled branch.
+  SPIEL_CHECK_EQ(policy_parameters, 6826);
+  // A dense head would be Linear(2*21*21 -> 1770), 1,562,910 on its own.
   SPIEL_CHECK_LT(largest_tensor, 50000);
 
   // A game whose actions do not factor per cell keeps the dense head.
@@ -331,6 +337,148 @@ void TestConvPolicyHead() {
     has_dense_policy |= absl::StrContains(parameter.key(), "policy_linear");
   }
   SPIEL_CHECK_TRUE(has_dense_policy);
+}
+
+// Carcassonne packs a vector of board-wide features into the first cells of
+// its last observation plane. The model has to keep that plane out of the
+// convolutions, read only the vector's own cells, and pass the vector to the
+// trunk and to both heads.
+void TestGlobalFeatures() {
+  std::cout << "\n~-~-~-~- TestGlobalFeatures -~-~-~-~" << std::endl;
+  torch::NoGradGuard no_grad;
+  torch::manual_seed(0);
+
+  std::shared_ptr<const Game> game = LoadGame("carcassonne");
+  const std::vector<int> shape = game->ObservationTensorShape();
+  const int channels = shape[0];
+  const int cells = shape[1] * shape[2];
+  const int global_features = GlobalObservationFeatures(*game);
+  SPIEL_CHECK_GT(global_features, 0);
+  SPIEL_CHECK_LE(global_features, cells);
+  const int nn_width = 32;
+  ModelConfig config = {
+      /*observation_tensor_shape=*/shape,
+      /*number_of_actions=*/game->NumDistinctActions(),
+      /*nn_depth=*/4,
+      /*nn_width=*/nn_width,
+      /*learning_rate=*/0.001,
+      /*weight_decay=*/0.001,
+      /*nn_model=*/"resnet",
+      /*last_placed_plane=*/LastPlacedObservationPlane(*game),
+      /*global_features=*/global_features};
+
+  // The config survives the vpnet.pb round trip.
+  std::stringstream stream;
+  stream << config;
+  ModelConfig read_back;
+  stream >> read_back;
+  SPIEL_CHECK_EQ(read_back.global_features, global_features);
+  SPIEL_CHECK_EQ(read_back.last_placed_plane, config.last_placed_plane);
+
+  Model net(config, "cpu:0");
+  net->eval();
+  int bias_layers = 0;
+  int64_t bias_parameters = 0;
+  for (const auto& parameter : net->named_parameters()) {
+    if (absl::StrContains(parameter.key(), "input_conv.weight")) {
+      // The packed plane is not convolved.
+      SPIEL_CHECK_EQ(parameter.value().size(1), channels - 1);
+    }
+    if (absl::StrContains(parameter.key(), "global_bias_")) {
+      bias_parameters += parameter.value().numel();
+      bias_layers += absl::StrContains(parameter.key(), "weight");
+    }
+  }
+  // After the input conv, then in residual blocks 1 and 3 of 0-3.
+  SPIEL_CHECK_EQ(bias_layers, 3);
+  SPIEL_CHECK_EQ(bias_parameters, 3 * (global_features * nn_width + nn_width));
+
+  // Real observations: one tile decision and one meeple decision.
+  std::vector<float> observations;
+  std::unique_ptr<State> state = game->NewInitialState();
+  while (state->IsChanceNode()) state->ApplyAction(state->LegalActions()[0]);
+  for (int i = 0; i < 2; ++i) {
+    const std::vector<float> obs = state->ObservationTensor();
+    observations.insert(observations.end(), obs.begin(), obs.end());
+    state->ApplyAction(state->LegalActions()[0]);
+  }
+  const int batch = 2;
+  torch::Tensor obs = torch::from_blob(observations.data(),
+                                       {batch, channels * cells})
+                          .clone();
+  torch::Tensor mask =
+      torch::ones({batch, game->NumDistinctActions()},
+                  torch::TensorOptions().dtype(torch::kBool));
+  const std::vector<torch::Tensor> base = net->forward(obs, mask);
+  auto moved = [&](const torch::Tensor& changed, int output) {
+    return (net->forward(changed, mask)[output] - base[output])
+        .abs()
+        .max()
+        .item<float>();
+  };
+
+  // The cells of the packed plane past the vector are not read.
+  torch::Tensor padding = obs.clone();
+  padding.view({batch, channels, cells})
+      .select(/*dim=*/1, channels - 1)
+      .slice(/*dim=*/1, global_features, cells) += 1.0f;
+  SPIEL_CHECK_EQ(moved(padding, 0), 0.0f);
+  SPIEL_CHECK_EQ(moved(padding, 1), 0.0f);
+
+  // Every entry of the vector reaches the value and the policy.
+  for (int i = 0; i < global_features; ++i) {
+    torch::Tensor changed = obs.clone();
+    changed.view({batch, channels, cells})
+        .select(/*dim=*/1, channels - 1)
+        .select(/*dim=*/1, i) += 1.0f;
+    SPIEL_CHECK_GT(moved(changed, 0), 0.0f);
+    SPIEL_CHECK_GT(moved(changed, 1), 0.0f);
+  }
+
+  // Each head reads the vector directly, not only through the trunk.
+  const int height = 6;
+  const int width = 7;
+  const int planes = 4;
+  const int num_actions = planes * height * width + 6;
+  ResOutputBlockConfig head_config = {
+      /*input_channels=*/nn_width,
+      /*value_filters=*/32,
+      /*policy_filters=*/32,
+      /*kernel_size=*/1,
+      /*padding=*/0,
+      /*value_linear_in_features=*/2 * 32 + global_features,
+      /*value_linear_out_features=*/256,
+      /*policy_linear_in_features=*/2 * height * width,
+      /*policy_linear_out_features=*/num_actions,
+      /*policy_observation_size=*/2 * height * width,
+      /*policy_conv_planes=*/planes,
+      /*policy_extra_actions=*/6,
+      /*global_features=*/global_features};
+  ResOutputBlock head(head_config);
+  head->eval();
+  torch::Tensor x = torch::randn({batch, nn_width, height, width});
+  torch::Tensor last_placed = torch::zeros({batch, 1, height, width});
+  last_placed.index_put_({torch::indexing::Slice(), 0, 2, 3}, 1.0);
+  torch::Tensor head_mask = torch::ones(
+      {batch, num_actions}, torch::TensorOptions().dtype(torch::kBool));
+  torch::Tensor global = torch::randn({batch, global_features});
+  const std::vector<torch::Tensor> head_base =
+      head->forward(x, head_mask, last_placed, global);
+  const std::vector<torch::Tensor> head_changed =
+      head->forward(x, head_mask, last_placed, global + 1.0f);
+  SPIEL_CHECK_GT((head_changed[0] - head_base[0]).abs().max().item<float>(),
+                 1e-6);
+  SPIEL_CHECK_GT((head_changed[1] - head_base[1]).abs().max().item<float>(),
+                 1e-6);
+  bool threw = false;
+  try {
+    head->forward(x, head_mask, last_placed);
+  } catch (const std::exception&) {
+    threw = true;
+  }
+  SPIEL_CHECK_TRUE(threw);
+  std::cout << "The packed plane stays out of the convolutions; every global "
+               "feature reaches both heads." << std::endl;
 }
 
 void TestCUDAAVailability() {
@@ -351,5 +499,6 @@ int main(int argc, char** argv) {
   open_spiel::algorithms::torch_az::TestModelInference();
   open_spiel::algorithms::torch_az::TestValueHeadGlobalPooling();
   open_spiel::algorithms::torch_az::TestConvPolicyHead();
+  open_spiel::algorithms::torch_az::TestGlobalFeatures();
   open_spiel::algorithms::torch_az::TestCUDAAVailability();
 }

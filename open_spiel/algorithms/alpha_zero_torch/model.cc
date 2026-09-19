@@ -42,6 +42,11 @@ std::istream& operator>>(std::istream& stream, ModelConfig& config) {
     config.last_placed_plane = -1;
     stream.clear();
   }
+  // Likewise for files that predate the global feature vector.
+  if (!(stream >> config.global_features)) {
+    config.global_features = 0;
+    stream.clear();
+  }
 
   config.observation_tensor_shape = {channels, height, width};
 
@@ -57,7 +62,7 @@ std::ostream& operator<<(std::ostream& stream, const ModelConfig& config) {
          << " " << config.number_of_actions << " " << config.nn_depth << " "
          << config.nn_width << " " << config.learning_rate << " "
          << config.weight_decay << " " << config.nn_model << " "
-         << config.last_placed_plane;
+         << config.last_placed_plane << " " << config.global_features;
   return stream;
 }
 
@@ -86,9 +91,13 @@ ResInputBlockImpl::ResInputBlockImpl(const ResInputBlockConfig& config)
   register_module("input_batch_norm", batch_norm_);
 }
 
-torch::Tensor ResInputBlockImpl::forward(torch::Tensor x) {
-  torch::Tensor output = x.view({-1, channels_, height_, width_});
-  output = torch::relu(batch_norm_(conv_(output)));
+torch::Tensor ResInputBlockImpl::forward(torch::Tensor x,
+                                         torch::Tensor global_bias) {
+  torch::Tensor output = conv_(x.reshape({-1, channels_, height_, width_}));
+  if (global_bias.defined()) {
+    output = output + global_bias.unsqueeze(/*dim=*/2).unsqueeze(/*dim=*/3);
+  }
+  output = torch::relu(batch_norm_(output));
 
   return output;
 }
@@ -135,10 +144,15 @@ ResTorsoBlockImpl::ResTorsoBlockImpl(const ResTorsoBlockConfig& config,
                   batch_norm2_);
 }
 
-torch::Tensor ResTorsoBlockImpl::forward(torch::Tensor x) {
+torch::Tensor ResTorsoBlockImpl::forward(torch::Tensor x,
+                                         torch::Tensor global_bias) {
   torch::Tensor residual = x;
 
-  torch::Tensor output = torch::relu(batch_norm1_(conv1_(x)));
+  torch::Tensor output = conv1_(x);
+  if (global_bias.defined()) {
+    output = output + global_bias.unsqueeze(/*dim=*/2).unsqueeze(/*dim=*/3);
+  }
+  output = torch::relu(batch_norm1_(output));
   output = batch_norm2_(conv2_(output));
   output += residual;
   output = torch::relu(output);
@@ -191,7 +205,8 @@ ResOutputBlockImpl::ResOutputBlockImpl(const ResOutputBlockConfig& config)
               .track_running_stats(true)),
       policy_observation_size_(config.policy_observation_size),
       policy_conv_planes_(config.policy_conv_planes),
-      policy_extra_actions_(config.policy_extra_actions) {
+      policy_extra_actions_(config.policy_extra_actions),
+      global_features_(config.global_features) {
   register_module("value_conv", value_conv_);
   register_module("value_batch_norm", value_batch_norm_);
   register_module("value_linear_1", value_linear1_);
@@ -217,7 +232,7 @@ ResOutputBlockImpl::ResOutputBlockImpl(const ResOutputBlockConfig& config)
     policy_gpool_conv_ =
         one_by_one(config.input_channels, config.policy_filters);
     policy_gpool_linear_ = torch::nn::Linear(
-        torch::nn::LinearOptions(2 * config.policy_filters,
+        torch::nn::LinearOptions(2 * config.policy_filters + global_features_,
                                  config.policy_filters)
             .bias(true));
     register_module("policy_gpool_conv", policy_gpool_conv_);
@@ -244,7 +259,11 @@ ResOutputBlockImpl::ResOutputBlockImpl(const ResOutputBlockConfig& config)
 }
 
 std::vector<torch::Tensor> ResOutputBlockImpl::forward(
-    torch::Tensor x, torch::Tensor mask, torch::Tensor last_placed_plane) {
+    torch::Tensor x, torch::Tensor mask, torch::Tensor last_placed_plane,
+    torch::Tensor global_features) {
+  if (global_features_ > 0 && !global_features.defined()) {
+    throw std::runtime_error("This output block needs the global features.");
+  }
   // [B, value_filters, H, W] -> [B, value_filters, H*W]
   torch::Tensor value_output =
       torch::relu(value_batch_norm_(value_conv_(x))).flatten(2);
@@ -253,6 +272,9 @@ std::vector<torch::Tensor> ResOutputBlockImpl::forward(
   value_output =
       torch::cat({value_output.mean(/*dim=*/2), value_output.amax(/*dim=*/2)},
                  /*dim=*/1);
+  if (global_features_ > 0) {
+    value_output = torch::cat({value_output, global_features}, /*dim=*/1);
+  }
   value_output = torch::relu(value_linear1_(value_output));
   value_output = torch::tanh(value_linear2_(value_output));
 
@@ -262,6 +284,9 @@ std::vector<torch::Tensor> ResOutputBlockImpl::forward(
     torch::Tensor pooled = policy_gpool_conv_(x).flatten(2);
     pooled = torch::cat({pooled.mean(/*dim=*/2), pooled.amax(/*dim=*/2)},
                         /*dim=*/1);
+    if (global_features_ > 0) {
+      pooled = torch::cat({pooled, global_features}, /*dim=*/1);
+    }
     // [B, policy_filters] -> the same bias on every cell.
     policy_hidden = policy_hidden + policy_gpool_linear_(pooled)
                                         .unsqueeze(/*dim=*/2)
@@ -352,6 +377,7 @@ ModelImpl::ModelImpl(const ModelConfig& config, const std::string& device)
   // Save config.nn_model to class
   nn_model_ = config.nn_model;
   last_placed_plane_ = config.last_placed_plane;
+  global_features_ = config.nn_model == "resnet" ? config.global_features : 0;
 
   int input_size = 1;
   for (const auto& num : config.observation_tensor_shape) {
@@ -368,8 +394,17 @@ ModelImpl::ModelImpl(const ModelConfig& config, const std::string& device)
     input_channels_ = channels;
     input_height_ = height;
     input_width_ = width;
+    // With a global feature vector the last plane holds it; only the planes
+    // before it are a picture of the board.
+    const int board_channels = global_features_ > 0 ? channels - 1 : channels;
+    if (global_features_ > 0 &&
+        (channels < 2 || global_features_ > height * width ||
+         last_placed_plane_ >= board_channels)) {
+      throw std::runtime_error(
+          "The global features do not fit the observation's last plane.");
+    }
 
-    ResInputBlockConfig input_config = {/*input_channels=*/channels,
+    ResInputBlockConfig input_config = {/*input_channels=*/board_channels,
                                         /*input_height=*/height,
                                         /*input_width=*/width,
                                         /*filters=*/config.nn_width,
@@ -409,13 +444,15 @@ ModelImpl::ModelImpl(const ModelConfig& config, const std::string& device)
         /*policy_filters=*/conv_policy ? kPolicyConvFilters : 2,
         /*kernel_size=*/1,
         /*padding=*/0,
-        /*value_linear_in_features=*/2 * kValueFilters,  // mean ++ max
+        // mean ++ max ++ global features
+        /*value_linear_in_features=*/2 * kValueFilters + global_features_,
         /*value_linear_out_features=*/kValueHidden,
         /*policy_linear_in_features=*/2 * width * height,
         /*policy_linear_out_features=*/config.number_of_actions,
         /*policy_observation_size=*/2 * width * height,
         /*policy_conv_planes=*/conv_policy ? kPolicyRotations : 0,
-        /*policy_extra_actions=*/conv_policy ? extra_actions : 0};
+        /*policy_extra_actions=*/conv_policy ? extra_actions : 0,
+        /*global_features=*/global_features_};
 
     layers_->push_back(ResInputBlock(input_config));
     for (int i = 0; i < num_torso_blocks_; i++) {
@@ -424,6 +461,25 @@ ModelImpl::ModelImpl(const ModelConfig& config, const std::string& device)
     layers_->push_back(ResOutputBlock(output_config));
 
     register_module("layers", layers_);
+
+    if (global_features_ > 0) {
+      auto bias = [&](const std::string& name) {
+        return register_module(
+            name, torch::nn::Linear(torch::nn::LinearOptions(
+                                        global_features_, config.nn_width)
+                                        .bias(true)));
+      };
+      // The same vector again every second block, so blocks deep in the trunk
+      // do not depend on it having survived the ones before.
+      constexpr int kGlobalBiasEvery = 2;
+      global_input_bias_ = bias("global_bias_input");
+      global_block_biases_.assign(num_torso_blocks_,
+                                  torch::nn::Linear(nullptr));
+      for (int i = kGlobalBiasEvery - 1; i < num_torso_blocks_;
+           i += kGlobalBiasEvery) {
+        global_block_biases_[i] = bias("global_bias_res_" + std::to_string(i));
+      }
+    }
 
   } else if (config.nn_model == "mlp") {
     layers_->push_back(MLPBlock(input_size, config.nn_width));
@@ -502,22 +558,39 @@ std::vector<torch::Tensor> ModelImpl::forward_(torch::Tensor x,
                                                torch::Tensor mask) {
   std::vector<torch::Tensor> output;
   if (this->nn_model_ == "resnet") {
+    torch::Tensor board =
+        x.view({-1, input_channels_, input_height_, input_width_});
+    // [B, global_features], cut from the last plane, which is not convolved.
+    torch::Tensor global;
+    if (global_features_ > 0) {
+      global = board.select(/*dim=*/1, input_channels_ - 1)
+                   .flatten(/*start_dim=*/1)
+                   .slice(/*dim=*/1, 0, global_features_);
+      board = board.slice(/*dim=*/1, 0, input_channels_ - 1);
+    }
     // The policy head reads the actions that belong to the cell just played
     // from this plane of the observation, so keep it before the trunk runs.
     torch::Tensor last_placed_plane;
     if (last_placed_plane_ >= 0) {
       last_placed_plane =
-          x.view({-1, input_channels_, input_height_, input_width_})
-              .slice(/*dim=*/1, last_placed_plane_, last_placed_plane_ + 1);
+          board.slice(/*dim=*/1, last_placed_plane_, last_placed_plane_ + 1);
     }
     for (int i = 0; i < num_torso_blocks_ + 2; i++) {
       if (i == 0) {
-        x = layers_[i]->as<ResInputBlock>()->forward(x);
+        torch::Tensor bias;
+        if (global.defined()) {
+          bias = global_input_bias_(global);
+        }
+        x = layers_[i]->as<ResInputBlock>()->forward(board, bias);
       } else if (i >= num_torso_blocks_ + 1) {
-        output = layers_[i]->as<ResOutputBlock>()->forward(x, mask,
-                                                           last_placed_plane);
+        output = layers_[i]->as<ResOutputBlock>()->forward(
+            x, mask, last_placed_plane, global);
       } else {
-        x = layers_[i]->as<ResTorsoBlock>()->forward(x);
+        torch::Tensor bias;
+        if (global.defined() && !global_block_biases_[i - 1].is_empty()) {
+          bias = global_block_biases_[i - 1](global);
+        }
+        x = layers_[i]->as<ResTorsoBlock>()->forward(x, bias);
       }
     }
   } else if (this->nn_model_ == "mlp") {

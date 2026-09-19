@@ -25,53 +25,69 @@ inline constexpr int kMeepleActionCount = 6;
 inline constexpr int kMeepleActionOffset = kTileActionCount;
 inline constexpr int kNumDistinctPlayerActions = kTileActionCount + kMeepleActionCount;
 
+// Observation: spatial planes for what is on the board, then one plane that
+// is not spatial. Its first kGlobalFeatures cells hold a vector of board-wide
+// quantities (scores, the deck, the tile in hand, the phase); broadcasting
+// each of them would fill a whole plane with one repeated value.
 inline constexpr int kTerrainTypes = 3; // grass, city, road
-inline constexpr int kBoardFeaturePlanes = 4 * kTerrainTypes + 3;
-inline constexpr int kMeepleFeaturePlanes = 10;
-inline constexpr int kCurrentTileFeaturePlanes = 4 * kTerrainTypes + 3;
-inline constexpr int kLastPlacedFeaturePlanes = 1;
+inline constexpr int kNumSidePairs = 6;
 inline constexpr int kLegalPlacementPlanes = 4;
-inline constexpr int kLegalMeeplePlanes = 5;
-inline constexpr int kRemainingTileTypePlanes = CANONICAL_TILE_TYPE_COUNT;
-inline constexpr int kGlobalFeaturePlanes = 6;
-inline constexpr int kObservationPlanes = kBoardFeaturePlanes + kMeepleFeaturePlanes + kCurrentTileFeaturePlanes +
-                                          kLastPlacedFeaturePlanes + kLegalPlacementPlanes + kLegalMeeplePlanes +
-                                          kRemainingTileTypePlanes + kGlobalFeaturePlanes;
-//map
-inline constexpr int kNorthTerrainPlane = 0;
-inline constexpr int kEastTerrainPlane = 3;
-inline constexpr int kSouthTerrainPlane = 6;
-inline constexpr int kWestTerrainPlane = 9;
-inline constexpr int kShieldPlane = 12;
-inline constexpr int kMonasteryPlane = 13;
-//city connectivity
-inline constexpr int kCityConnectivityPlane = 14;
-//meeple map
-inline constexpr int kMyMeeplePlane = 15;
-inline constexpr int kOpponentMeeplePlane = 20;
-//holding tile information
-inline constexpr int kCurrentTileNorthPlane = 25;
-inline constexpr int kCurrentTileEastPlane = 28;
-inline constexpr int kCurrentTileSouthPlane = 31;
-inline constexpr int kCurrentTileWestPlane = 34;
-inline constexpr int kCurrentTileShieldPlane = 37;
-inline constexpr int kCurrentTileMonasteryPlane = 38;
-//city connectivity
-inline constexpr int kCurrentTileCityConnectivityPlane = 39;
-//information
-inline constexpr int kLastPlacedPlane = 40;
-//legal positions
-inline constexpr int kLegalPlacementPlane = 41;
-inline constexpr int kLegalMeeplePlane = 45;
-inline constexpr int kRemainingTileTypePlane = 50;
-//information
-inline constexpr int kMyHoldingMeeplesPlane = 74;
-inline constexpr int kOpponentHoldingMeeplesPlane = 75;
-inline constexpr int kRemainingTilesPlane = 76;
-inline constexpr int kScoreDiffPlane = 77;
-inline constexpr int kIsMeeplePhasePlane = 78;
-inline constexpr int kCurrentPlayerIsPlayer0Plane = 79;
-static_assert(kObservationPlanes == kCurrentPlayerIsPlayer0Plane + 1);
+
+// Tiles on the board.
+inline constexpr int kOccupiedPlane = 0;
+inline constexpr int kNorthTerrainPlane = 1; // 3 terrains per side, then the next side
+inline constexpr int kEastTerrainPlane = kNorthTerrainPlane + kTerrainTypes;
+inline constexpr int kSouthTerrainPlane = kEastTerrainPlane + kTerrainTypes;
+inline constexpr int kWestTerrainPlane = kSouthTerrainPlane + kTerrainTypes;
+inline constexpr int kShieldPlane = kWestTerrainPlane + kTerrainTypes;
+inline constexpr int kMonasteryPlane = kShieldPlane + 1;
+// Pairs of non-grass sides a tile joins by itself, in the order N-E, N-S, N-W,
+// E-S, E-W, S-W. This tells CGGC tiles with one city from those with two.
+inline constexpr int kSideLinkPlane = kMonasteryPlane + 1;
+// Where the tile in hand can go.
+inline constexpr int kFrontierPlane = kSideLinkPlane + kNumSidePairs;
+inline constexpr int kLegalPlacementPlane = kFrontierPlane + 1; // one per rotation
+inline constexpr int kLastPlacedPlane = kLegalPlacementPlane + kLegalPlacementPlanes;
+// The feature each non-grass side of a tile belongs to, one plane per side for
+// each quantity. Summing them along a feature needs the whole feature in view,
+// which the convolutions cannot do, so they are computed here.
+inline constexpr int kFeatureOpensPlane = kLastPlacedPlane + 1;         // min(opens, 6) / 6
+inline constexpr int kFeatureScorePlane = kFeatureOpensPlane + 4;       // getScore() / 12
+inline constexpr int kFeatureMyMeeplesPlane = kFeatureScorePlane + 4;   // count / 7
+inline constexpr int kFeatureOpponentMeeplesPlane = kFeatureMyMeeplesPlane + 4;
+inline constexpr int kFeatureSignedScorePlane = kFeatureOpponentMeeplesPlane + 4; // +-getScore() / 12
+// Monasteries: tiles around it / 9, and +1 mine, -1 the opponent's.
+inline constexpr int kMonasteryCoveragePlane = kFeatureSignedScorePlane + 4;
+inline constexpr int kMonasteryOwnerPlane = kMonasteryCoveragePlane + 1;
+inline constexpr int kSpatialPlanes = kMonasteryOwnerPlane + 1;
+inline constexpr int kGlobalFeaturePlane = kSpatialPlanes;
+inline constexpr int kObservationPlanes = kGlobalFeaturePlane + 1;
+static_assert(kLastPlacedPlane == 26);
+static_assert(kSpatialPlanes == 49);
+
+// Offsets in the global vector, all from the observing player's side.
+inline constexpr int kGlobalMyScore = 0;           // / 40
+inline constexpr int kGlobalOpponentScore = 1;
+inline constexpr int kGlobalScoreDiff = 2;         // clip(diff / 20)
+inline constexpr int kGlobalMyPending = 3;         // / 20, see getPendingScore()
+inline constexpr int kGlobalOpponentPending = 4;
+inline constexpr int kGlobalStaticDiff = 5;        // banked + pending diff: clip(/3), clip(/10), clip(/30)
+inline constexpr int kStaticDiffScales = 3;
+inline constexpr int kGlobalMyMeeples = kGlobalStaticDiff + kStaticDiffScales; // / 7
+inline constexpr int kGlobalOpponentMeeples = kGlobalMyMeeples + 1;
+inline constexpr int kGlobalRemainingTiles = kGlobalOpponentMeeples + 1;      // / 72
+inline constexpr int kGlobalCompletedTurns = kGlobalRemainingTiles + 1;       // / 36
+inline constexpr int kGlobalRemainingByType = kGlobalCompletedTurns + 1;      // left / initial count
+inline constexpr int kGlobalTileInHand = kGlobalRemainingByType + CANONICAL_TILE_TYPE_COUNT; // one-hot
+inline constexpr int kGlobalTilePhase = kGlobalTileInHand + CANONICAL_TILE_TYPE_COUNT;
+inline constexpr int kGlobalMeeplePhase = kGlobalTilePhase + 1;
+// Legal meeple moves in action order: skip, sides 0-3, monastery.
+inline constexpr int kGlobalLegalMeeple = kGlobalMeeplePhase + 1;
+inline constexpr int kGlobalLegalPlacements = kGlobalLegalMeeple + kMeepleActionCount; // / 100
+inline constexpr int kGlobalIsPlayer0 = kGlobalLegalPlacements + 1;
+inline constexpr int kGlobalFeatures = kGlobalIsPlayer0 + 1;
+static_assert(kGlobalFeatures == 70);
+static_assert(kGlobalFeatures <= BOARD_SIZE * BOARD_SIZE);
 inline constexpr int kObservationTensorSize = kObservationPlanes * BOARD_SIZE * BOARD_SIZE;
 
 class CarcassonneGame;

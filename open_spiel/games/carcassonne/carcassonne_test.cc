@@ -24,6 +24,12 @@ float PlaneValue(const std::vector<float>& tensor, int plane, int x, int y) {
   return tensor[(plane * BOARD_SIZE + y) * BOARD_SIZE + x];
 }
 
+float GlobalValue(const std::vector<float>& tensor, int index) {
+  return tensor[kGlobalFeaturePlane * BOARD_SIZE * BOARD_SIZE + index];
+}
+
+bool Near(float left, float right) { return std::abs(left - right) < 1e-6f; }
+
 int TestTerrainIndex(EdgeType edge_type) {
   switch (edge_type) {
     case GRASS:
@@ -38,12 +44,11 @@ int TestTerrainIndex(EdgeType edge_type) {
   SpielFatalError("Unexpected edge type in test.");
 }
 
-void CheckBroadcastPlane(const std::vector<float>& tensor, int plane,
-                         float expected) {
+void CheckConstantPlane(const std::vector<float>& tensor, int plane,
+                        float expected) {
   for (int y = 0; y < BOARD_SIZE; ++y) {
     for (int x = 0; x < BOARD_SIZE; ++x) {
-      SPIEL_CHECK_TRUE(
-          std::abs(PlaneValue(tensor, plane, x, y) - expected) < 1e-6f);
+      SPIEL_CHECK_TRUE(Near(PlaneValue(tensor, plane, x, y), expected));
     }
   }
 }
@@ -51,18 +56,30 @@ void CheckBroadcastPlane(const std::vector<float>& tensor, int plane,
 void CheckZeroPlanes(const std::vector<float>& tensor, int first_plane,
                      int plane_count) {
   for (int plane = first_plane; plane < first_plane + plane_count; ++plane) {
-    CheckBroadcastPlane(tensor, plane, 0.0f);
+    CheckConstantPlane(tensor, plane, 0.0f);
   }
 }
 
+// `sign` * left == right on every cell.
 void CheckPlanesEqual(const std::vector<float>& left, int left_plane,
-                      const std::vector<float>& right, int right_plane) {
+                      const std::vector<float>& right, int right_plane,
+                      float sign = 1.0f) {
   for (int y = 0; y < BOARD_SIZE; ++y) {
     for (int x = 0; x < BOARD_SIZE; ++x) {
-      SPIEL_CHECK_TRUE(std::abs(PlaneValue(left, left_plane, x, y) -
-                                PlaneValue(right, right_plane, x, y)) < 1e-6f);
+      SPIEL_CHECK_TRUE(Near(sign * PlaneValue(left, left_plane, x, y),
+                            PlaneValue(right, right_plane, x, y)));
     }
   }
+}
+
+float PlaneSum(const std::vector<float>& tensor, int plane) {
+  float sum = 0.0f;
+  for (int y = 0; y < BOARD_SIZE; ++y) {
+    for (int x = 0; x < BOARD_SIZE; ++x) {
+      sum += PlaneValue(tensor, plane, x, y);
+    }
+  }
+  return sum;
 }
 
 void DecodeTileActionForTest(Action action, int* x, int* y, int* rot) {
@@ -76,31 +93,35 @@ int DecodeMeepleActionForTest(Action action) {
   return action - kMeepleActionOffset - 1;
 }
 
-void CheckLegalMeeplePlanes(const std::vector<float>& tensor,
-                            const std::vector<Action>& legal_actions) {
-  bool expected[kLegalMeeplePlanes] = {};
+void CheckLegalMeepleGlobals(const std::vector<float>& tensor,
+                             const std::vector<Action>& legal_actions) {
+  float expected[kMeepleActionCount] = {};
   for (Action action : legal_actions) {
-    if (action < kMeepleActionOffset) continue;
-    const int pos = DecodeMeepleActionForTest(action);
-    if (pos >= 0 && pos < kLegalMeeplePlanes) {
-      expected[pos] = true;
+    if (action >= kMeepleActionOffset) {
+      expected[action - kMeepleActionOffset] = 1.0f;
     }
   }
-  for (int pos = 0; pos < kLegalMeeplePlanes; ++pos) {
-    CheckBroadcastPlane(tensor, kLegalMeeplePlane + pos,
-                        expected[pos] ? 1.0f : 0.0f);
+  for (int i = 0; i < kMeepleActionCount; ++i) {
+    SPIEL_CHECK_EQ(GlobalValue(tensor, kGlobalLegalMeeple + i), expected[i]);
   }
 }
 
-void CheckRemainingTileTypePlanes(const std::vector<float>& tensor,
-                                  const ::Carcassonne& core) {
+void CheckRemainingByType(const std::vector<float>& tensor,
+                          const ::Carcassonne& core) {
   for (int type_id = 1; type_id <= CANONICAL_TILE_TYPE_COUNT; ++type_id) {
     const int initial_count = tile_type_tables.draw_count_by_type[type_id];
     SPIEL_CHECK_GT(initial_count, 0);
     const float expected =
         static_cast<float>(core.getRemainingTypeCount(type_id)) / initial_count;
-    CheckBroadcastPlane(tensor, kRemainingTileTypePlane + type_id - 1,
-                        expected);
+    SPIEL_CHECK_TRUE(Near(
+        GlobalValue(tensor, kGlobalRemainingByType + type_id - 1), expected));
+  }
+}
+
+void CheckTileInHand(const std::vector<float>& tensor, int type_id) {
+  for (int type = 1; type <= CANONICAL_TILE_TYPE_COUNT; ++type) {
+    SPIEL_CHECK_EQ(GlobalValue(tensor, kGlobalTileInHand + type - 1),
+                   type == type_id ? 1.0f : 0.0f);
   }
 }
 
@@ -129,79 +150,93 @@ void ObservationTensorSmokeTest() {
   const std::vector<int> shape = game->ObservationTensorShape();
 
   SPIEL_CHECK_EQ(shape.size(), 3);
-  SPIEL_CHECK_EQ(shape[0], 80);
+  SPIEL_CHECK_EQ(shape[0], 50);
   SPIEL_CHECK_EQ(shape[0], kObservationPlanes);
   SPIEL_CHECK_EQ(shape[1], BOARD_SIZE);
   SPIEL_CHECK_EQ(shape[2], BOARD_SIZE);
+  SPIEL_CHECK_EQ(game->NumDistinctActions(), 4 * BOARD_SIZE * BOARD_SIZE + 6);
 
   SPIEL_CHECK_EQ(state->ObservationTensor(0).size(), kObservationTensorSize);
   SPIEL_CHECK_EQ(state->ObservationTensor(1).size(), kObservationTensorSize);
 
-  const int center = BOARD_SIZE / 2;
+  // The start tile, type 20 (city north, road east-west, grass south), alone
+  // on the centre cell.
+  const int c = BOARD_SIZE / 2;
   std::vector<float> initial_obs = state->ObservationTensor(0);
   auto* initial_state = dynamic_cast<CarcassonneState*>(state.get());
   SPIEL_CHECK_TRUE(initial_state != nullptr);
-  SPIEL_CHECK_EQ(PlaneValue(initial_obs, kNorthTerrainPlane + 1, center, center),
-                 1.0f);
-  SPIEL_CHECK_EQ(PlaneValue(initial_obs, kEastTerrainPlane + 2, center, center),
-                 1.0f);
-  SPIEL_CHECK_EQ(PlaneValue(initial_obs, kSouthTerrainPlane + 0, center, center),
-                 1.0f);
-  SPIEL_CHECK_EQ(PlaneValue(initial_obs, kWestTerrainPlane + 2, center, center),
-                 1.0f);
-  SPIEL_CHECK_EQ(PlaneValue(initial_obs, kCityConnectivityPlane, center, center),
-                 0.0f);
-  SPIEL_CHECK_EQ(PlaneValue(initial_obs, kLastPlacedPlane, center, center), 1.0f);
+  SPIEL_CHECK_EQ(PlaneValue(initial_obs, kOccupiedPlane, c, c), 1.0f);
+  SPIEL_CHECK_EQ(PlaneSum(initial_obs, kOccupiedPlane), 1.0f);
+  SPIEL_CHECK_EQ(PlaneValue(initial_obs, kNorthTerrainPlane + 1, c, c), 1.0f);
+  SPIEL_CHECK_EQ(PlaneValue(initial_obs, kEastTerrainPlane + 2, c, c), 1.0f);
+  SPIEL_CHECK_EQ(PlaneValue(initial_obs, kSouthTerrainPlane + 0, c, c), 1.0f);
+  SPIEL_CHECK_EQ(PlaneValue(initial_obs, kWestTerrainPlane + 2, c, c), 1.0f);
+  // Side pairs N-E, N-S, N-W, E-S, E-W, S-W: only the road joins E and W.
+  for (int pair = 0; pair < kNumSidePairs; ++pair) {
+    SPIEL_CHECK_EQ(PlaneValue(initial_obs, kSideLinkPlane + pair, c, c),
+                   pair == 4 ? 1.0f : 0.0f);
+  }
+  SPIEL_CHECK_EQ(PlaneSum(initial_obs, kFrontierPlane), 4.0f);
+  SPIEL_CHECK_EQ(PlaneValue(initial_obs, kFrontierPlane, c, c - 1), 1.0f);
+  SPIEL_CHECK_EQ(PlaneValue(initial_obs, kFrontierPlane, c + 1, c), 1.0f);
+  SPIEL_CHECK_EQ(PlaneValue(initial_obs, kFrontierPlane, c, c + 1), 1.0f);
+  SPIEL_CHECK_EQ(PlaneValue(initial_obs, kFrontierPlane, c - 1, c), 1.0f);
+  SPIEL_CHECK_EQ(PlaneValue(initial_obs, kLastPlacedPlane, c, c), 1.0f);
+  // The city has one open edge, the road two; each is worth 1 so far.
+  SPIEL_CHECK_TRUE(
+      Near(PlaneValue(initial_obs, kFeatureOpensPlane + 0, c, c), 1.0f / 6));
+  SPIEL_CHECK_TRUE(
+      Near(PlaneValue(initial_obs, kFeatureOpensPlane + 1, c, c), 2.0f / 6));
+  SPIEL_CHECK_TRUE(
+      Near(PlaneValue(initial_obs, kFeatureOpensPlane + 3, c, c), 2.0f / 6));
+  SPIEL_CHECK_EQ(PlaneValue(initial_obs, kFeatureOpensPlane + 2, c, c), 0.0f);
+  for (int side : {0, 1, 3}) {
+    SPIEL_CHECK_TRUE(Near(PlaneValue(initial_obs, kFeatureScorePlane + side, c, c),
+                          1.0f / 12));
+  }
+  SPIEL_CHECK_EQ(PlaneValue(initial_obs, kFeatureScorePlane + 2, c, c), 0.0f);
+  CheckZeroPlanes(initial_obs, kFeatureMyMeeplesPlane, 12);
   CheckZeroPlanes(initial_obs, kLegalPlacementPlane, kLegalPlacementPlanes);
-  CheckZeroPlanes(initial_obs, kLegalMeeplePlane, kLegalMeeplePlanes);
-  CheckRemainingTileTypePlanes(initial_obs, initial_state->UnderlyingState());
-  CheckBroadcastPlane(initial_obs, kMyHoldingMeeplesPlane, 1.0f);
-  CheckBroadcastPlane(initial_obs, kOpponentHoldingMeeplesPlane, 1.0f);
-  CheckBroadcastPlane(initial_obs, kRemainingTilesPlane, 71.0f / 72.0f);
-  CheckBroadcastPlane(initial_obs, kScoreDiffPlane, 0.0f);
-  CheckBroadcastPlane(initial_obs, kIsMeeplePhasePlane, 0.0f);
-  CheckBroadcastPlane(initial_obs, kCurrentPlayerIsPlayer0Plane, 1.0f);
+  CheckZeroPlanes(initial_obs, kMonasteryCoveragePlane, 2);
+  CheckRemainingByType(initial_obs, initial_state->UnderlyingState());
+  for (int i : {kGlobalMyScore, kGlobalOpponentScore, kGlobalScoreDiff,
+                kGlobalMyPending, kGlobalOpponentPending, kGlobalStaticDiff,
+                kGlobalStaticDiff + 1, kGlobalStaticDiff + 2,
+                kGlobalCompletedTurns, kGlobalTilePhase, kGlobalMeeplePhase,
+                kGlobalLegalPlacements}) {
+    SPIEL_CHECK_EQ(GlobalValue(initial_obs, i), 0.0f);
+  }
+  SPIEL_CHECK_EQ(GlobalValue(initial_obs, kGlobalMyMeeples), 1.0f);
+  SPIEL_CHECK_EQ(GlobalValue(initial_obs, kGlobalOpponentMeeples), 1.0f);
+  SPIEL_CHECK_TRUE(
+      Near(GlobalValue(initial_obs, kGlobalRemainingTiles), 71.0f / 72.0f));
+  SPIEL_CHECK_EQ(GlobalValue(initial_obs, kGlobalIsPlayer0), 1.0f);
+  CheckTileInHand(initial_obs, 0);
+  CheckLegalMeepleGlobals(initial_obs, {});
+  // Only the vector's own cells are used in its plane.
+  for (int i = kGlobalFeatures; i < BOARD_SIZE * BOARD_SIZE; ++i) {
+    SPIEL_CHECK_EQ(GlobalValue(initial_obs, i), 0.0f);
+  }
 
   while (state->IsChanceNode()) {
     state->ApplyAction(state->LegalActions()[0]);
   }
   SPIEL_CHECK_EQ(state->CurrentPlayer(), 0);
-  SPIEL_CHECK_EQ(state->ObservationTensor(0).size(), kObservationTensorSize);
   auto* chance_done = dynamic_cast<CarcassonneState*>(state.get());
   SPIEL_CHECK_TRUE(chance_done != nullptr);
-  const int hand_tile_id = chance_done->UnderlyingState().current_tile_in_hand;
-  const Tile& hand_tile =
-      full_deck[hand_tile_id][0];
   std::vector<float> tile_phase_obs = state->ObservationTensor(0);
-  SPIEL_CHECK_EQ(PlaneValue(tile_phase_obs,
-                            kCurrentTileNorthPlane + TestTerrainIndex(hand_tile.edge[0]),
-                            0, 0),
-                 1.0f);
-  SPIEL_CHECK_EQ(PlaneValue(tile_phase_obs,
-                            kCurrentTileEastPlane + TestTerrainIndex(hand_tile.edge[1]),
-                            0, 0),
-                 1.0f);
-  SPIEL_CHECK_EQ(PlaneValue(tile_phase_obs,
-                            kCurrentTileSouthPlane + TestTerrainIndex(hand_tile.edge[2]),
-                            0, 0),
-                 1.0f);
-  SPIEL_CHECK_EQ(PlaneValue(tile_phase_obs,
-                            kCurrentTileWestPlane + TestTerrainIndex(hand_tile.edge[3]),
-                            0, 0),
-                 1.0f);
-  SPIEL_CHECK_EQ(PlaneValue(tile_phase_obs, kCurrentTileShieldPlane, 0, 0),
-                 hand_tile.shield ? 1.0f : 0.0f);
-  SPIEL_CHECK_EQ(PlaneValue(tile_phase_obs, kCurrentTileMonasteryPlane, 0, 0),
-                 hand_tile.monastery ? 1.0f : 0.0f);
-  const bool hand_has_city_connectivity =
-      PHYSICAL_TO_CANONICAL_TYPE[hand_tile_id] == 14 ||
-      PHYSICAL_TO_CANONICAL_TYPE[hand_tile_id] == 15;
-  CheckBroadcastPlane(tile_phase_obs, kCurrentTileCityConnectivityPlane,
-                      hand_has_city_connectivity ? 1.0f : 0.0f);
-  CheckBroadcastPlane(tile_phase_obs, kCurrentPlayerIsPlayer0Plane, 1.0f);
-  CheckZeroPlanes(tile_phase_obs, kLegalMeeplePlane, kLegalMeeplePlanes);
-  CheckRemainingTileTypePlanes(tile_phase_obs, chance_done->UnderlyingState());
-  for (Action action : state->LegalActions()) {
+  CheckTileInHand(tile_phase_obs, chance_done->UnderlyingState().currentTileType());
+  SPIEL_CHECK_EQ(GlobalValue(tile_phase_obs, kGlobalTilePhase), 1.0f);
+  SPIEL_CHECK_EQ(GlobalValue(tile_phase_obs, kGlobalMeeplePhase), 0.0f);
+  CheckLegalMeepleGlobals(tile_phase_obs, {});
+  CheckRemainingByType(tile_phase_obs, chance_done->UnderlyingState());
+  const std::vector<Action> tile_actions = state->LegalActions();
+  float legal_cells = 0.0f;
+  for (int rot = 0; rot < kLegalPlacementPlanes; ++rot) {
+    legal_cells += PlaneSum(tile_phase_obs, kLegalPlacementPlane + rot);
+  }
+  SPIEL_CHECK_EQ(legal_cells, static_cast<float>(tile_actions.size()));
+  for (Action action : tile_actions) {
     int tile_x;
     int tile_y;
     int rot;
@@ -209,39 +244,35 @@ void ObservationTensorSmokeTest() {
     SPIEL_CHECK_EQ(PlaneValue(tile_phase_obs, kLegalPlacementPlane + rot, tile_x, tile_y),
                    1.0f);
   }
-  CheckBroadcastPlane(tile_phase_obs, kIsMeeplePhasePlane, 0.0f);
+  SPIEL_CHECK_TRUE(Near(GlobalValue(tile_phase_obs, kGlobalLegalPlacements),
+                        tile_actions.size() / 100.0f));
 
-  state->ApplyAction(state->LegalActions()[0]);
+  int placed_x;
+  int placed_y;
+  int placed_rot;
+  DecodeTileActionForTest(tile_actions[0], &placed_x, &placed_y, &placed_rot);
+  state->ApplyAction(tile_actions[0]);
   SPIEL_CHECK_EQ(state->CurrentPlayer(), 0);
-  SPIEL_CHECK_EQ(state->ObservationTensor(0).size(), kObservationTensorSize);
   std::vector<float> meeple_phase_obs = state->ObservationTensor(0);
-  CheckBroadcastPlane(meeple_phase_obs, kCurrentTileNorthPlane, 0.0f);
-  CheckBroadcastPlane(meeple_phase_obs, kCurrentTileEastPlane, 0.0f);
-  CheckBroadcastPlane(meeple_phase_obs, kCurrentTileSouthPlane, 0.0f);
-  CheckBroadcastPlane(meeple_phase_obs, kCurrentTileWestPlane, 0.0f);
-  CheckBroadcastPlane(meeple_phase_obs, kCurrentTileShieldPlane, 0.0f);
-  CheckBroadcastPlane(meeple_phase_obs, kCurrentTileMonasteryPlane, 0.0f);
-  CheckBroadcastPlane(meeple_phase_obs, kCurrentTileCityConnectivityPlane, 0.0f);
+  CheckTileInHand(meeple_phase_obs, 0);
+  SPIEL_CHECK_EQ(GlobalValue(meeple_phase_obs, kGlobalTilePhase), 0.0f);
+  SPIEL_CHECK_EQ(GlobalValue(meeple_phase_obs, kGlobalMeeplePhase), 1.0f);
+  SPIEL_CHECK_EQ(GlobalValue(meeple_phase_obs, kGlobalLegalPlacements), 0.0f);
   CheckZeroPlanes(meeple_phase_obs, kLegalPlacementPlane, kLegalPlacementPlanes);
-  CheckLegalMeeplePlanes(meeple_phase_obs, state->LegalActions());
-  auto* meeple_state = dynamic_cast<CarcassonneState*>(state.get());
-  SPIEL_CHECK_TRUE(meeple_state != nullptr);
-  CheckRemainingTileTypePlanes(meeple_phase_obs, meeple_state->UnderlyingState());
-  CheckBroadcastPlane(meeple_phase_obs, kIsMeeplePhasePlane, 1.0f);
-  CheckBroadcastPlane(meeple_phase_obs, kCurrentPlayerIsPlayer0Plane, 1.0f);
+  CheckLegalMeepleGlobals(meeple_phase_obs, state->LegalActions());
+  SPIEL_CHECK_EQ(PlaneSum(meeple_phase_obs, kLastPlacedPlane), 1.0f);
+  SPIEL_CHECK_EQ(PlaneValue(meeple_phase_obs, kLastPlacedPlane, placed_x, placed_y),
+                 1.0f);
+  SPIEL_CHECK_EQ(PlaneSum(meeple_phase_obs, kOccupiedPlane), 2.0f);
+  SPIEL_CHECK_EQ(PlaneValue(meeple_phase_obs, kFrontierPlane, placed_x, placed_y),
+                 0.0f);
+  SPIEL_CHECK_EQ(GlobalValue(meeple_phase_obs, kGlobalIsPlayer0), 1.0f);
 
   state->ApplyAction(state->LegalActions()[0]);
   std::vector<float> player1_chance_obs = state->ObservationTensor(1);
-  CheckBroadcastPlane(player1_chance_obs, kCurrentPlayerIsPlayer0Plane, 0.0f);
-  while (state->IsChanceNode()) {
-    state->ApplyAction(state->LegalActions()[0]);
-  }
-  SPIEL_CHECK_EQ(state->CurrentPlayer(), 1);
-  std::vector<float> player1_tile_phase_obs = state->ObservationTensor(1);
-  CheckBroadcastPlane(player1_tile_phase_obs, kCurrentPlayerIsPlayer0Plane,
-                      0.0f);
-  SPIEL_CHECK_EQ(state->ObservationTensor(0).size(), kObservationTensorSize);
-  SPIEL_CHECK_EQ(state->ObservationTensor(1).size(), kObservationTensorSize);
+  SPIEL_CHECK_EQ(GlobalValue(player1_chance_obs, kGlobalIsPlayer0), 0.0f);
+  SPIEL_CHECK_TRUE(Near(GlobalValue(player1_chance_obs, kGlobalCompletedTurns),
+                        1.0f / 36.0f));
 }
 
 void RelativePerspectiveTest() {
@@ -255,31 +286,158 @@ void RelativePerspectiveTest() {
   std::vector<float> obs0 = state->ObservationTensor(0);
   std::vector<float> obs1 = state->ObservationTensor(1);
 
-  for (int offset = 0; offset < 5; ++offset) {
-    CheckPlanesEqual(obs0, kMyMeeplePlane + offset, obs1, kOpponentMeeplePlane + offset);
-    CheckPlanesEqual(obs0, kOpponentMeeplePlane + offset, obs1, kMyMeeplePlane + offset);
+  // Player 0 has a meeple out; each player sees it on their own side
+  float player0_meeples = 0.0f;
+  for (int side = 0; side < 4; ++side) {
+    player0_meeples += PlaneSum(obs0, kFeatureMyMeeplesPlane + side);
+    CheckPlanesEqual(obs0, kFeatureMyMeeplesPlane + side, obs1,
+                     kFeatureOpponentMeeplesPlane + side);
+    CheckPlanesEqual(obs0, kFeatureOpponentMeeplesPlane + side, obs1,
+                     kFeatureMyMeeplesPlane + side);
+    CheckPlanesEqual(obs0, kFeatureSignedScorePlane + side, obs1,
+                     kFeatureSignedScorePlane + side, -1.0f);
+    CheckPlanesEqual(obs0, kFeatureScorePlane + side, obs1,
+                     kFeatureScorePlane + side);
+    CheckPlanesEqual(obs0, kFeatureOpensPlane + side, obs1,
+                     kFeatureOpensPlane + side);
   }
+  // (or on a monastery, which has its own owner plane).
+  SPIEL_CHECK_GT(player0_meeples + PlaneSum(obs0, kMonasteryOwnerPlane), 0.0f);
+  CheckPlanesEqual(obs0, kMonasteryOwnerPlane, obs1, kMonasteryOwnerPlane,
+                   -1.0f);
 
-  CheckBroadcastPlane(obs0, kMyHoldingMeeplesPlane,
-                      core.holding_meeples[0] / 7.0f);
-  CheckBroadcastPlane(obs0, kOpponentHoldingMeeplesPlane,
-                      core.holding_meeples[1] / 7.0f);
-  CheckBroadcastPlane(obs1, kMyHoldingMeeplesPlane,
-                      core.holding_meeples[1] / 7.0f);
-  CheckBroadcastPlane(obs1, kOpponentHoldingMeeplesPlane,
-                      core.holding_meeples[0] / 7.0f);
-
-  const float score_diff =
-      std::tanh((core.player_scores[0] - core.player_scores[1]) / 30.0f);
-  CheckBroadcastPlane(obs0, kScoreDiffPlane, score_diff);
-  CheckBroadcastPlane(obs1, kScoreDiffPlane, -score_diff);
+  int pending[2];
+  core.getPendingScore(pending);
+  const std::vector<float>* views[2] = {&obs0, &obs1};
+  for (Player player = 0; player < kNumPlayers; ++player) {
+    const std::vector<float>& obs = *views[player];
+    const int opponent = 1 - player;
+    SPIEL_CHECK_TRUE(Near(GlobalValue(obs, kGlobalMyScore),
+                          core.player_scores[player] / 40.0f));
+    SPIEL_CHECK_TRUE(Near(GlobalValue(obs, kGlobalOpponentScore),
+                          core.player_scores[opponent] / 40.0f));
+    SPIEL_CHECK_TRUE(Near(GlobalValue(obs, kGlobalMyPending),
+                          pending[player] / 20.0f));
+    SPIEL_CHECK_TRUE(Near(GlobalValue(obs, kGlobalOpponentPending),
+                          pending[opponent] / 20.0f));
+    SPIEL_CHECK_TRUE(Near(GlobalValue(obs, kGlobalMyMeeples),
+                          core.holding_meeples[player] / 7.0f));
+    SPIEL_CHECK_TRUE(Near(GlobalValue(obs, kGlobalOpponentMeeples),
+                          core.holding_meeples[opponent] / 7.0f));
+    const int diff = core.player_scores[player] - core.player_scores[opponent] +
+                     pending[player] - pending[opponent];
+    SPIEL_CHECK_TRUE(Near(GlobalValue(obs, kGlobalStaticDiff),
+                          std::max(-1.0f, std::min(1.0f, diff / 3.0f))));
+  }
+  for (int i : {kGlobalScoreDiff, kGlobalStaticDiff, kGlobalStaticDiff + 1,
+                kGlobalStaticDiff + 2}) {
+    SPIEL_CHECK_TRUE(Near(GlobalValue(obs0, i), -GlobalValue(obs1, i)));
+  }
+  // Player 0 claimed a feature, so something is at stake for them.
+  SPIEL_CHECK_GT(pending[0], 0);
 
   const float current_player_is_player0 =
       core.currentPlayer == 0 ? 1.0f : 0.0f;
-  CheckBroadcastPlane(obs0, kCurrentPlayerIsPlayer0Plane,
-                      current_player_is_player0);
-  CheckBroadcastPlane(obs1, kCurrentPlayerIsPlayer0Plane,
-                      current_player_is_player0);
+  SPIEL_CHECK_EQ(GlobalValue(obs0, kGlobalIsPlayer0), current_player_is_player0);
+  SPIEL_CHECK_EQ(GlobalValue(obs1, kGlobalIsPlayer0), current_player_is_player0);
+}
+
+// Pending points are counted without copying the game; check them against
+// settling and end-game scoring a copy, at every state of random games. That
+// includes the meeple phase right after a tile closes a feature that holds
+// meeples: it is settled when the turn ends whatever the move, so it counts.
+void PendingScoreTest() {
+  std::mt19937 rng(20260919);
+  std::shared_ptr<const Game> game = LoadGame("carcassonne");
+  int closed_but_unsettled = 0;
+  for (int sim = 0; sim < 100; ++sim) {
+    std::unique_ptr<State> state = game->NewInitialState();
+    while (true) {
+      const ::Carcassonne& core =
+          dynamic_cast<const CarcassonneState&>(*state).UnderlyingState();
+      int fast[2];
+      int slow[2];
+      core.getPendingScore(fast);
+      core.getPendingScoreByResolving(slow);
+      SPIEL_CHECK_EQ(fast[0], slow[0]);
+      SPIEL_CHECK_EQ(fast[1], slow[1]);
+      if (state->IsTerminal()) {
+        SPIEL_CHECK_EQ(fast[0], 0);
+        SPIEL_CHECK_EQ(fast[1], 0);
+        break;
+      }
+      if (core.current_phase == PHASE_MEEPLE) {
+        const Placement placement = core.getPlacement(core.last_x, core.last_y);
+        const Tile& tile = full_deck[placement.id][placement.rotation];
+        for (int side = 0; side < 4; ++side) {
+          const Feature& feature = core.featureAt(placement.id, side);
+          if (tile.edge[side] != GRASS && feature.opens == 0 &&
+              feature.hasMeeples()) {
+            ++closed_but_unsettled;
+            break;
+          }
+        }
+      }
+      const std::vector<Action> legal = state->LegalActions();
+      state->ApplyAction(
+          state->IsChanceNode()
+              ? SampleAction(state->ChanceOutcomes(), rng).first
+              : legal[std::uniform_int_distribution<int>(0, legal.size() - 1)(rng)]);
+    }
+  }
+  std::cout << "PendingScoreTest: " << closed_but_unsettled
+            << " meeple-phase states with a closed, unsettled feature"
+            << std::endl;
+  SPIEL_CHECK_GT(closed_but_unsettled, 0);
+}
+
+// A feature where both players hold the same number of meeples is not an
+// unclaimed one: both score it, and nobody can add a meeple. The two meeple
+// planes keep that apart, which a single difference plane would not.
+void TiedFeatureTest() {
+  std::mt19937 rng(20260920);
+  std::shared_ptr<const Game> game = LoadGame("carcassonne");
+  int tied_sides = 0;
+  for (int sim = 0; sim < 200 && tied_sides == 0; ++sim) {
+    std::unique_ptr<State> state = game->NewInitialState();
+    while (!state->IsTerminal()) {
+      if (!state->IsChanceNode()) {
+        const ::Carcassonne& core =
+            dynamic_cast<const CarcassonneState&>(*state).UnderlyingState();
+        const std::vector<float> obs = state->ObservationTensor(0);
+        for (int y = 0; y < BOARD_SIZE; ++y) {
+          for (int x = 0; x < BOARD_SIZE; ++x) {
+            const Placement placement = core.getPlacement(x, y);
+            if (placement.id == 0) continue;
+            const Tile& tile = full_deck[placement.id][placement.rotation];
+            for (int side = 0; side < 4; ++side) {
+              if (tile.edge[side] == GRASS) continue;
+              const Feature& feature = core.featureAt(placement.id, side);
+              const int count = feature.meeple_count[0];
+              if (count == 0 || feature.meeple_count[1] != count) continue;
+              ++tied_sides;
+              SPIEL_CHECK_TRUE(Near(
+                  PlaneValue(obs, kFeatureMyMeeplesPlane + side, x, y), count / 7.0f));
+              SPIEL_CHECK_TRUE(Near(
+                  PlaneValue(obs, kFeatureOpponentMeeplesPlane + side, x, y),
+                  count / 7.0f));
+              // SPIEL_CHECK_EQ's own locals are called x and y.
+              SPIEL_CHECK_TRUE(
+                  PlaneValue(obs, kFeatureSignedScorePlane + side, x, y) == 0.0f);
+            }
+          }
+        }
+      }
+      const std::vector<Action> legal = state->LegalActions();
+      state->ApplyAction(
+          state->IsChanceNode()
+              ? SampleAction(state->ChanceOutcomes(), rng).first
+              : legal[std::uniform_int_distribution<int>(0, legal.size() - 1)(rng)]);
+    }
+  }
+  std::cout << "TiedFeatureTest: " << tied_sides << " tied feature sides seen"
+            << std::endl;
+  SPIEL_CHECK_GT(tied_sides, 0);
 }
 
 void ReturnsMatchScoresTest() {
@@ -368,8 +526,8 @@ void LastUnplaceableTileTest() {
   SPIEL_CHECK_EQ(core.completed_turns, 70);
   SPIEL_CHECK_EQ(core.getTotalRemaining(), 0);
   SPIEL_CHECK_EQ(core.current_tile_in_hand, 0);
-  SPIEL_CHECK_EQ(core.player_scores[0], 48);
-  SPIEL_CHECK_EQ(core.player_scores[1], 39);
+  SPIEL_CHECK_EQ(core.player_scores[0], 57);
+  SPIEL_CHECK_EQ(core.player_scores[1], 34);
   SPIEL_CHECK_EQ(clone->ObservationTensor(0).size(), kObservationTensorSize);
   SPIEL_CHECK_EQ(clone->ObservationTensor(1).size(), kObservationTensorSize);
   SPIEL_CHECK_EQ(state->ToString(), before);
@@ -485,6 +643,8 @@ void BasicCarcassonneTests() {
   testing::RandomSimTest(*LoadGame("carcassonne"), 50);
   ObservationTensorSmokeTest();
   RelativePerspectiveTest();
+  PendingScoreTest();
+  TiedFeatureTest();
   ReturnsMatchScoresTest();
   ShortGameMaxTurnsTest();
   LastUnplaceableTileTest();

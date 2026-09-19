@@ -159,6 +159,15 @@ int LastPlacedObservationPlane(const Game& game) {
   return -1;
 }
 
+int GlobalObservationFeatures(const Game& game) {
+  if (game.GetType().short_name == "carcassonne") {
+    static_assert(carcassonne::kGlobalFeaturePlane ==
+                  carcassonne::kObservationPlanes - 1);
+    return carcassonne::kGlobalFeatures;
+  }
+  return 0;
+}
+
 bool CreateGraphDef(const Game& game, double learning_rate, double weight_decay,
                     const std::string& path, const std::string& filename,
                     std::string nn_model, int nn_width, int nn_depth,
@@ -171,7 +180,8 @@ bool CreateGraphDef(const Game& game, double learning_rate, double weight_decay,
       /*learning_rate=*/learning_rate,
       /*weight_decay=*/weight_decay,
       /*nn_model=*/nn_model,
-      /*last_placed_plane=*/LastPlacedObservationPlane(game)};
+      /*last_placed_plane=*/LastPlacedObservationPlane(game),
+      /*global_features=*/GlobalObservationFeatures(game)};
 
   return SaveModelConfig(path, filename, net_config);
 }

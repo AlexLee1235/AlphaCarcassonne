@@ -80,51 +80,87 @@ std::vector<std::string> PlaneNames() {
     names[plane] = "plane_" + std::to_string(plane);
   }
 
+  names[kOccupiedPlane] = "occupied";
   AddTerrainNames(&names, kNorthTerrainPlane, "board_north");
   AddTerrainNames(&names, kEastTerrainPlane, "board_east");
   AddTerrainNames(&names, kSouthTerrainPlane, "board_south");
   AddTerrainNames(&names, kWestTerrainPlane, "board_west");
   names[kShieldPlane] = "board_shield";
   names[kMonasteryPlane] = "board_monastery";
-  names[kCityConnectivityPlane] = "board_city_connectivity";
-
-  for (int pos = 0; pos < 5; ++pos) {
-    names[kMyMeeplePlane + pos] = "my_meeple_pos_" + std::to_string(pos);
-    names[kOpponentMeeplePlane + pos] =
-        "opponent_meeple_pos_" + std::to_string(pos);
+  const char* side_pairs[kNumSidePairs] = {"N-E", "N-S", "N-W",
+                                           "E-S", "E-W", "S-W"};
+  for (int pair = 0; pair < kNumSidePairs; ++pair) {
+    names[kSideLinkPlane + pair] = std::string("side_link_") + side_pairs[pair];
   }
 
-  AddTerrainNames(&names, kCurrentTileNorthPlane, "current_tile_north");
-  AddTerrainNames(&names, kCurrentTileEastPlane, "current_tile_east");
-  AddTerrainNames(&names, kCurrentTileSouthPlane, "current_tile_south");
-  AddTerrainNames(&names, kCurrentTileWestPlane, "current_tile_west");
-  names[kCurrentTileShieldPlane] = "current_tile_shield";
-  names[kCurrentTileMonasteryPlane] = "current_tile_monastery";
-  names[kCurrentTileCityConnectivityPlane] =
-      "current_tile_city_connectivity";
-
-  names[kLastPlacedPlane] = "last_placed_tile";
+  names[kFrontierPlane] = "frontier";
   for (int rot = 0; rot < kLegalPlacementPlanes; ++rot) {
     names[kLegalPlacementPlane + rot] =
         "legal_tile_placement_rot_" + std::to_string(rot);
   }
-  for (int pos = 0; pos < kLegalMeeplePlanes; ++pos) {
-    names[kLegalMeeplePlane + pos] =
-        pos == 4 ? "legal_meeple_monastery"
-                 : "legal_meeple_edge_" + std::to_string(pos);
-  }
-  for (int type_id = 1; type_id <= CANONICAL_TILE_TYPE_COUNT; ++type_id) {
-    names[kRemainingTileTypePlane + type_id - 1] =
-        "remaining_tile_type_" + std::to_string(type_id);
-  }
+  names[kLastPlacedPlane] = "last_placed_tile";
 
-  names[kMyHoldingMeeplesPlane] = "my_holding_meeples";
-  names[kOpponentHoldingMeeplesPlane] = "opponent_holding_meeples";
-  names[kRemainingTilesPlane] = "remaining_tiles_total";
-  names[kScoreDiffPlane] = "score_diff_current_perspective";
-  names[kIsMeeplePhasePlane] = "is_meeple_phase";
-  names[kCurrentPlayerIsPlayer0Plane] = "current_player_is_player0";
+  for (int side = 0; side < 4; ++side) {
+    const std::string suffix = "_side_" + std::to_string(side);
+    names[kFeatureOpensPlane + side] = "feature_opens" + suffix;
+    names[kFeatureScorePlane + side] = "feature_score" + suffix;
+    names[kFeatureMyMeeplesPlane + side] = "feature_my_meeples" + suffix;
+    names[kFeatureOpponentMeeplesPlane + side] =
+        "feature_opponent_meeples" + suffix;
+    names[kFeatureSignedScorePlane + side] = "feature_signed_score" + suffix;
+  }
+  names[kMonasteryCoveragePlane] = "monastery_coverage";
+  names[kMonasteryOwnerPlane] = "monastery_owner";
+  names[kGlobalFeaturePlane] = "global_vector";
   return names;
+}
+
+std::vector<std::string> GlobalFeatureNames() {
+  std::vector<std::string> names(kGlobalFeatures);
+  names[kGlobalMyScore] = "my_score";
+  names[kGlobalOpponentScore] = "opponent_score";
+  names[kGlobalScoreDiff] = "score_diff";
+  names[kGlobalMyPending] = "my_pending";
+  names[kGlobalOpponentPending] = "opponent_pending";
+  const char* scales[kStaticDiffScales] = {"3", "10", "30"};
+  for (int scale = 0; scale < kStaticDiffScales; ++scale) {
+    names[kGlobalStaticDiff + scale] = std::string("static_diff_/") + scales[scale];
+  }
+  names[kGlobalMyMeeples] = "my_holding_meeples";
+  names[kGlobalOpponentMeeples] = "opponent_holding_meeples";
+  names[kGlobalRemainingTiles] = "remaining_tiles";
+  names[kGlobalCompletedTurns] = "completed_turns";
+  for (int type_id = 1; type_id <= CANONICAL_TILE_TYPE_COUNT; ++type_id) {
+    names[kGlobalRemainingByType + type_id - 1] =
+        "remaining_type_" + std::to_string(type_id);
+    names[kGlobalTileInHand + type_id - 1] =
+        "tile_in_hand_type_" + std::to_string(type_id);
+  }
+  names[kGlobalTilePhase] = "is_tile_phase";
+  names[kGlobalMeeplePhase] = "is_meeple_phase";
+  const char* meeple_moves[kMeepleActionCount] = {
+      "skip", "edge_0", "edge_1", "edge_2", "edge_3", "monastery"};
+  for (int i = 0; i < kMeepleActionCount; ++i) {
+    names[kGlobalLegalMeeple + i] = std::string("legal_meeple_") + meeple_moves[i];
+  }
+  names[kGlobalLegalPlacements] = "legal_placements";
+  names[kGlobalIsPlayer0] = "current_player_is_player0";
+  return names;
+}
+
+// The global vector is not a picture of the board: print it by name.
+void PrintGlobalFeatures(const std::vector<float>& tensor, bool print_zeros) {
+  std::cout << "\n--- plane " << kGlobalFeaturePlane
+            << ": global_vector (first " << kGlobalFeatures << " cells) ---\n";
+  const std::vector<std::string> names = GlobalFeatureNames();
+  const int offset = kGlobalFeaturePlane * BOARD_SIZE * BOARD_SIZE;
+  for (int i = 0; i < kGlobalFeatures; ++i) {
+    const float value = tensor[offset + i];
+    if (!print_zeros && std::abs(value) < 1e-6f) continue;
+    std::cout << std::setw(3) << i << " " << std::left << std::setw(28)
+              << names[i] << std::right << std::fixed << std::setprecision(3)
+              << value << "\n";
+  }
 }
 
 void PrintPlane(const std::vector<float>& tensor, int plane,
@@ -244,6 +280,10 @@ int Main(int argc, char** argv) {
 
   std::cout << "\n=== observation tensor ===\n";
   for (int plane = 0; plane < kObservationPlanes; ++plane) {
+    if (plane == kGlobalFeaturePlane) {
+      PrintGlobalFeatures(observation, print_zero_planes);
+      continue;
+    }
     if (!print_zero_planes && IsZeroPlane(observation, plane)) {
       continue;
     }

@@ -2,6 +2,7 @@
 
 #include <array>
 #include <bitset>
+#include <cassert>
 #include <cstdlib>
 #include <utility>
 #include <vector>
@@ -88,7 +89,10 @@ void FeatureModule::placeTileOnBoard(int tile_id, int x, int y, int rot, const T
             int my_edge = edgeIndex(tile_id, i);
             int their_edge = edgeIndex(board.board[ny][nx].id, op[i]);
             featureMap.unionSet(my_edge, their_edge);
-            featureMap.getSetData(my_edge).opens -= 2;
+            // Both edges were open, so the joined feature counts at least two.
+            Feature &joined = featureMap.getSetData(my_edge);
+            assert(joined.opens >= 2);
+            joined.opens -= 2;
         }
     }
 }
@@ -130,6 +134,33 @@ void FeatureModule::settleAfterPlaceMeeple(int x, int y, const BoardModule &boar
     for (int i = 0; i < 4; ++i) {
         if (board.edge[y][x][i] != GRASS) {
             settleCompletedFeatures(board.board[y][x].id, i, player_scores, holding_meeples);
+        }
+    }
+}
+
+void FeatureModule::accumulatePendingScore(int *pending) const {
+    for (int i = 0; i < EDGE_SLOT_COUNT; ++i) {
+        if (featureMap.find(i) != i) {
+            continue;
+        }
+        const Feature &feature = featureMap.getSetData(i);
+        if (feature.type != CITY && feature.type != ROAD) {
+            continue;
+        }
+        int m0 = feature.meeple_count[0];
+        int m1 = feature.meeple_count[1];
+        if (m0 == 0 && m1 == 0) {
+            continue;
+        }
+        // An open feature scores at the end of the game; a closed one still
+        // holding meeples was closed by the last tile and scores when the turn
+        // ends. getScore() doubles a closed city either way.
+        int score = feature.getScore();
+        if (m0 >= m1) {
+            pending[0] += score;
+        }
+        if (m1 >= m0) {
+            pending[1] += score;
         }
     }
 }

@@ -45,6 +45,11 @@ bool CreateGraphDef(const Game& game, double learning_rate, double weight_decay,
 // (Carcassonne's meeple moves) from it, so it belongs in the model config.
 int LastPlacedObservationPlane(const Game& game);
 
+// How many values at the start of the last observation plane form a vector of
+// board-wide features rather than part of the board picture (see
+// ModelConfig::global_features); 0 for games without one.
+int GlobalObservationFeatures(const Game& game);
+
 class VPNetModel {
  public:
   // A class to handle the network's loss.

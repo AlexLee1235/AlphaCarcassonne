@@ -268,7 +268,10 @@ ModelConfig NewModelConfig(const open_spiel::Game& game) {
                      /*nn_model=*/absl::GetFlag(FLAGS_nn_model),
                      /*last_placed_plane=*/
                      open_spiel::algorithms::torch_az::
-                         LastPlacedObservationPlane(game)};
+                         LastPlacedObservationPlane(game),
+                     /*global_features=*/
+                     open_spiel::algorithms::torch_az::
+                         GlobalObservationFeatures(game)};
 }
 
 ModelConfig BaseModelConfig(const open_spiel::Game& game,

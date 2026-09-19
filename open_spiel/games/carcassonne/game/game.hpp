@@ -11,7 +11,10 @@
 #include <utility>
 #include <vector>
 
-constexpr int BOARD_SIZE = 15;
+// 15 cut off 31% of games at the edge and left city edges facing off the
+// board that could never be closed; 21 holds 99.9% of games.
+constexpr int BOARD_SIZE = 21;
+static_assert(BOARD_SIZE % 2 == 1, "the start tile sits on the centre cell");
 constexpr int TOTAL_TILE_COUNT = PHYSICAL_TILE_COUNT;
 constexpr int MAX_FRONTIER_CELLS = TOTAL_TILE_COUNT * 2 + 2;
 constexpr int EDGE_SLOT_COUNT = TOTAL_TILE_COUNT * 4;
@@ -88,6 +91,9 @@ class FeatureModule {
     void getLegalMeepleMoves(FixedVector<int, 6> &ret, int x, int y, const BoardModule &board, const Tile &tile) const;
     void placeMeeple(int x, int y, int pos, int player, const BoardModule &board, int *player_scores, int *holding_meeples);
     void settleAfterPlaceMeeple(int x, int y, const BoardModule &board, int *player_scores, int *holding_meeples);
+    // Adds each feature that holds meeples to its majority holders, as the
+    // end-game scoring and turn-end settlement would.
+    void accumulatePendingScore(int *pending) const;
 };
 
 class MonasteryModule {
@@ -97,6 +103,9 @@ class MonasteryModule {
     void resolveEndGameScore(int *player_scores);
     void placeMeeple(int x, int y, int pos, int player, const BoardModule &board, int *player_scores, int *holding_meeples);
     void settleCompletedMonasteries(int *player_scores, int *holding_meeples);
+    void accumulatePendingScore(int *pending) const;
+    // Owner of the claimed monastery at (x, y), or -1.
+    int ownerAt(int x, int y) const;
 };
 
 class FrontierModule {
@@ -189,6 +198,21 @@ class Carcassonne {
     int getTotalRemaining() const { return deck.total_remaining; }
     int getRemainingTypeCount(int type_id) const { return deck.type_counts[type_id]; }
     void WriteMeepleMap(int player, float *span) const;
+
+    // Read-only views for the observation tensor.
+    const Feature &featureAt(int tile_id, int side) const {
+        return features.featureMap.getSetData(features.edgeIndex(tile_id, side));
+    }
+    bool isFrontier(int x, int y) const { return frontier.frontier[y][x]; }
+    int coverage3x3(int x, int y) const { return board.count3x3(x, y); }
+    int monasteryOwner(int x, int y) const { return monasteries.ownerAt(x, y); }
+
+    // Points each player still adds if the game ended now: features and
+    // monasteries that hold meeples, including features the last tile closed,
+    // which are settled when the current turn ends. Zero once terminal.
+    void getPendingScore(int pending[2]) const;
+    // The same, by settling and end-game scoring a copy. Slow; for tests.
+    void getPendingScoreByResolving(int pending[2]) const;
 
     void getAvailableDraws(ChanceBranch *out, int &count) const;
     void drawTile(int type_id);

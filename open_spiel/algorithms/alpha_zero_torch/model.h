@@ -59,6 +59,9 @@ struct ResOutputBlockConfig {
   // Actions that belong to no cell (Carcassonne: the meeple moves). They come
   // after the per-cell actions, as the game's action encoding has them.
   int policy_extra_actions;
+  // Length of the board-wide feature vector joined to the pooled features of
+  // both heads (see ModelConfig::global_features); 0 for none.
+  int global_features;
 };
 
 // Information for the model. This should be enough for any type of model
@@ -76,6 +79,11 @@ struct ModelConfig {
   // game has none. The conv policy head reads the actions that belong to that
   // cell (Carcassonne's meeple moves) from it.
   int last_placed_plane = -1;
+  // When > 0, the last observation plane is not a picture of the board: its
+  // first global_features values are a vector of board-wide quantities
+  // (scores, the deck, the phase). The model takes it out of the convolutions
+  // and adds it as a per-channel bias to the trunk and to both heads.
+  int global_features = 0;
 };
 std::istream& operator>>(std::istream& stream, ModelConfig& config);
 std::ostream& operator<<(std::ostream& stream, const ModelConfig& config);
@@ -87,11 +95,12 @@ std::ostream& operator<<(std::ostream& stream, const ModelConfig& config);
 // Illustration:
 //   [Input Tensor] --> CONV --> BN --> RELU
 //
-// There is only one input block per model.
+// There is only one input block per model. global_bias, if given, is
+// [B, filters] and is added to every cell after the CONV.
 class ResInputBlockImpl : public torch::nn::Module {
  public:
   ResInputBlockImpl(const ResInputBlockConfig& config);
-  torch::Tensor forward(torch::Tensor x);
+  torch::Tensor forward(torch::Tensor x, torch::Tensor global_bias = {});
 
  private:
   int channels_;
@@ -112,11 +121,12 @@ TORCH_MODULE(ResInputBlock);
 //          \___________________________________________________/
 //
 // Unlike the input and output blocks, one can specify how many of these torso
-// blocks they want in their model.
+// blocks they want in their model. global_bias, if given, is [B, filters] and
+// is added to every cell after the first CONV.
 class ResTorsoBlockImpl : public torch::nn::Module {
  public:
   ResTorsoBlockImpl(const ResTorsoBlockConfig& config, int layer);
-  torch::Tensor forward(torch::Tensor x);
+  torch::Tensor forward(torch::Tensor x, torch::Tensor global_bias = {});
 
  private:
   torch::nn::Conv2d conv1_;
@@ -158,6 +168,9 @@ TORCH_MODULE(ResTorsoBlock);
 // cell with the last-placed plane as a one-hot. Games whose actions do not
 // factor that way keep the dense readout.
 //
+// A board-wide feature vector, when the game has one, is joined to the pooled
+// features of the value head and of the policy head's pooled branch.
+//
 // Illustration:
 //                    --> CONV --> BN --> RELU --> POOL(mean ++ max) --> LIN
 //                                                 --> RELU --> LIN --> TANH
@@ -173,8 +186,10 @@ class ResOutputBlockImpl : public torch::nn::Module {
  public:
   ResOutputBlockImpl(const ResOutputBlockConfig& config);
   // last_placed_plane is [B, 1, H, W], required by the conv policy head.
+  // global_features is [B, config.global_features], required when that is > 0.
   std::vector<torch::Tensor> forward(torch::Tensor x, torch::Tensor mask,
-                                     torch::Tensor last_placed_plane = {});
+                                     torch::Tensor last_placed_plane = {},
+                                     torch::Tensor global_features = {});
 
  private:
   torch::nn::Conv2d value_conv_;
@@ -192,6 +207,7 @@ class ResOutputBlockImpl : public torch::nn::Module {
   int policy_observation_size_;
   int policy_conv_planes_;
   int policy_extra_actions_;
+  int global_features_;
 };
 TORCH_MODULE(ResOutputBlock);
 
@@ -242,6 +258,13 @@ class ModelImpl : public torch::nn::Module {
   int input_height_ = 0;
   int input_width_ = 0;
   int last_placed_plane_ = -1;
+  // The board-wide feature vector (ModelConfig::global_features) enters the
+  // trunk as a per-channel bias: once after the input convolution and again in
+  // every second residual block. global_block_biases_ has one entry per
+  // residual block, empty for blocks without one.
+  int global_features_ = 0;
+  torch::nn::Linear global_input_bias_{nullptr};
+  std::vector<torch::nn::Linear> global_block_biases_;
 };
 TORCH_MODULE(Model);
 

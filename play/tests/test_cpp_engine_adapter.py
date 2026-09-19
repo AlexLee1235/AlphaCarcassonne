@@ -90,8 +90,8 @@ def test_bot_cli_reports_latest_observation_shape() -> None:
     finally:
         cli.close()
 
-    assert response["observation_shape"] == [80, ENGINE_BOARD_SIZE, ENGINE_BOARD_SIZE]
-    assert response["observation_tensor_size"] == 80 * ENGINE_BOARD_SIZE * ENGINE_BOARD_SIZE
+    assert response["observation_shape"] == [50, ENGINE_BOARD_SIZE, ENGINE_BOARD_SIZE]
+    assert response["observation_tensor_size"] == 50 * ENGINE_BOARD_SIZE * ENGINE_BOARD_SIZE
     assert response["num_distinct_actions"] == ENGINE_BOARD_SIZE * ENGINE_BOARD_SIZE * 4 + 6
 
 

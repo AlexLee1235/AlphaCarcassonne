@@ -1,5 +1,37 @@
 ./build/examples/alpha_zero_torch_example \
     --game=carcassonne \
+    --path=/az_carcassonne_0918 \
+    --cutoff_probability=0.000000 \
+    --nn_model=resnet \
+    --nn_width=32 \
+    --nn_depth=8 \
+    --devices=cuda:0 \
+    --actors=2048 \
+    --evaluators=4 \
+    --checkpoint_freq=1 \
+    --eval_levels=1 \
+    --evaluation_window=50 \
+    --inference_batch_size=128 \
+    --inference_cache=2621440 \
+    --inference_threads=16 \
+    --learning_rate=0.0001 \
+    --max_memory_mb=100000 \
+    --max_simulations=800 \
+    --max_steps=0 \
+    --policy_alpha=1.0 \
+    --policy_epsilon=0.25 \
+    --replay_buffer_reuse=4 \
+    --replay_buffer_size=262144 \
+    --temperature=1 \
+    --temperature_drop=10 \
+    --value_is_current_player=true \
+    --train_batch_size=2048  \
+    --uct_c=2.000000  \
+    --weight_decay=0.0001 \
+    --augment_rotations=true
+
+./build/examples/alpha_zero_torch_example \
+    --game=carcassonne \
     --path=/az_carcassonne_0916 \
     --cutoff_probability=0.000000 \
     --nn_model=resnet \

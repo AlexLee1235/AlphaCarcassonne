@@ -35,3 +35,18 @@ void MonasteryModule::placeMeeple(int x, int y, int pos, int player, const Board
                                   int *holding_meeples) {
     active_monasteries.push_back({x, y, board.count3x3(x, y), player});
 }
+
+void MonasteryModule::accumulatePendingScore(int *pending) const {
+    for (int i = 0; i < active_monasteries.size(); ++i) {
+        pending[active_monasteries[i].owner] += active_monasteries[i].tile_count;
+    }
+}
+
+int MonasteryModule::ownerAt(int x, int y) const {
+    for (int i = 0; i < active_monasteries.size(); ++i) {
+        if (active_monasteries[i].x == x && active_monasteries[i].y == y) {
+            return active_monasteries[i].owner;
+        }
+    }
+    return -1;
+}

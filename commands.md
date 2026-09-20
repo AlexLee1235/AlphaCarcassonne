@@ -1,6 +1,6 @@
 ./build/examples/alpha_zero_torch_example \
     --game=carcassonne \
-    --path=/az_carcassonne_0918 \
+    --path=/az_carcassonne_0919 \
     --cutoff_probability=0.000000 \
     --nn_model=resnet \
     --nn_width=32 \

@@ -14,9 +14,12 @@
 
 #include "open_spiel/algorithms/alpha_zero_torch/vpnet.h"
 
+#include <atomic>
+#include <cmath>
 #include <iostream>
 #include <memory>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "open_spiel/abseil-cpp/absl/container/flat_hash_map.h"
@@ -81,7 +84,8 @@ std::vector<VPNetModel::TrainInputs> SolveGame() {
 }
 
 VPNetModel BuildModel(const Game& game, const std::string& nn_model,
-                      bool create_graph) {
+                      bool create_graph,
+                      const std::string& device = "/cpu:0") {
   std::string tmp_dir = open_spiel::file::GetTmpDir();
   std::string filename =
       absl::StrCat("open_spiel_vpnet_test_", nn_model, ".pb");
@@ -97,7 +101,7 @@ VPNetModel BuildModel(const Game& game, const std::string& nn_model,
   std::string model_path = absl::StrCat(tmp_dir, "/", filename);
   SPIEL_CHECK_TRUE(file::Exists(model_path));
 
-  VPNetModel model(game, tmp_dir, filename, "/cpu:0");
+  VPNetModel model(game, tmp_dir, filename, device);
 
   return model;
 }
@@ -124,6 +128,76 @@ void TestModelCreation(const std::string& nn_model) {
 }
 
 // Can learn a single trajectory
+// Models are independent of each other, even on one device: the only thing
+// serializing a model is the mutex DeviceManager holds per model, so several
+// replicas can share a GPU. Running them at the same time has to give the same
+// answers as running them one at a time.
+void TestConcurrentReplicas(const std::string& nn_model) {
+  std::cout << "TestConcurrentReplicas: " << nn_model << std::endl;
+  const std::string device =
+      torch::cuda::is_available() ? "cuda:0" : "/cpu:0";
+  constexpr int kReplicas = 4;
+  constexpr int kBatchesPerReplica = 50;
+  std::shared_ptr<const Game> game = LoadGame("tic_tac_toe");
+
+  std::vector<VPNetModel> models;
+  models.reserve(kReplicas);
+  for (int i = 0; i < kReplicas; ++i) {
+    models.push_back(BuildModel(*game, nn_model, false, device));
+  }
+  // The replicas hold the same weights, the way training keeps them in sync.
+  const std::string checkpoint = models[0].SaveCheckpoint(0);
+  for (int i = 1; i < kReplicas; ++i) {
+    models[i].LoadCheckpointWeightsOnly(checkpoint);
+  }
+
+  std::vector<VPNetModel::InferenceInputs> inputs;
+  std::unique_ptr<State> state = game->NewInitialState();
+  while (!state->IsTerminal()) {
+    inputs.push_back({state->LegalActions(), state->ObservationTensor()});
+    state->ApplyAction(state->LegalActions()[0]);
+  }
+  const std::vector<VPNetModel::InferenceOutputs> expected =
+      models[0].Inference(inputs);
+
+  std::atomic<int> mismatches{0};
+  std::vector<std::thread> threads;
+  threads.reserve(kReplicas);
+  for (int i = 0; i < kReplicas; ++i) {
+    threads.emplace_back([&, i]() {
+      for (int batch = 0; batch < kBatchesPerReplica; ++batch) {
+        const std::vector<VPNetModel::InferenceOutputs> outputs =
+            models[i].Inference(inputs);
+        if (outputs.size() != expected.size()) {
+          ++mismatches;
+          continue;
+        }
+        for (int j = 0; j < outputs.size(); ++j) {
+          if (std::abs(outputs[j].value - expected[j].value) > 1e-4 ||
+              outputs[j].policy.size() != expected[j].policy.size()) {
+            ++mismatches;
+            continue;
+          }
+          for (int k = 0; k < outputs[j].policy.size(); ++k) {
+            if (outputs[j].policy[k].first != expected[j].policy[k].first ||
+                std::abs(outputs[j].policy[k].second -
+                         expected[j].policy[k].second) > 1e-4) {
+              ++mismatches;
+            }
+          }
+        }
+      }
+    });
+  }
+  for (std::thread& thread : threads) {
+    thread.join();
+  }
+  SPIEL_CHECK_EQ(mismatches.load(), 0);
+  std::cout << kReplicas << " replicas x " << kBatchesPerReplica
+            << " batches on " << device << ": same answers as one at a time"
+            << std::endl;
+}
+
 void TestModelLearnsSimple(const std::string& nn_model) {
   std::cout << "TestModelLearnsSimple: " << nn_model << std::endl;
   std::shared_ptr<const Game> game = LoadGame("tic_tac_toe");
@@ -208,6 +282,7 @@ int main(int argc, char** argv) {
   // Tests below here reuse the graphs created above. Graph creation is slow
   // due to calling a separate python process.
 
+  open_spiel::algorithms::torch_az::TestConcurrentReplicas("resnet");
   open_spiel::algorithms::torch_az::TestModelLearnsSimple("resnet");
 
   auto train_inputs = open_spiel::algorithms::torch_az::SolveGame();

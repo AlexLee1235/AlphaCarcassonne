@@ -24,10 +24,8 @@
 #include <string>
 #include <vector>
 
-#include "open_spiel/abseil-cpp/absl/strings/match.h"
 #include "open_spiel/abseil-cpp/absl/strings/str_cat.h"
 #include "open_spiel/abseil-cpp/absl/strings/str_join.h"
-#include "open_spiel/abseil-cpp/absl/synchronization/mutex.h"
 #include "open_spiel/algorithms/alpha_zero_torch/model.h"
 #include "open_spiel/games/carcassonne/carcassonne.h"
 #include "open_spiel/spiel.h"
@@ -37,27 +35,6 @@ namespace open_spiel {
 namespace algorithms {
 namespace torch_az {
 namespace {
-
-bool IsCudaDeviceName(const std::string& device) {
-  return device == "cuda" || absl::StartsWith(device, "cuda:");
-}
-
-absl::Mutex* InferenceMutexForDevice(const std::string& device) {
-  if (!IsCudaDeviceName(device)) {
-    return nullptr;
-  }
-
-  static auto* map_mu = new absl::Mutex();
-  static auto* mutexes = new std::map<std::string, absl::Mutex*>();
-  absl::MutexLock lock(map_mu);
-  auto it = mutexes->find(device);
-  if (it != mutexes->end()) {
-    return it->second;
-  }
-  absl::Mutex* device_mu = new absl::Mutex();
-  (*mutexes)[device] = device_mu;
-  return device_mu;
-}
 
 std::map<std::string, std::vector<int64_t>> TensorShapes(
     const torch::nn::Module& module) {
@@ -237,6 +214,9 @@ void VPNetModel::LoadCheckpointWeightsOnly(const std::string& path) {
   LoadModelChecked(model_, absl::StrCat(path, ".pt"), torch_device_);
 }
 
+// One model runs one batch at a time: DeviceManager::DeviceLoan holds that
+// model's own mutex for the whole call. Two models are independent even on the
+// same device, so several of them can share a GPU and run in parallel.
 std::vector<VPNetModel::InferenceOutputs> VPNetModel::Inference(
     const std::vector<InferenceInputs>& inputs) {
   int inference_batch_size = inputs.size();
@@ -258,47 +238,35 @@ std::vector<VPNetModel::InferenceOutputs> VPNetModel::Inference(
   // Torch tensors by default use a dense, row-aligned memory layout.
   //   - Their default data type is a 32-bit float
   //   - Use the bool data type for legal-action masks
-  torch::Tensor value_cpu;
-  torch::Tensor policy_cpu;
-  auto run_torch_inference = [&]() {
-    // Clone first to take ownership from the raw blob, then move to device.
-    // This avoids the previous pattern of .to(device).clone() which performed
-    // two allocations: one for the device transfer and one for the clone.
-    torch::Tensor torch_inf_inputs =
-        torch::from_blob(raw_observations.data(),
-                         {inference_batch_size, flat_input_size_})
-            .clone()
-            .to(torch_device_);
-    torch::Tensor torch_inf_legal_mask =
-        torch::from_blob(raw_legal_mask.data(),
-                         {inference_batch_size, num_actions_},
-                         torch::TensorOptions().dtype(torch::kBool))
-            .clone()
-            .to(torch_device_);
+  // Clone first to take ownership from the raw blob, then move to device.
+  // This avoids the previous pattern of .to(device).clone() which performed
+  // two allocations: one for the device transfer and one for the clone.
+  torch::Tensor torch_inf_inputs =
+      torch::from_blob(raw_observations.data(),
+                       {inference_batch_size, flat_input_size_})
+          .clone()
+          .to(torch_device_);
+  torch::Tensor torch_inf_legal_mask =
+      torch::from_blob(raw_legal_mask.data(),
+                       {inference_batch_size, num_actions_},
+                       torch::TensorOptions().dtype(torch::kBool))
+          .clone()
+          .to(torch_device_);
 
-    // Run the inference with gradient tracking disabled.
-    // NoGradGuard prevents LibTorch from building the autograd computation
-    // graph, saving memory and compute since we never backprop through
-    // inference.
-    model_->eval();
-    torch::NoGradGuard no_grad;
-    std::vector<torch::Tensor> torch_outputs =
-        model_(torch_inf_inputs, torch_inf_legal_mask);
+  // Run the inference with gradient tracking disabled.
+  // NoGradGuard prevents LibTorch from building the autograd computation
+  // graph, saving memory and compute since we never backprop through
+  // inference.
+  model_->eval();
+  torch::NoGradGuard no_grad;
+  std::vector<torch::Tensor> torch_outputs =
+      model_(torch_inf_inputs, torch_inf_legal_mask);
 
-    // Move outputs to CPU in a single transfer, then use accessors for
-    // zero-overhead element access. This replaces the previous per-element
-    // .item<>() pattern which triggered a GPU-to-CPU sync on every call.
-    value_cpu = torch_outputs[0].to(torch::kCPU).contiguous();
-    policy_cpu = torch_outputs[1].to(torch::kCPU).contiguous();
-  };
-
-  absl::Mutex* device_mu = InferenceMutexForDevice(TorchDeviceName(device_));
-  if (device_mu == nullptr) {
-    run_torch_inference();
-  } else {
-    absl::MutexLock lock(device_mu);
-    run_torch_inference();
-  }
+  // Move outputs to CPU in a single transfer, then use accessors for
+  // zero-overhead element access. This replaces the previous per-element
+  // .item<>() pattern which triggered a GPU-to-CPU sync on every call.
+  torch::Tensor value_cpu = torch_outputs[0].to(torch::kCPU).contiguous();
+  torch::Tensor policy_cpu = torch_outputs[1].to(torch::kCPU).contiguous();
 
   auto value_acc = value_cpu.accessor<float, 2>();
   auto policy_acc = policy_cpu.accessor<float, 2>();

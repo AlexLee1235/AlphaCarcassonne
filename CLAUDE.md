@@ -11,48 +11,56 @@
 >
 > **設定**：2 人、基本版、**關閉農夫**。
 >
-> **修訂紀錄**
-> | 版本 | 內容 |
-> |---|---|
-> | v1 | 主張「CNN 在結構上算不出終局待結分」。**錯誤**，v2 已整節重寫 |
-> | v2 | 修正 §2；刪除「元件大小 / 盾牌數 / 封口旗標需要廣播」三個錯誤建議 |
-> | v3 | §2.4-c 從論證升級為權重實測；加入參數預算與占用率熱圖 |
-> | v4 | 加入 trunk 有效感受野的實測（§2.4-b）；新增 §2.4-d 損失函數；修正 §3.8 對和局的誇大；把 WDL 從落地順序第 1 步拆出（§7）；所有量測程式收進 `tools/`（見附錄） |
-> | v5 | 新增 §3.10（meeple 動作空間：去重是對的、索引語義才是弱點）；**修正 §5 的 meeple head** —— 原本的 `pooled → MLP` 設計不好，改成空間讀取（新增 §5.4）；§6.5 補上旋轉增強必須置換 meeple 邊動作 |
-> | **v7（本版）** | 新增 **§5.5 policy head 改法整理版**（含順序對齊、gpool 偏置、與旋轉增強的關係、**#5 必須排在 #4 之後**）與 **§9.4 程式碼**；§2.4-e 補上 `0916` 實測的 `policy_linear` 列範數衰減（邊角剩 15%、起始磚格歸零），把 Adam+耦合 L2 的機制講成「固定步長收縮」。**第一次實機驗證**：`0916` 跑了 §7 #1（value head 32 通道 + global pooling）+ 旋轉增強，**eval 由 −0.93 翻正到 +0.14**（新增 §1.5）。更正 v1–v6 的兩處記述：`temperature_drop` 在 0904 就已經是 10（不是 30），以及 0904 的真正病灶是**過擬合**（train MSE 0.32 vs self-play raw accuracy 0.50–0.60），不只是欠擬合。§7 #1 標記完成、§8 測試 5 標記通過 |
-| v6 | **移除分差的 bucket one-hot**，改多尺度 clip（§4.3、§9.2）；§2.4-c 補上 **Adam + 耦合 L2** 的機制，解釋那 93 格為何低於初始值；**更正 §6.6** —— optimizer 是 Adam（1e-4 屬正常值），且 gradient update 是 24,704 次 vs AGZ 700k（差 28× 不是 3600×）；新增 §6.5b（`reuse` 不要 ×4）與 §6.7 的 held-out loss；§6.5 標記為已實作並驗證；§7 重排 |
+> **引用規範**：凡是「KataGo / AGZ 怎麼做」的敘述，都必須標註是否查證過。
+> 未查證的一律寫成「我相信…但未確認」，不得當作背書使用。
+>
+> **修訂紀錄**:本文只保留**最新結論**。過程中被推翻的主張集中在文末
+> 「附錄:已撤銷的主張」,不在正文重述。目前為 **v11**(0919 之後)。
 
 ---
 
 ## 0. TL;DR
 
+五個 run 之後,原始診斷的九項有六項已修掉。**eval −0.656 → +0.68,而且用不到 1/7 的訓練量。**
+
+| 版本 | 訓練量 | 時數 | eval | 這一輪加了什麼 |
+|---|---|---|---|---|
+| `0904` | 16.1M states | 172.6 h | **−0.656** | 原始架構(193 步從沒翻正) |
+| `0914` | 2.80M | 17.0 h | −0.560 | value head 32ch + pooling |
+| `0916` | 4.07M | 26.5 h | +0.14 | ＋旋轉增強 |
+| `0918` | 4.07M | 28.3 h | +0.56 | ＋conv policy head |
+| `0919` | **2.23M** | 23.1 h | **+0.68** | ＋pending/元件平面/21×21/global vector |
+
+### 已解決
+
+| # | 問題 | 修在哪 | 現況 |
+|---|---|---|---|
+| 2 | value head 形狀跟「有號空間求和」不合(1 通道 + ReLU 砍掉 47%;`cos(eff,1)=0.048`) | 0914 | 32ch + mean‖max pooling |
+| 4 | `opens` 完全不在觀測裡 | 0919 | 4 個元件平面 |
+| 5 | 15×15 裁掉 31% 的對局 | 0919 | 21×21 |
+| 6 | 68% 的參數卡在 policy head 全連接,而且實測正在歸零(邊角剩初始值 15%、起始磚格 0.000) | 0918 | conv head,4,586 參數;四個 rot 通道範數 0.78–0.81(**高於**初始值) |
+| 8 | 62% 的輸入是空間常數廣播平面 | 0919 | 70 維 global vector 獨立輸入 |
+| — | (新發現)value 在 buffer 上背答案:train MSE 0.32 / self-play 只有 55% | 0916 | 旋轉增強;train MSE 升到 0.62,泛化大改 |
+
+### 未解決
+
 | # | 問題 | 證據 | 嚴重度 |
 |---|---|---|---|
-| 1 | **value 的「和」只存在於最後一步**，trunk 傳不動、policy head 看不到。實測 trunk 有效感受野在 r=7 已衰減到 **0.29**、r=10 剩 **0.047** | §2.4-b | 最高 |
-| 2 | **value head 的形狀跟「有號空間求和」不合**：1 通道 + ReLU 砍掉 **47%** 的格子；有效讀出與均勻求和的 cosine 只有 **0.048**；93 個週邊格子的權重**還停在初始值** | §2.4-c | 最高 |
-| 3 | **沒有對「數值」的直接監督**：唯一訊號是對 ±1 做 MSE，中間隔著硬閾值 | §2.4-a | 高 |
-| 4 | **`opens` 完全不在觀測裡** —— 唯一無法由局部推導的全域量，而封口 ×2 是最大的單一分數槓桿 | §3.3 | 高 |
-| 5 | **15×15 棋盤 31% 的對局會被截斷**，還製造永遠填不掉的假開口 | §3.6 | 中高 |
-| 6 | **68% 的參數卡在 policy head 的一層全連接**，而且實測**正在歸零**：`policy_linear` 的 per-(x,y) 列範數，邊角只剩初始值的 **15%**，起始磚那格是**乾淨的 0.000** | §2.4-e、§5.5 | **最高（未解）** |
-| 7 | **tanh 飽和在錯得最離譜時把梯度掐掉**（stage 3 的 max 處衰減 1.1 萬倍） | §2.4-d | 中 |
-| 8 | 62% 的輸入張量是空間常數廣播平面 | §3.5 | 中 |
-| 9 | `temperature_drop` 單位錯誤、`policy_alpha=1.0` 過大、800 sims 幾乎沒有深度 | §6 | 中 |
+| 3 | **沒有對「數值」的直接監督**:唯一訊號是對 ±1 做 MSE,中間隔著硬閾值 | §2.4-a | **最高** —— 中盤(stage 3–4,raw 0.73 / 0.79)是唯一還沒被碰過的瓶頸,而靜態特徵補不了它(§2.1) |
+| 7 | tanh 飽和在錯得最離譜時把梯度掐掉(stage 3 的 max 處衰減 1.1 萬倍) | §2.4-d | 中(與 3 同一個解:score head) |
+| 1 | trunk 有效感受野 r=7 只剩 **0.29**、r=10 剩 0.047 | §2.4-b | 中(gpool bias 已繞過大半,但 trunk 本身沒變) |
+| 9 | `temperature_drop` 單位錯誤(只覆蓋 4.2% 的對局)、`policy_alpha=1.0` 過大、meeple 節點的噪聲純屬汙染 | §6.1–6.2 | 中(三者都在 eval 的雜訊地板以下) |
+| — | **量測本身**:eval 在 +0.85 之後解析度不足;跨架構的 checkpoint 無法互打 | §8 | 中高 —— `tools/ladder.py` 已寫好,但需要 `ModelConfig` 帶 head 型別才能回溯比較 |
 
-**最重要的單一指標（已更新）**：
-
-| 版本 | 訓練量 | eval vs 800-sim rollout MCTS |
-|---|---|---|
-| `0904`（原始架構） | step 193 / 16.1M states | **−0.656**（193 步從沒翻正過，最好 −0.656） |
-| `0916`（做完 #1 + 旋轉增強） | step 62 / **4.07M** states | **+0.14**（step 37 附近翻正，之後 20 步穩定在 +0.12～+0.18） |
-
-**用 1/4 的資料量，從 −0.93 翻到 +0.14。** 上表 1–9 項裡，只有第 2 項（value head 形狀）被修掉。
-其餘 8 項仍然成立，見 §1.5 的殘餘頭空間量測。
+**最後一手已經解完了**:0919 的網路原始輸出 **0.972**,搜尋只補 +0.002,靜態上限是 0.992。
+**瓶頸整個在中盤**,而 §2.1 的量測顯示那不是再加觀測平面能解的。
 
 ---
 
-## 1. 現況指標
+## 1. 起點:`0904` 的病徵
 
-`learner (7).jsonl` step 193（462 局、113,344 條 trajectory、16.1M states）：
+這一節保留**原始診斷的起點**,後面每一節都是對照它在講。
+`0904/learner (7).jsonl` step 193（462 局、113,344 條 trajectory、16.1M states）：
 
 | stage（0=開局, 6=最後一個決策） | 0 | 1 | 2 | 3 | 4 | 5 | 6 |
 |---|---|---|---|---|---|---|---|
@@ -74,29 +82,33 @@
 
 ---
 
-## 1.5 第一次實機驗證：`0904` → `0916`
+## 1.5 實機驗證:五臂消融 `0904` → `0919`
 
 ### 1.5.1 到底改了什麼
 
-實際比對 `config.json` 與 `checkpoint-62.pt` 的張量形狀（`tools/readckpt.py`）：
+實際比對三份 `config.json` 與三個 checkpoint 的張量形狀（`tools/readckpt.py`）。
+**`0914` 是關鍵的中間臂：它已經有新的 value head，但沒有旋轉增強。**
 
-| 項目 | 0904 | 0916 |
-|---|---|---|
-| **value head** | `conv(32→1,k=1)` → BN(1) → `view(225)` → `Linear(225→32)` → `Linear(32→1)` | **`conv(32→1)` → `conv(32→32,k=1)`；flatten(2) → `mean ‖ amax`(dim=2) → `Linear(64→256)` → `Linear(256→1)`** |
-| value head 參數 | 7,303（1.2%） | 18,081（3.0%） |
-| `augment_rotations` | 無 | **true** |
-| `replay_buffer_reuse` | 3 | 4 |
-| `evaluators` | 1 | 4 |
-| `inference_batch_size` / `cache` | 64 / 262,144 | 128 / 2,621,440 |
-| 其餘 | `nn_width 32`, `nn_depth 8`, `lr 1e-4`, `weight_decay 1e-4`, `policy_alpha 1.0`, `max_simulations 800`, `temperature_drop 10`, `train_batch_size 2048` | **完全相同** |
+| 項目 | 0904 | **0914** | 0916 |
+|---|---|---|---|
+| **value head** | `conv(32→1,k=1)` → BN(1) → `view(225)` → `Linear(225→32)` → `Linear(32→1)` | **新** | **新**：`conv(32→32,k=1)`；flatten(2) → `mean ‖ amax`(dim=2) → `Linear(64→256)` → `Linear(256→1)` |
+| value head 參數 | 7,303（1.2%） | 18,081 | 18,081（3.0%） |
+| `augment_rotations` | 無 | 無 | **true** |
+| `replay_buffer_reuse` | 3 | 3 | 4 |
+| `evaluators` | 1 | 4 | 4 |
+| `inference_batch_size` / `cache` | 64 / 262,144 | 128 / 2,621,440 | 128 / 2,621,440 |
+| 其餘 | `nn_width 32`, `nn_depth 8`, `lr 1e-4`, `weight_decay 1e-4`, `policy_alpha 1.0`, `max_simulations 800`, `uct_c 2.0`, `eval_levels 1`, `temperature_drop 10`, `train_batch_size 2048` | **相同** | **相同** |
+
+eval 對手三臂完全一致（`eval_levels 1`、800 sims、`uct_c 2.0`），`evaluators` 只影響每點的樣本數，不影響對手強度。
+所以 **0904→0914 隔離 value head，0914→0916 隔離旋轉增強**。
 
 **沒有動到的**：input conv 仍是 `(32, 80, 3, 3)` → 觀測仍是 80 planes、`BOARD_SIZE` 仍是 15；
 policy head 仍是 `Linear(450→906)`（408,606 參數 = **68.1%**）；optimizer 仍是 `Adam` + `losses()` 裡的顯式 L2。
 
-也就是說 **§7 的 #2、#3、#4、#5、#8、#9、#10、#11 一個都還沒做**。翻正只靠 #1 + 旋轉增強。
+也就是說 **§7 的 #2、#3、#4、#5、#8、#9、#10、#11 一個都還沒做**。翻正只靠 #1 + 旋轉增強，
+而 §1.5.5 的三臂拆分顯示**兩者缺一不可，而且真正讓迴圈轉起來的是旋轉增強，不是 #1**。
 
-> 修正 v1–v6 的記述：`temperature_drop` 在 0904 就已經是 10，**不是 30**。§6.1 對這個值的批評仍然成立
-> （10 個 history entry ≈ 3.3 手 ≈ 全局的 2.3%），只是它不是這一輪的變因。
+> `temperature_drop` 五臂都是 10,不是變因。§6.1 對這個值的批評仍然成立。
 
 ### 1.5.2 對照表
 
@@ -151,20 +163,101 @@ target 是 `Returns() = ±1`（`model.cc` 裡是純 `MSELoss`）。
 單點 +0.14 在 50 局視窗下約 1 個標準誤（SE ≈ √(0.96/50) ≈ 0.14），但 **25 步單調上升 + 20 步穩定在正值**不是雜訊。
 `evaluators 1 → 4` 也讓每點的樣本數從 n=5～30 變成 n=116，0904 的 eval 數字本來就不可信（但 193 步全是負的，結論不變）。
 
-### 1.5.5 殘餘頭空間（§7 #2 的預測仍然成立）
+### 1.5.5 歸因拆分：value head 抬高天花板，旋轉增強讓迴圈轉起來
 
-最後一手（stage 6）：
+三臂在**同訓練量 2.80M states** 的對照：
+
+| | value head | 旋轉增強 | eval | policy underfit gap | raw s6 | MCTS s6 | 搜尋補的量 |
+|---|---|---|---|---|---|---|---|
+| 0904 step 32 | 1 通道瓶頸 | 無 | **−1.000** | 0.445 | — | 0.981 | — |
+| **0914 step 32** | 32ch + pool | 無 | **−0.560** | **0.450** | **0.718** | 0.972 | **+0.254** |
+| 0916 step 43 | 32ch + pool | **有** | **+0.180** | **0.368** | **0.872** | 0.985 | **+0.113** |
+
+**兩個改動各拿走大約一半的 eval，但機制完全不同。**
+
+`0914` 的 eval 32 步 / 17 小時幾乎沒動：
+
+```
+step  4    8   12   16   20   24   28   32
+    −.67 −.80 −.80 −.69 −.70 −.64 −.56 −.56
+```
+
+而且它的 `pred_entropy − target_entropy` 是 **0.450**，跟 0904 的 0.445 完全一樣 ——
+**§1.5.6 那個棘輪的第 ② 環（蒸餾）還是壞的。** 具體證據是 `0914` 的網路原始輸出在最後一手只有
+**0.718**，MCTS 要補 **+0.254**：搜尋知道一大堆網路吃不下去的東西。
+到了 `0916`，raw 升到 **0.872**、搜尋只補 **+0.113** —— 網路把搜尋的知識吸收了。
+
+> **#1 抬高了可達到的水準（−1.00 → −0.56），但讓迴圈真正開始轉的是旋轉增強（−0.56 → +0.18）。**
+> 兩者缺一不可，而在「讓棘輪咬合」這件事上，旋轉增強是主因。
+> 對應的解釋見 §6.5 —— 增強把 buffer 的有效多樣性 ×4，壓掉記憶，
+> 網路才有辦法把 MCTS 的改進一般化到新局面而不是背下舊局面。
+
+### 1.5.6 為什麼「平」不等於「慢」
+
+AZ 的進步是**乘在一個迴圈上**的，不是加在步數上：
+
+```
+① 搜尋把策略變強：MCTS(π) 強過 π          ← 迴圈裡唯一的新資訊來源
+② 蒸餾把強度收回網路：訓練 π → MCTS(π)
+③ 更強的 π 讓下一輪的 MCTS 更強 → 回到 ①
+```
+
+loss 大致持平是**健康**的：① 打開的縫和 ② 關上的縫速度相當，而 target 本身在移動
+（policy target 是當下網路跑 MCTS 的訪問分佈，value target 是當下網路自對弈的勝負），
+所以「KL = 0.35」在第 10 步和第 500 步意思不同。
+
+**但 ② 一旦失敗，迴圈一圈都不會轉** —— 下一輪的 MCTS 從同一個沒進步的網路出發，
+產生同樣品質的棋譜，永遠。那是一個**不動點**，不是慢收斂。跑 N 倍 = N × 0。
+
+三臂的 gap 曲線就是這件事：
+
+```
+0904   step  10   20   40   60  100  150  193
+            .52  .51  .46  .42  .41  .44  .44      ← 第 40 步之後 150 步不動
+0914   step   8   16   24   32
+            .36  .60  .48  .45                     ← 同樣停在 .45
+0916   step  10   20   40   60   62
+            .51  .34  .34  .35  .35                ← 降到 .33 附近
+```
+
+**判別法**：AGZ 的 Elo 曲線從第一個小時就在爬（約 36 小時超過 AlphaGo Lee），
+從來沒有「先平一段再起飛」。健康的 AZ run 第一圈就會動。
+**如果對固定對手的分數在前段完全不動，多跑同樣的東西不會有幫助。**
+
+再補一個純統計的理由：power law `L = L∞ + A·C^(−α)` 是平滑的。
+0904 把算力加 4 倍（4M → 16M states）換到 **0**，代表已經在漸近線上；
+從 24,704 updates 到 AGZ 的 700k 是再 28 倍，沒有機制讓「4 倍給 0」變成「28 倍給很多」。
+
+**成本對照**（用實測 throughput）：
+
+| | 實際 | gradient updates | 到 70 萬 updates |
+|---|---|---|---|
+| 0904 | 193 步 / **172.6 小時** | 24,704 | ~205 天不停機 |
+| 0914 | 32 步 / **17.0 小時** | 4,096 | — |
+| 0916 | 62 步 / **26.5 小時** | 7,936 | ~99 天不停機 |
+
+> **誠實的讓步**：AGZ 本身證明 1 通道 head 在 `256ch × 20 blocks + 490 萬局` 下是**充分**的。
+> 問題不是「不行」，是**沒效率**，而且那個沒效率在這個預算下是致命的：
+> 99 天 vs 一個 head 改動加一個增強換到的 26.5 小時。
+
+### 1.5.7 剩下的頭空間在哪
+
+**最後一手已經解完了**(0919 step 34):
 
 | | 準確率 |
 |---|---|
-| `sign(banked)` 單獨（= 現在觀測裡唯一的分數訊號） | 0.717（§2.1 實測） |
-| **0916 網路原始輸出** | **0.918** |
-| 0916 MCTS root（搜尋補上 +5.8 分） | 0.976 |
-| `sign(static_diff)`（banked + pending） | **0.992**（§2.1 實測） |
+| `sign(banked)` 單獨(= 舊觀測裡唯一的分數訊號) | 0.717 |
+| 0918 網路原始輸出 | 0.918 |
+| **0919 網路原始輸出**(pending 進觀測之後) | **0.972** |
+| 0919 MCTS root | 0.974 —— **搜尋只補 +0.002** |
+| `sign(static_diff)` 的靜態上限 | 0.992 |
 
-**網路自己走到 0.918，但 §7 #2 那條「把 pending 直接餵進去」的 0.992 還在原地。**
-中局的落差更大：stage 4 raw 只有 0.706，而 §2.1 的 `static` 在 60–70% 進度已經是 0.852。
-`raw_value_accuracy` 這一欄現在就是 #2 / #3 的儀表板 —— 做完之後 stage 4–6 應該分別往 0.85 / 0.93 / 0.99 走。
+**中盤沒有已知的目標值,而且靜態特徵補不了它。** 0919 的 raw stage 3 / 4 是 0.730 / 0.786,
+而強玩家分佈下 60–70% 的 `acc(static)` 是 **0.788** —— 網路已經跟那個靜態預測器打平。
+餵 pending 的效益隨進度單調遞減(stage 6 `+0.054`、stage 4 `+0.018`、stage 0 `−0.053`),
+在中盤 static 甚至比 banked 還差(§2.1 警告框)。
+
+**所以下一步不是再加觀測平面,是 §7 #10 的 score head**(對數值的直接監督),或更多搜尋。
 
 ---
 
@@ -190,6 +283,36 @@ bucket        n   acc(banked)  acc(static)  E|pending|  E|banked|  corr(static,f
 
 LAST decision ply:   acc(banked) = 0.717      acc(static) = 0.992
 ```
+
+> ### ⚠ 這張表是**隨機對局**的分佈,不能拿來當強玩家的基準
+>
+> 亂下的人不會翻盤 —— A 在 67% 領先 10 分,兩邊繼續亂下 A 就一直領先,所以中盤分差
+> 特別能預測勝負。訓練好的網路是兩個勢均力敵的強玩家在下,局面咬得更緊。
+> 用 greedy(最大化 `banked + pending`)當強玩家代理重量一次
+> (`tools/diag_value_gap_strong`,各 300 局):
+>
+> | 對局進度 | random: acc(bank) | random: acc(static) | greedy: acc(bank) | greedy: acc(static) |
+> |---|---|---|---|---|
+> | 30–40% | 0.480 | 0.672 | 0.633 | **0.591** |
+> | 40–50% | 0.539 | 0.720 | 0.698 | **0.671** |
+> | 60–70%（≈ stage 4） | 0.613 | **0.839** | 0.783 | **0.788** |
+> | 80–90% | 0.649 | 0.936 | 0.841 | 0.870 |
+> | 最後一手 | 0.652 | 1.000 | 0.879 | 0.983 |
+>
+> `mean|final diff|`:random 8.15 / greedy 19.81。
+>
+> **兩個結論:**
+>
+> 1. **中盤的 `acc(static)` 在強玩家分佈下掉了 5 個百分點**(0.839 → 0.788),
+>    而 0919 的 raw stage 4 是 **0.786** —— 網路早就跟它打平了,那個「缺口」是分佈錯配造成的假象。
+> 2. **在強玩家分佈下,中盤的 static 比 banked 還差**(30–50% 那兩格)。
+>    greedy 去搶大城,pending 被灌水但那些城不一定封得起來 ——
+>    **pending 在終局是好特徵,在中盤是誤導的**。這正好解釋 0919 實測的單調遞減:
+>    stage 6 `+0.054`、stage 4 `+0.018`、stage 0 `−0.053`。
+>
+> **並且:`acc(static)` 從來就不是上限。** 它只是一個啟發式預測器的準確率,網路可以超過也可以輸給它。
+> 把它當上限只在**最後一手**成立(那時幾乎沒有未來,static 逼近貝氏最優,所以 0.992 是真的天花板)。
+> 往前推不成立。**中盤目前沒有已知的目標值。**
 
 **最後一手只看 banked 分差是 71.7%，加上 pending 是 99.2%。**
 stage 5 的 0.751 幾乎就等於 banked baseline —— value head 整局大部分時間沒有提供
@@ -324,7 +447,7 @@ value_linear2 Linear(32 → 1), tanh  [B,   1]             33
 我們希望它算 `v_raw = Σ_cells s(c)`，`s(c)` 是那格的**有號**待結分。
 
 **理論上 1 通道做得到嗎？做得到。** 若 `â_c = s(c) + C` 且 C 大到讓每格都 > 0，
-ReLU 退化成恆等、求和完全正確。所以「1 通道不可能做有號求和」是**錯的**（v2 講太重）。
+ReLU 退化成恆等、求和完全正確 —— 所以「1 通道**不可能**做有號求和」並不成立,它只是**沒有**這樣做（下面是實測）。
 自然的 ReLU 寫法（A 學 `max(0,s)`、B 學 `max(0,−s)`、後面相減）需要 2 個通道，
 且**分裂必須發生在 conv** —— `Linear(225→32)` 收到的已經是單一個被截斷過的場，
 在那層做任何線性組合都只是同一個場的另一組位置權重：`Σw⁺·r − Σw⁻·r = Σ(w⁺−w⁻)·r`。
@@ -396,7 +519,7 @@ corr(占用率, |有效權重|)   = +0.614
 > 曾猜測「weight decay 打在 BN γ 上會讓 value head 退化」——**實測否定**：
 > trunk 的 γ ≈ 0.95、value/policy head 的 γ ≈ 1.44。這條不成立。
 
-**為什麼那 93 格會低於初始值：Adam + 耦合 L2**（v6 補上的機制）
+**為什麼那 93 格會低於初始值：Adam + 耦合 L2**
 
 ```cpp
 // vpnet.cc:178  optimizer 沒設 weight_decay
@@ -477,7 +600,7 @@ CE 單調遞增到上限。
 
 另外：62% 的輸入張量是常數平面（§3.5）；193 個 training step（AGZ 是 700k）。
 
-**（v7 新增）這不只是浪費，是主動壞掉 —— 在 `0916/checkpoint-62.pt` 上直接量得到。**
+**這不只是浪費，是主動壞掉 —— 在 `0916/checkpoint-62.pt` 上直接量得到。**
 
 `policy_linear.weight` 是 `(906, 450)`。第 `a` 列只在動作 `a` 合法時才有梯度 ——
 `torch::where(mask, logits, −65536)` 讓不合法動作的 logit 梯度**恰好是 0**。
@@ -520,11 +643,35 @@ AGZ 的 value head **也是 1 個 filter**，圍棋上能動。三個原因：
    終局分數 `Σ_cells ownership(c) − komi` 跟 CNN + global pooling 同構。
 3. 256ch × 20–40 blocks + 4.9M 局。trunk 大到可以硬找出偏移解。
 
+**真正的規則層差異是對稱群，不是「可加性」。**
+圍棋的終局分數同樣是空間求和（`Σ ownership − komi`），所以「卡卡頌可加、圍棋不可加」是錯的說法。
+差別在這裡：
+
+| | 對稱群 | 平移是對稱嗎 | 對 value 讀出的意涵 |
+|---|---|---|---|
+| 圍棋 | **D4**（繞盤心 8 個） | **不是** —— 三三、星位、天元、二線各不相同 | position-dependent readout 是**合理的先驗**，AGZ 的 `flatten(361) → FC` 說得過去 |
+| 卡卡頌（關農夫） | **ℤ² ⋊ C4** | **是** —— 規則沒給棋盤邊界，整盤平移勝負不變 | 讀出**必須**平移不變；225 個逐位置權重是在用 225 個參數學一個常數 |
+
+所以 global pooling 在這裡不是「比較好的選擇」，是**把規則保證的對稱性直接編碼進架構**。
+實測 `cos(有效讀出, 全1) = 0.048`、93 個週邊格子停在初始值，就是那個常數沒被學出來。
+（同理，ResNet 的 head 用 GAP 是因為「圖裡有沒有貓」平移不變 —— 卡卡頌的 value 跟它同類，圍棋的不完全是。）
+
+兩個推論：
+
+- **旋轉增強只能處理 C4（4 個元素），平移群是無限的，沒辦法用增強列舉** ——
+  太大的對稱只能烘進架構。這是 §7 #1 效果大而 §6.5 只有部分效果的結構性原因。
+- **`BOARD_SIZE = 15` 的邊界在圍棋是規則，在卡卡頌是 bug**（§3.6）。
+  一個平移不變的 head 不在乎盤面多大，這也是 §5.5.7 說 conv head 之後 `→ 21` 幾乎零成本的原因。
+
+**另一方面，`1 → 32 通道`那一項跟規則無關。** 圍棋的 ownership 同樣是有號的，
+AGZ 的 head 有一模一樣的「有號量過不了 1 寬 ReLU」弱點，它撐過去靠的是規模，
+而 KataGo 也把它拿掉了。
+
 而 **KataGo 只有 1/50 的算力，還是把它換成 multi-channel + global pooling**，
 並且加回 komi 當 global input、score head、ownership head。
 我們要加的是**規則衍生**特徵（跟 komi、西洋棋的 50 步計數、合法手 mask 同類），不是啟發式知識。
 
-### 2.6 「每一條路都是征子」—— 修正版
+### 2.6 「每一條路都是征子」該怎麼理解
 
 **靜態計分不是征子。** 它是求和，而歸屬已由 `getMeepleMap` 預先算好廣播。
 真正征子性的只有兩件事，而且都**不在觀測裡**：
@@ -537,6 +684,11 @@ AGZ 的 value head **也是 1 個 filter**，圍棋上能動。三個原因：
 ---
 
 ## 3. 觀測內容盤點
+
+> **這一節盤點的是 `0904` 的 80-plane 觀測**(診斷的起點)。
+> 0919 已經換成 49 個空間平面 + 70 維 global vector @ 21×21,
+> 其中 §3.3(`opens`)、§3.5(常數平面)、§3.6(棋盤大小)、§3.9(dense policy head)都已解決。
+> 保留是因為後面的設計都在回應這裡的量測。
 
 ### 3.1 現有 80 個 plane
 
@@ -699,9 +851,9 @@ rot 1:  edges = [C, C, R, R]
 
 原則：**空間的放張量、全域的放向量、無法由局部推導的 reduction 才預先算並廣播。**
 
-### 4.1 board tensor：`48 × 21 × 21`
+### 4.1 board tensor：`53 × 21 × 21`
 
-**A. 幾何 / 磚面（20 planes）**
+**A. 幾何 / 磚面（21 planes，plane 0–20）**
 
 | plane | 內容 |
 |---|---|
@@ -719,7 +871,7 @@ rot 1:  edges = [C, C, R, R]
 | 22–25 | 手上這張磚在該格 rot=0..3 是否合法 |
 | 26 | 上一手落點 |
 
-**C. 元件層級 reduction（4 邊 × 5 = 20 planes）**
+**C. 元件層級 reduction（4 邊 × 6 = 24 planes）**
 
 只保留**無法由局部推導**、或**必須讓 trunk / policy head 看到**的量：
 
@@ -728,15 +880,33 @@ rot 1:  edges = [C, C, R, R]
 | +0 | **`opens`** | `min(opens,6)/6` | §3.3。唯一真正缺的全域量 |
 | +1 | **`getScore()`**（現在結束的話值幾分） | `/12` clip | 讓 policy 知道量級，不必等 global pooling |
 | +2 | **`2×getScore()`**（封口後值幾分） | `/24` clip | 與 +0 搭配才能評估「值不值得封／堵」 |
-| +3 | 我方 meeple − 對手 meeple（已有，保留） | `/3` clip | 正負號 |
-| +4 | 有號待結分 `sign × getScore()` | `/12` clip | 省掉網路做乘法 |
+| +3 | **我方 meeple 數** | `/3` clip | 見下 |
+| +4 | **對手 meeple 數** | `/3` clip | 見下 |
+| +5 | 有號待結分 `sign × getScore()` | `/12` clip | 省掉網路做乘法 |
 
-> **不要加**（v1 的錯誤建議，見 §2.2）：元件 tile 數、元件盾牌數、completed flag。
+> **meeple 一定要兩個獨立計數，不能用差值。**
+> 差值把四種完全不同的情況壓成同一個數：
+>
+> | 情況 | 差值 | 真實意義 |
+> |---|---|---|
+> | (1 我, 1 對手) | 0 | **雙方都拿全部分數**（平手算雙方各得） |
+> | (0, 0) | 0 | 無人佔領，是可以放 meeple 的機會 |
+> | (2 我, 1 對手) | +1 | 我拿分，但綁住我 **2** 個 meeple |
+> | (1 我, 0 對手) | +1 | 我拿分，只綁 1 個 |
+>
+> meeple 只有 7 個，而且**封口時全部歸還** —— 「這個元件封口後我能拿回幾個」就等於我方計數本身，
+> 那正是差值算掉的量。多數決、平手、綁住幾個、能拿回幾個，四件事都要兩個計數才導得出來。
+>
+> （`kMeepleFeaturePlanes = 10`，`kMyMeeplePlane = 15` / `kOpponentMeeplePlane = 20`：
+> 舊觀測的 meeple **位置**平面本來就是分離的，這裡的元件計數是另一回事，同樣要分離。）
+
+> **不要加**（見 §2.2）：元件 tile 數、元件盾牌數、completed flag。
 
 **D. 修道院（2 planes）**：`count3x3/9`、owner sign。
 
-合計 **48 planes @ 21×21 = 21.2k float**（現在 80 @ 15×15 = 18k）。
-砍掉 50 個常數平面、換進真正缺的元件量，成本幾乎持平。
+合計 21 + 6 + 24 + 2 = **53 planes @ 21×21 = 23.4k float**（現在 80 @ 15×15 = 18k）。
+
+> **成本是 +30%**（23.4k vs 18k）。砍掉 50 個常數平面買到的空間，被 21×21 的面積（441 vs 225）吃掉還不夠。
 
 > 實作提示：`FeatureModule::featureMap` 已經有全部欄位（`opens`、`getScore()`、`meeple_count[]`），
 > 寫 observation 時 `getSetData(edgeIndex(id, side))` 取出來即可，**不需要新資料結構**。
@@ -744,7 +914,7 @@ rot 1:  edges = [C, C, R, R]
 ### 4.2 移出張量的
 `kRemainingTileTypePlane`(24)、`kCurrentTile*`(15)、`kLegalMeeplePlane`(5)、`kGlobalFeaturePlanes`(6)。
 
-### 4.3 global vector（約 160 維，**不要廣播**）
+### 4.3 global vector（**69 維**，不要廣播）
 
 | 維度 | 內容 |
 |---|---|
@@ -759,21 +929,23 @@ rot 1:  edges = [C, C, R, R]
 | 8 | phase one-hot(2) + 6 個 meeple 動作合法遮罩 |
 | 1 | 合法落點數 `/100` |
 
+> 逐項相加 `2+1+2+3+2+2+24+24+8+1 =` **69**。（0919 實作為 70 維，多一維把 phase 拆成兩個純量。）
+
 **為什麼還是要放 `static_diff`**（既然 §2.2 說資訊夠）：
 
 1. 省掉一個必須精確到 ±1 分的算術電路，把 32 個通道的容量還給真正需要判斷的東西。
 2. 讓 trunk 每一層和 policy head 都看得到（§2.4-b），而不是只有 value head 的最後一步。
-3. 配合 score-margin 頭，等於對那個算術給出**直接監督**（§2.4-a）。
+3. 配合 score-margin 頭（§7 #10），等於對那個算術給出**直接監督**（§2.4-a）。
 4. §2.4-c 的實測顯示現有 head 根本沒在做那個求和 —— 與其等它學會，不如直接給。
 
-**為什麼是多尺度 clip，不是 bucket one-hot**（v6 修正，先前這裡寫的是 2×31 維 one-hot）
+**為什麼是多尺度 clip，不是 bucket one-hot**
 
 `clip(d/3)` 在 |d| ≤ 3 線性、之外飽和 —— 等於一個**保有解析度的軟正負號函數**，
 而翻盤就發生在 0 附近。`/10` 和 `/30` 負責中段與大局的量級。3 維而不是 62 維。
 
 當初主張 one-hot 的理由是「±1 分決定勝負，壓進一個 scalar 解析度不夠」。三個反駁：
 
-1. **做了 score head（§7 #9）之後，閾值根本不在網路裡算。** 殘差讀出是
+1. **做了 score head（§7 #10）之後，閾值根本不在網路裡算。** 殘差讀出是
    `P(win) = Σ_{k > −static_diff} p(k)` —— 用精確的整數 `static_diff` 當積分下界，
    落在 bin 邊界上、零誤差。網路只負責預測 `Δ` 的分佈，而 `corr(static, Δ)` 只有
    −0.24 ~ +0.06（§2.1 的殘差分解），所以 `static_diff` 作為**輸入**只是弱的情境變數。
@@ -787,16 +959,30 @@ rot 1:  edges = [C, C, R, R]
 > 輸出分箱改變的是**損失函數**（稠密監督、序關係、避開 tanh 飽和 —— §2.4-a、§2.4-d），
 > 輸入分箱只是一個**特徵變換**，網路自己學得出來。
 
-**什麼時候值得回頭試 one-hot**：等 §7 #8（global vector 獨立輸入，31 維只佔 160 維的一小塊、成本可忽略）
-**且** §7 #9（score head）還沒做（閾值還在網路裡算）—— 那個組合下值得當一次 ablation。
+**什麼時候值得回頭試 one-hot**：§7 #9（global vector 獨立輸入）已完成，而 §7 #10（score head）還沒做
+（閾值還在網路裡算）—— 那個組合下值得當一次 ablation。
+
+> 注意 31 維 one-hot 佔 69 維的 **45%** —— 成本不可忽略。結論（輸入用純量）由上面 1–3 三條理由支撐。
 在那之前，31 個廣播平面會把張量從 84 推到 115 個 plane、其中 73% 是空間常數（正是 §3.5 在抱怨的事），
 買的卻是 BN 大半已經給你的東西。
 
 （誠實補充：one-hot 真正獨有的好處是 policy 對分差的最佳反應**分區間**而非單調 ——
 小輸要搶、大輸要賭、小贏要穩、大贏也要穩。多尺度 clip 只能近似。但這個效益是「中等」，不是「必要」。）
 
-**注入方式**（KataGo 做法）：`Linear(160 → C)` 後加到 input conv 輸出當 per-channel bias
-（每 2 個 block 再做一次），**同時** concat 到 value / policy head 的 global pooling 之後。
+**注入方式**：`Linear(69 → C)` 後加到 input conv 輸出當 per-channel bias（每 2 個 block 再做一次），
+**同時** concat 到 value / policy head 的 global pooling 之後。
+
+> **出處(重要)：這不是 KataGo 的背書。**
+>
+> - **已確認**（論文原文）：KataGo 的 *global pooling bias structure* 是
+>   「global pooling layer（輸出 3c_G）→ fully connected 到 c_X → **channelwise addition with X**」。
+>   但那是把**空間激活**池化回偏置，跟「外部 global 向量怎麼進網路」是兩件事。
+> - **未確認**：外部 global 向量是否也用同樣方式注入。論文只說輸入是 `b×b×18` 空間張量
+>   加上「a vector with 10 real values」，交代注入方式的附錄表格沒抓到
+>   （`raw.githubusercontent.com` 被 egress proxy 擋、GitHub blob 頁在 `class Model` 前被截斷）。
+> - 這個設計本身站得住（就是 conditional per-channel bias，FiLM 的加法半邊），
+>   但要用自己的理由撐。查證指令：
+>   `grep -n "linear_global\|conv_spatial\|input_global" python/katago/train/model_pytorch.py`
 
 ---
 
@@ -858,10 +1044,9 @@ FC(64+G → 256) + ReLU                     [B, 256]
 
 ### 5.4 meeple head 也要從空間讀，不要用 pooling + MLP
 
-> 本版修正。先前寫的是 `pooled(W) ⊕ global → MLP → 6`，**那個設計不好**：
-> global pooling 會把「剛放下那一格」整個洗掉，而那一格是唯一相關的地方。
-> 就算補上 last-placed 那格的特徵，head 仍要從一個 W 維向量產生 6 個
-> 「第 0/1/2/3 邊所屬元件」的 logits —— §3.10 那個 join 還是留在 head 裡做。
+> **不要用 `pooled(W) → MLP → 6`**：global pooling 會把「剛放下那一格」整個洗掉，
+> 而那一格是唯一相關的地方；head 還得從一個 W 維向量產生 6 個「第 0/1/2/3 邊所屬元件」的 logits，
+> §3.10 那個 join 等於留在 head 裡做。
 
 **改成跟落子頭一樣，用 1×1 conv 輸出，再從那一格取值：**
 
@@ -886,7 +1071,7 @@ torch::Tensor meeple_logits = (mmap * last_plane).sum({2, 3}); // 用 kLastPlace
 
 ---
 
-### 5.5 policy head 改法（整理版，v7）
+### 5.5 policy head 改法（整理版）
 
 #### 5.5.1 現況與要解的四件事
 
@@ -901,7 +1086,7 @@ policy_logits = where(mask, policy_logits, -65536);
 | # | 問題 | 依據 |
 |---|---|---|
 | P1 | **408,606 參數 = 全網路 68.1%**，全壓在一層 | §2.4-e |
-| P2 | **每個位置一列、列梯度稀疏 + Adam 耦合 L2 → 系統性衰減**（實測 r=7 剩 15%、(7,7) 歸零） | §2.4-e（v7 新增） |
+| P2 | **每個位置一列、列梯度稀疏 + Adam 耦合 L2 → 系統性衰減**（實測 r=7 剩 15%、(7,7) 歸零） | §2.4-e |
 | P3 | **看不到任何全域量**（剩牌、剩 meeple、分差），只有那一格 32 維 trunk 特徵，而 trunk ERF r=7 只剩 0.29 | §2.4-b |
 | P4 | **動作索引語義得自己學**：`(x,y,rot)` 的 (900) 與 meeple 邊索引的旋轉相依 join | §3.9, §3.10 |
 
@@ -989,9 +1174,9 @@ meeple 的 6 個通道順序必須是 `[skip(-1), edge0, edge1, edge2, edge3, mo
 **預測**：#4 做完之後，旋轉增強的邊際效益應該明顯上升，
 而且 `policy_kl`（目前 0.345）應該再降一截。
 
-#### 5.5.7 順序修正：#5（`BOARD_SIZE 21`）必須排在 #4 之後
+#### 5.5.7 為什麼 #5（`BOARD_SIZE 21`）必須排在 #4 之後
 
-§7 原本寫「#5 做完 #1 後幾乎零成本」—— 對 value head 成立（pooling 之後 head 不綁棋盤大小），
+「做完 #1 之後幾乎零成本」只對 value head 成立（pooling 之後 head 不綁棋盤大小），
 **對 policy head 完全相反**：
 
 | | dense head | conv head |
@@ -1101,9 +1286,9 @@ target 是最終 z，包含之後所有抽牌的運氣。建議混合搜尋值�
 
 要動的話 **4 → 6**，不是 4 → 16。超過 8 之後就是純重複，staleness 的代價重新接管。
 
-### 6.6 優化器與 lr（v6 重寫）
+### 6.6 優化器與 lr
 
-**先更正**：optimizer 是 **`torch::optim::Adam`**（`vpnet.cc:178`），不是 SGD。
+optimizer 是 **`torch::optim::Adam`**（`vpnet.cc:178`），不是 SGD。
 Adam + batch 2048 + `lr = 1e-4` 是個**正常值**，不是明顯壞掉的值。
 先前這裡寫「lr 太低是瓶頸」是在沒看 optimizer 的情況下寫的，講太滿。
 
@@ -1164,23 +1349,39 @@ static_cast<torch::optim::AdamOptions&>(
 
 ## 7. 落地順序
 
+**已完成**(依實作順序,證據見 §1.5):
+
+| # | 改動 | 落在哪個 run | 結果 |
+|---|---|---|---|
+| ~~1~~ | ~~value head:1→32 通道 + global pooling~~ | 0914 | eval −1.00 → −0.56(抬高水準,但迴圈沒轉) |
+| ~~6~~ | ~~旋轉增強 ×4~~ | 0916 | eval −0.56 → **+0.14**(這才是讓棘輪咬合的那一項) |
+| ~~4~~ | ~~policy head 改 conv + gpool 偏置;meeple head 空間讀取~~ | 0918 | eval **+0.56**;policy KL 0.345 → 0.252;參數 600k → 196k;`placement_conv` 四個 rot 通道範數 0.78–0.81(高於初始值,權重歸零的病消失) |
+| ~~2~~ | ~~`static_diff` / `pending` 進觀測~~ | 0919 | **raw stage 6 = 0.972**(0918 是 0.918,靜態上限 0.992);搜尋在最後一手只剩 +0.002 可補 |
+| ~~3~~ | ~~`opens` / `getScore()` 元件平面~~ | 0919 | 與 #2/#5/#9 同批,無法單獨歸因 |
+| ~~5~~ | ~~`BOARD_SIZE 15 → 21`~~ | 0919 | 同上;`game_length` 141.9 → 141.8 無退化 |
+| ~~9~~ | ~~全域向量獨立輸入(70 維),移除廣播 plane~~ | 0919 | 同上;觀測 80p·15×15 → **49+1p·21×21** |
+
+0919 合計:eval **+0.68**(2.23M states,只用 0918 一半的訓練量)、policy KL **0.174**。
+
+**待辦**:
+
 | # | 改動 | 工作量 | 動到哪 | 解決 | 效果 |
 |---|---|---|---|---|---|
-| **0** | **held-out loss**（對還沒進 buffer 的 trajectory 算一次 forward-only loss） | ~40 行 | `alpha_zero.cc` | §6.7 | **先做這個** —— 在它之前調 lr / reuse 都是猜 |
-| ~~1~~ | ~~value head：1→32 通道 + global pooling~~ | — | — | — | **已完成並驗證（§1.5）**：eval −0.93 → **+0.14**，stage 4–5 準確率 +13 分 |
-| **2** | `static_diff` / `pending` 進觀測（多尺度 clip，**不要 bucket one-hot**），`tanh(d/30)` → `clip` | ~60 行 | `game.hpp`, `carcassonne.h/cc` | §2.4-a 部分 | 大 |
-| **3** | `opens` / `getScore()` / `2×getScore()` 元件廣播平面 | ~60 行 | `carcassonne.h/cc` | §3.3 | 大 |
-| **4** | **policy head 改 conv + gpool 偏置；meeple head 改空間讀取**（§5.5，程式碼 §9.4） | ~40 行 | 只有 `model.h`/`model.cc` | §2.4-e, §3.9, §3.10 | **大**（參數 408,606 → 4,586；修掉實測的權重歸零） |
-| **5** | `BOARD_SIZE 15 → 21`（**必須排在 #4 之後**，見 §5.5.7） | 一個常數 + action space | `game.hpp` | §3.6 | 中高 |
-| ~~6~~ | ~~旋轉增強 ×4~~ | — | — | — | **已完成並驗證**（§6.5） |
-| **7** | `temperature_drop` 單位、`policy_alpha=10/n`；sims 800→300 **需先做對打實驗**（§6.3） | 幾行 | `alpha_zero.cc` | §6.1–6.3 | 中 |
-| **8** | Adam → AdamW（移除 `losses()` 的顯式 L2） | ~10 行 | `vpnet.cc`, `model.cc` | §2.4-c 的耦合衰減 | 中（#1、#4 之後傷害已減輕） |
-| **9** | 全域向量獨立輸入，移除 50 個廣播 plane | 中等 | model 輸入介面 | §3.5 | 中 |
-| **10** | **score-margin 分佈頭（WDL 由它導出）** | 大 | `losses()`, `vpnet.cc` | §2.4-a, §2.4-d | 大 |
-| **11** | afterstate value（chance node 直接評估） | 大 | `mcts.cc`, `carcassonne.cc` | §6.3 | 大 |
+| **0** | **held-out loss**(對還沒進 buffer 的 trajectory 算一次 forward-only loss) | ~40 行 | `alpha_zero.cc` | §6.7 | **先做這個** —— 在它之前調 lr / reuse 都是猜 |
+| **7a** | `temperature_drop` 改單位(用 `trajectory.states.size()`)並設 20 | 2 行 | `alpha_zero.cc` | §6.1 | 中(現值只覆蓋 4.2% 的對局) |
+| **7b** | `policy_alpha 1.0 → 0.32` | config | — | §6.2 | 中 |
+| **7c** | `kNoiseMinActions`:n ≤ 5 的節點不加 Dirichlet 噪聲 | ~5 行 | `mcts.cc` | §6.2 | 中(meeple 節點 800/1.63 ≈ 490 sims/手,噪聲只是汙染 target) |
+| **8** | Adam → AdamW(移除 `losses()` 的顯式 L2) | ~10 行 | `vpnet.cc`, `model.cc` | §2.4-c 的耦合衰減 | 中(#1、#4 之後傷害已大幅減輕) |
+| **10** | **score-margin 分佈頭(WDL 由它導出)** | 大 | `losses()`, `vpnet.cc` | §2.4-a, §2.4-d | **大 —— 目前最大的一項**;中盤是唯一還沒被碰過的瓶頸,而靜態特徵補不了它(§2.1) |
+| **11** | afterstate value(chance node 直接評估) | 大 | `mcts.cc`, `carcassonne.cc` | §6.3 | 大 |
+| — | **Elo ladder**(`tools/ladder.py`) | 已寫好 | — | §8 | eval 在 +0.85 之後解析度不足,需要更強的錨點 |
 
-> **不建議單獨做 WDL。** 它的效益只有 §2.4-d 的梯度形狀 + 校準可觀測性（中等），
-> 而真正解監督問題的是 score head。既然兩者動到同樣的檔案，就一起做（#9）。
+> **不建議單獨做 WDL。** 它的效益只有 §2.4-d 的梯度形狀 + 校準可觀測性(中等),
+> 而真正解監督問題的是 score head。既然兩者動到同樣的檔案,就一起做(#10)。
+
+> **7a / 7b / 7c 的儀表互不重疊,可以綁在一起跑**(7a 看 stage 0–2 的 value accuracy、
+> 7b/7c 看 `policy_target_entropy`)—— 但 7b 與 7c 共用同一根針,要分開。
+> 它們的效果都在 eval 的雜訊地板以下,不值得各佔一個 run。
 
 ---
 
@@ -1196,8 +1397,10 @@ static_cast<torch::optim::AdamOptions&>(
 4. **有號探針**（`tools/erf.py`）：`plane15 − plane20` 方向的端到端敏感度應處處為正。
    實測只有 89/225 為正 —— 這個數字改完 #1 之後應該大幅上升。
 5. ~~**回歸指標**：AZ vs 800-sim rollout MCTS 的勝率。目前 **−0.656**。改完 #1+#2 應該要翻正。~~
-   → **通過，而且只做 #1 就翻正了**（0916 step 62 = **+0.14**，§1.5）。下一個門檻：做完 #2+#3 之後，
-   `raw_value_accuracy` 的 stage 6 應該從 **0.918 → >0.98**，stage 4 從 **0.706 → >0.85**。
+   → **通過**（0916 = +0.14、0918 = +0.56、0919 = **+0.68**）。
+   `raw_value_accuracy` stage 6 的門檻 **0.918 → >0.97** 也由 0919 達成（**0.972**，用一半訓練量）。
+   > **中盤沒有門檻可設。** 強玩家分佈下 60–70% 的 `acc(static)` 是 0.788，0919 已經是 0.786；
+   > 而 `acc(static)` 本來就不是上限（見 §2.1 的警告框）。要量中盤的真上限需要一個接近完美的玩家。
 6. **policy head 索引對齊**（改動 #4，§5.5.3）：建一個值為 `(y*W+x)*4+rot` 的 `[1,4,H,W]` 張量，
    跑 `permute({0,2,3,1}).contiguous().flatten(1)`，斷言結果等於 `arange(900)`。
    再對每個動作建單一合法 mask，檢查 `argmax(logits)` 等於該動作。**這一步錯了不會 crash，只會學不起來。**
@@ -1262,9 +1465,22 @@ void getPendingScore(int *pending) const {
 }
 ```
 
-> 正式版應改成不複製的 const 累加器（`FeatureModule` / `MonasteryModule` 各加一個
-> `accumulatePending(int*) const`，用 `find(i) == i` 掃 root），約 0.5–1 µs。
-> 用上面的複製版當 oracle 寫等價測試 —— `tools/common.hpp` 的 `diag::PendingDiff` 就是它。
+> **逐行稽核(對照 `FeatureModule.cpp` / `MonasteryModule.cpp` / `DisjointSet.hpp` 實機確認):**
+>
+> - **非冪等確認成立。** `FeatureModule::resolveEndGameScore` **不歸零** `meeple_count`
+>   (對照它上面的 settle 函式:那支有 `meeple_count[0]=0` 並 `holding_meeples += m0`),
+>   `MonasteryModule::resolveEndGameScore` 也不清 `active_monasteries`。第二次呼叫會完整重複加一次。
+>   **複本模式是必要的,不是保守。**
+> - **`PHASE_TERMINAL` guard 剛好夠。** 全 repo 只有一處指派 `PHASE_TERMINAL`
+>   (`game.cpp:43`,`resolveNoMoreDraws()`),而它下一行就呼叫 `resolveEndGameScore()`。
+>   guard 精確覆蓋唯一的重複計分路徑。
+> - **不需要自己寫 `find(i)==i`。** `DisjointSet` 的 `begin()/end()` **本來就是 `RootIterator`**
+>   (內含 `advanceToNextRoot()`),所以現有的 `resolveEndGameScore` 已經只掃 root、沒有重複計分。
+>   const 累加器只要補一個 `begin() const / end() const` 的 const 版 RootIterator 即可。
+> - **成本定位:** 複本版約 3–5 µs。相對於推論路徑上本來就有的 ~34 µs 三次複製 + ~13 µs 的 72KB hash,
+>   約 **+8%**。const 累加器版可降到 ~1%。
+>   **先用複本版(正確性優先),accumulator 當後續最佳化,並用複本版當 oracle 寫等價測試** ——
+>   `tools/common.hpp` 的 `diag::PendingDiff` 就是它。
 
 `carcassonne.cc` — `ObservationTensor` 尾段：
 
@@ -1282,25 +1498,52 @@ BroadcastPlane(values, kScoreDiffPlane,      clip(banked / 20.0f));  // tanh(d/3
 BroadcastPlane(values, kStaticDiffPlane,     clip(statd  / 30.0f));  // 大局量級
 BroadcastPlane(values, kStaticDiffMidPlane,  clip(statd  / 10.0f));  // 中段
 BroadcastPlane(values, kStaticDiffFinePlane, clip(statd  /  3.0f));  // 決勝區間
-BroadcastPlane(values, kPendingMinePlane,    pending[player] / 20.0f);
-BroadcastPlane(values, kPendingOppPlane,     pending[opp]    / 20.0f);
+BroadcastPlane(values, kPendingMinePlane,    clip(pending[player] / 40.0f));  // v9: 加 clip、20->40
+BroadcastPlane(values, kPendingOppPlane,     clip(pending[opp]    / 40.0f));
 ```
+
+> **`pending` 一定要 clip。** 用 `pending / 20.0f` 不 clip 是 bug:
+> `tools/diag_pending_scale`(3000 局)量到的**單一玩家** pending 量級:
+>
+> ```
+> 全程平均      mean 14.61   p90 25   p99 32   max 46    |x|>20: 25.0%
+> 最後一手      mean 22.00   p90 29   p99 36   max 46    |x|>20: 58.2%
+> ```
+>
+> `/20` 會產生**routinely > 1、最大到 2.3 的無界輸入**,而且在最需要精度的最後一手有
+> **58%** 的樣本超出 1。改成 `clip(x/40)`:最後一手 p99 = 0.90、max = 1.15,clip 幾乎不咬。
+>
+> 對照之下**分差**的尺度是對的(`pending` 分差 mean|.| 5.55、p99 17、max 33),
+> 所以 `static_diff` 那三個 `/3`、`/10`、`/30` 不用動。
+>
+> **順帶一個發現:單一玩家 pending 平均 14.61,但分差只有 5.55 —— 兩邊高度相關。**
+> 也就是說差值把「盤面上還有 ~30 分沒結算」這件事完全藏起來了。
+> 這反而強化了「pending 要兩個獨立平面、不能只給差值」的理由(跟 §4.1-C 的 meeple 同一個道理)。
 
 plane 配置（`kGlobalFeaturePlanes` 6 → 11，`kObservationPlanes` 80 → 85）：
 
 ```cpp
-inline constexpr int kStaticDiffPlane     = 80;
-inline constexpr int kStaticDiffMidPlane  = 81;
-inline constexpr int kStaticDiffFinePlane = 82;
-inline constexpr int kPendingMinePlane    = 83;
-inline constexpr int kPendingOppPlane     = 84;
+// v9: 不要硬編碼 80。kObservationPlanes 是由各段相加推導出來的，寫相對位置才不會默默錯位。
+inline constexpr int kStaticDiffPlane     = kCurrentPlayerIsPlayer0Plane + 1;
+inline constexpr int kStaticDiffMidPlane  = kStaticDiffPlane + 1;
+inline constexpr int kStaticDiffFinePlane = kStaticDiffPlane + 2;
+inline constexpr int kPendingMinePlane    = kStaticDiffPlane + 3;
+inline constexpr int kPendingOppPlane     = kStaticDiffPlane + 4;
 static_assert(kObservationPlanes == kPendingOppPlane + 1);
 ```
 
-**三個必寫的測試**：
-(1) 不複製的 const 版對複製版等價；
-(2) terminal 狀態 `getPendingScore` 回 `{0,0}`；
-(3) 同一盤面 `ObservationTensor(0)` 與 `ObservationTensor(1)` 的 `kStaticDiff*` 平面剛好相反號。
+> **旋轉增強不用改。** `RotateObservation` 是用 `RotationSourceIndices()` 掃整個張量、
+> 再單獨修正 legal-meeple 的側面重新命名。**空間常數平面旋轉後仍是同一個常數**,
+> 所以這 5 個新平面自動正確。唯一要確認的是 `RotationSourceIndices()` 是從
+> `kObservationPlanes` 推導、不是寫死 80 —— 加一個 `static_assert` 釘住。
+
+**必寫的測試**:
+(1) 不複製的 const 版對複製版等價;
+(2) terminal 狀態 `getPendingScore` 回 `{0,0}`;
+(3) 同一盤面 `ObservationTensor(0)` 與 `ObservationTensor(1)` 的 `kStaticDiff*` 平面剛好**相反號**;
+(4) **同一盤面兩個視角的 `kPendingMine` / `kPendingOpp` 是「互換」不是「取負」** ——
+    原本的測試 (3) 只覆蓋了差值平面,漏掉這兩個;寫錯成取負不會 crash,只會餵進錯的特徵;
+(5) **`getPendingScore` 對同一個 state 連呼叫兩次結果相同**(確認複本模式真的隔離了非冪等)。
 
 **連帶**：舊 checkpoint 不能載（輸入通道變了）、inference cache 全失效、
 `integration_tests/playthroughs/carcassonne.txt` 要重新產生。
@@ -1411,6 +1654,13 @@ SPIEL_CHECK_EQ(num_actions, 4 * height * width + num_extra_actions_);
 
 ## 附錄：診斷工具
 
+> **工具一覽(續)**：
+> - `diag_branching` —— 合法手數 n 的分佈（PHASE_TILE mean 30.95 / PHASE_MEEPLE mean 1.63，n=1 佔 58.5%），用來定 `policy_alpha` 與噪聲門檻（§6.2）
+> - `diag_luck` —— 同牌序成對對局量「運氣天花板」：greedy vs greedy **100% 分帳**、greedy vs random 只到 **0.829**
+> - `diag_value_gap_strong` —— §2.1 換成 greedy 分佈重量一次（見 §2.1 的警告框）
+> - `ladder.py` + `ladder_config.example.json` —— Bradley-Terry Elo 階梯，對局引擎直接用 `build/examples/alpha_zero_torch_game_example`
+
+
 全部的量測程式都已收進 **`AlphaCarcassonne/tools/`**，附 `Makefile` 與 `README.md`。
 不需要 OpenSpiel 本體、CMake 或 libtorch：C++ 只依賴 `open_spiel/games/carcassonne/game/`
 底下的純引擎，Python 只需要 numpy。
@@ -1441,3 +1691,37 @@ python3 ../erf.py            ck.npz                # 有效感受野 / 端到端
 **改完 §7 第 1 項之後**：`check_value_head.py` 的 (2)(3) 與 `erf.py` 的 (2)(3)
 會自動偵測新架構並跳過（權重被硬編碼，這些指標失去意義）。
 改盯 `value_conv` 各通道的 BN γ 分佈，以及 raw NN value 分 stage 的 sign accuracy。
+
+---
+
+## 附錄:已撤銷的主張(不要再提)
+
+正文只留最新結論。以下是過程中被推翻的主張,列在這裡是為了不要再被重新提出來 ——
+每一條旁邊是**推翻它的證據**。
+
+| 曾經主張 | 為什麼錯 |
+|---|---|
+| CNN 在結構上算不出終局待結分 | `diag_local_decomp`:純局部規則能重建 **99.17% exact**、MAE 0.008。資訊一直都夠,問題在架構與監督 |
+| 元件 tile 數 / 元件盾牌數 / completed flag 需要廣播 | 盾牌:`diag_opens` 顯示有盾磚型的城市元件恆為 1 個;completed flag:`settleCompletedFeatures` 會清零 `meeple_count`,所以 `meeple_count > 0 ⟹ 未完成` |
+| 1 通道**不可能**做有號求和 | BN 的 β 可以把整張圖抬到全正、後面的 linear 減回偏移。它是**沒有**這樣做(實測 `β/\|γ\| = 0.07`,47% 被截斷),不是做不到 |
+| `policy_alpha = 1.0` 太小 | 方向相反。n=31 時 α=1.0 的 `E[max η]` 是 0.130、α=0.32 是 0.229 —— **1.0 比較平**,噪聲攤太薄 |
+| weight decay 打在 BN 的 γ 上 | 實測 trunk γ≈0.95、head γ≈1.44,沒有被壓。真正的機制是 **Adam + 耦合 L2**:梯度被 RMS 正規化後,更新量變成固定步長的 `−lr·sign(w)` |
+| `lr = 1e-4` 太低是瓶頸 | optimizer 是 **Adam**(`vpnet.cc:178`),1e-4 屬正常值。而且 gradient update 是 24,704 次 vs AGZ 700k,差 **28×** 不是 3600× |
+| `temperature_drop` 在 0904 是 30 | 五臂都是 10 |
+| 每秒 2 GB 的 vector 配置很可怕 | 實測 alloc+zero 只有 1.06 µs,double-zero 佔 0.1%。真正的成本是三次複製(67%)與 72 KB hash(25%) |
+| meeple head 用 `pooled → MLP` | global pooling 會洗掉「剛放下那一格」,而那是唯一相關的位置。改成 `1×1 conv(W→6) ⊙ last_plane → sum`(§5.4) |
+| §4.3 的 global vector 是 160 維 | 逐項相加是 **69**(0919 實作 70)。160 是 bucket one-hot 時期的殘骸 |
+| §4.1 的 board tensor 是 48 planes、成本幾乎持平 | 是 **53**,而且是 **+30%**(23.4k vs 18k) |
+| §4.1-C 的 meeple 用「我方 − 對手」差值 | 差值把「雙方平手都得分」與「無人佔領」壓成同一個 0,也算掉「封口後能拿回幾個」。要兩個獨立計數 |
+| 「global vector 用 `Linear → per-channel bias` 注入」是 KataGo 的做法 | **未查證**。論文只確認了 global *pooling* bias structure(把空間激活池化回偏置),外部 global 向量怎麼進網路沒查到 |
+| 卡卡頌可加、圍棋不可加,所以 value head 的工作不同 | 圍棋的終局分數同樣是空間求和(`Σ ownership − komi`)。真正的規則差異是**對稱群**:圍棋 D4(平移不是對稱)、卡卡頌 ℤ²⋊C4(平移是精確對稱)→ 這才是 GAP 該用的理由(§2.5) |
+| 0916 的翻正主要是 value head(#1)的功勞 | 三臂消融:`0914`(新 head、無增強)eval 平在 −0.56、policy KL 停在 0.447。**讓棘輪咬合的是旋轉增強**(§1.5.5) |
+| dense policy head 的權重衰減是 0904/0914 卡住的原因 | 三臂的衰減曲線**形狀一樣**(0916 也一樣),它是共有的手銬,不是誰被銬得比較緊(§1.5.5) |
+| `raw stage 4` 應該 > 0.85 | 0.85 取自**隨機對局**的分佈。強玩家(greedy)分佈下該格是 **0.788**,而 0919 已經是 0.786。而且 `acc(static)` 本來就不是上限 —— 只有最後一手成立(§2.1 警告框) |
+| eval 的每點樣本數是 `count`(≈116) | `count` 是累計開局數;樣本數被 `evaluation_window = 50` 封頂,實際 N 是 50 / 31 |
+
+**共同的失敗模式有兩個**,值得記住:
+
+1. **把量測來源的分佈當成別處的基準**(AGZ 的規模 → 你的規模;隨機對局 → 訓練好的網路)。
+   `tools/` 的每個數字都該標註「在什麼分佈上量的」。
+2. **憑印象引用外部系統**。凡是「KataGo / AGZ 怎麼做」都要標註查證狀態(見開頭的引用規範)。

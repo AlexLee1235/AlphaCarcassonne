@@ -1,0 +1,26 @@
+{
+  "anchor": "rollout-800",
+  "options": {
+    "binary": "../build/examples/alpha_zero_torch_game_example",
+    "game": "carcassonne",
+    "games_per_pair": 400,
+    "seed": 20260920,
+    "sims": 800,
+    "uct_c": 2.0,
+    "device": "cuda:0",
+    "workers": 16,
+    "az_threads": 4,
+    "az_cache": 262144,
+    "rollout_count": 1,
+    "value_is_current_player": true
+  },
+  "participants": [
+    { "name": "rollout-800",  "type": "mcts", "sims": 800,   "solve": true },
+    { "name": "rollout-2530", "type": "mcts", "sims": 2530,  "solve": true },
+    { "name": "rollout-8000", "type": "mcts", "sims": 8000,  "solve": true },
+    { "name": "0918-ck40", "type": "az", "arch": "convpolicy",
+      "path": "/az_carcassonne_0918", "checkpoint": 40 },
+    { "name": "0918-ck62", "type": "az", "arch": "convpolicy",
+      "path": "/az_carcassonne_0918", "checkpoint": 62 }
+  ]
+}

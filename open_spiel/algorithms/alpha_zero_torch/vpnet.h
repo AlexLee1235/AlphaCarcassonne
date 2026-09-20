@@ -119,6 +119,38 @@ class VPNetModel {
     ActionsAndProbs policy;
   };
 
+  // Buffers for one batch of inference, owned by the calling thread and
+  // reused between batches. Laying out the inputs and reading the outputs
+  // back need neither the device nor the model, so a caller can do both
+  // outside the model's lock and hold it only for RunInference. On CUDA the
+  // host buffers are pinned, which is what lets the copy to the device
+  // overlap the rest of the work.
+  class InferenceStaging {
+   public:
+    InferenceStaging(int max_batch_size, int flat_input_size, int num_actions,
+                     bool pinned);
+
+    // Lays a batch out for the device. At most max_batch_size inputs.
+    void Pack(const std::vector<InferenceInputs>& inputs);
+    // The results of the last RunInference, one per input.
+    std::vector<InferenceOutputs> Unpack(
+        const std::vector<InferenceInputs>& inputs) const;
+
+    int max_batch_size() const { return max_batch_size_; }
+
+   private:
+    friend class VPNetModel;
+
+    int max_batch_size_;
+    int flat_input_size_;
+    int num_actions_;
+    int batch_size_ = 0;
+    torch::Tensor observations_;  // [max_batch_size, flat_input_size], host
+    torch::Tensor legal_mask_;    // [max_batch_size, num_actions], host
+    torch::Tensor value_;         // [batch_size, 1], host
+    torch::Tensor policy_;        // [batch_size, num_actions], host
+  };
+
   // A struct to hold the inputs for training.
   struct TrainInputs {
     std::vector<Action> legal_actions;
@@ -151,6 +183,16 @@ class VPNetModel {
   // Inference: Get both at the same time.
   std::vector<InferenceOutputs> Inference(
       const std::vector<InferenceInputs>& inputs);
+
+  // The device half of an inference: copy the packed batch over, run the
+  // network, copy the outputs back. This is the only part that needs the
+  // model, so it is the only part a caller has to hold it for.
+  void RunInference(InferenceStaging* staging);
+
+  // Sizes a caller needs to build its own InferenceStaging.
+  int FlatInputSize() const { return flat_input_size_; }
+  int NumActions() const { return num_actions_; }
+  bool IsCuda() const { return torch_device_.is_cuda(); }
 
   // Training: do one (batch) step of neural net training
   LossInfo Learn(const std::vector<TrainInputs>& inputs);

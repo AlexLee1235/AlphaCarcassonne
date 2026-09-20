@@ -16,6 +16,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <utility>
 
 #include "open_spiel/abseil-cpp/absl/hash/hash.h"
 #include "open_spiel/abseil-cpp/absl/time/time.h"
@@ -35,6 +36,12 @@ VPNetEvaluator::VPNetEvaluator(DeviceManager* device_manager, int batch_size,
       value_is_current_player_(value_is_current_player),
       queue_(batch_size * threads * 4),
       batch_size_hist_(batch_size + 1) {
+  {
+    DeviceManager::DeviceLoan model = device_manager_.Get(0);
+    flat_input_size_ = model->FlatInputSize();
+    num_actions_ = model->NumActions();
+    pinned_staging_ = model->IsCuda();
+  }
   if (cache_size > 0) {
     cache_shards = std::max(1, cache_shards);
     cache_.reserve(cache_shards);
@@ -117,7 +124,9 @@ VPNetModel::InferenceOutputs VPNetEvaluator::Inference(const State& state) {
   } else {
     std::promise<VPNetModel::InferenceOutputs> prom;
     std::future<VPNetModel::InferenceOutputs> fut = prom.get_future();
-    queue_.Push(QueueItem{inputs, &prom});
+    // The key is already hashed, so hand the observation over rather than
+    // copying it again.
+    queue_.Push(QueueItem{std::move(inputs), &prom});
     outputs = fut.get();
   }
   if (!cache_.empty()) {
@@ -131,6 +140,11 @@ void VPNetEvaluator::Runner() {
   std::vector<std::promise<VPNetModel::InferenceOutputs>*> promises;
   inputs.reserve(batch_size_);
   promises.reserve(batch_size_);
+  // Reused between batches. Packing a batch and reading its results back are
+  // the bulk of the work and neither needs a model, so they happen here,
+  // outside the lock a model is held under.
+  VPNetModel::InferenceStaging staging(batch_size_, flat_input_size_,
+                                       num_actions_, pinned_staging_);
   while (!stop_.StopRequested()) {
     {
       // Only one thread at a time should be listening to the queue to maximize
@@ -145,7 +159,7 @@ void VPNetEvaluator::Runner() {
         if (inputs.empty()) {
           deadline = absl::Now() + absl::Milliseconds(batch_wait_ms_);
         }
-        inputs.push_back(item->inputs);
+        inputs.push_back(std::move(item->inputs));
         promises.push_back(item->prom);
       }
     }
@@ -160,10 +174,14 @@ void VPNetEvaluator::Runner() {
       batch_size_hist_.Add(inputs.size());
     }
 
-    std::vector<VPNetModel::InferenceOutputs> outputs =
-        device_manager_.Get(inputs.size())->Inference(inputs);
+    staging.Pack(inputs);
+    {
+      DeviceManager::DeviceLoan model = device_manager_.Get(inputs.size());
+      model->RunInference(&staging);
+    }
+    std::vector<VPNetModel::InferenceOutputs> outputs = staging.Unpack(inputs);
     for (int i = 0; i < promises.size(); ++i) {
-      promises[i]->set_value(outputs[i]);
+      promises[i]->set_value(std::move(outputs[i]));
     }
     inputs.clear();
     promises.clear();

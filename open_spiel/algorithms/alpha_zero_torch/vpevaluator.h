@@ -64,6 +64,11 @@ class VPNetEvaluator : public Evaluator {
   const int batch_size_;
   const int batch_wait_ms_;
   const bool value_is_current_player_;
+  // What a Runner needs to build its own VPNetModel::InferenceStaging, read
+  // from a model once so the runners do not need one to ask.
+  int flat_input_size_;
+  int num_actions_;
+  bool pinned_staging_;
 
   struct QueueItem {
     VPNetModel::InferenceInputs inputs;

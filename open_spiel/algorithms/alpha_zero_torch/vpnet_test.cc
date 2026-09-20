@@ -128,6 +128,69 @@ void TestModelCreation(const std::string& nn_model) {
 }
 
 // Can learn a single trajectory
+// A batch of real decision states to run through a model.
+std::vector<VPNetModel::InferenceInputs> InferenceBatch(const Game& game,
+                                                        int count) {
+  std::vector<VPNetModel::InferenceInputs> inputs;
+  std::unique_ptr<State> state = game.NewInitialState();
+  while (inputs.size() < static_cast<size_t>(count)) {
+    if (state->IsTerminal()) state = game.NewInitialState();
+    inputs.push_back({state->LegalActions(), state->ObservationTensor()});
+    state->ApplyAction(state->LegalActions()[0]);
+  }
+  return inputs;
+}
+
+void CheckSameOutputs(const std::vector<VPNetModel::InferenceOutputs>& actual,
+                      const std::vector<VPNetModel::InferenceOutputs>& expected,
+                      const std::string& what) {
+  SPIEL_CHECK_EQ(actual.size(), expected.size());
+  for (int i = 0; i < actual.size(); ++i) {
+    SPIEL_CHECK_FLOAT_NEAR(actual[i].value, expected[i].value, 1e-6);
+    SPIEL_CHECK_EQ(actual[i].policy.size(), expected[i].policy.size());
+    for (int j = 0; j < actual[i].policy.size(); ++j) {
+      SPIEL_CHECK_EQ(actual[i].policy[j].first, expected[i].policy[j].first);
+      SPIEL_CHECK_FLOAT_NEAR(actual[i].policy[j].second,
+                             expected[i].policy[j].second, 1e-6);
+    }
+  }
+  std::cout << "  " << what << ": same as Inference()" << std::endl;
+}
+
+// The caller-owned staging is what lets the evaluator pack a batch and read
+// the results back outside the model's lock. Doing it that way has to give
+// exactly what the one-shot Inference() gives, including when the batch is
+// smaller than the buffers and when the buffers are reused.
+void TestStagedInference(const std::string& nn_model) {
+  std::cout << "TestStagedInference: " << nn_model << std::endl;
+  const std::string device =
+      torch::cuda::is_available() ? "cuda:0" : "/cpu:0";
+  std::shared_ptr<const Game> game = LoadGame("tic_tac_toe");
+  VPNetModel model = BuildModel(*game, nn_model, false, device);
+
+  constexpr int kMaxBatch = 8;
+  const std::vector<VPNetModel::InferenceInputs> inputs =
+      InferenceBatch(*game, kMaxBatch);
+  const std::vector<VPNetModel::InferenceOutputs> expected =
+      model.Inference(inputs);
+
+  VPNetModel::InferenceStaging staging(kMaxBatch, model.FlatInputSize(),
+                                       model.NumActions(), model.IsCuda());
+  // A full batch, then a partial one in the same buffers, then a full one
+  // again: a batch must not see anything left over from the batch before.
+  for (int batch_size : {kMaxBatch, 3, kMaxBatch}) {
+    const std::vector<VPNetModel::InferenceInputs> batch(
+        inputs.begin(), inputs.begin() + batch_size);
+    staging.Pack(batch);
+    model.RunInference(&staging);
+    CheckSameOutputs(
+        staging.Unpack(batch),
+        std::vector<VPNetModel::InferenceOutputs>(
+            expected.begin(), expected.begin() + batch_size),
+        absl::StrCat("batch of ", batch_size));
+  }
+}
+
 // Models are independent of each other, even on one device: the only thing
 // serializing a model is the mutex DeviceManager holds per model, so several
 // replicas can share a GPU. Running them at the same time has to give the same
@@ -282,6 +345,7 @@ int main(int argc, char** argv) {
   // Tests below here reuse the graphs created above. Graph creation is slow
   // due to calling a separate python process.
 
+  open_spiel::algorithms::torch_az::TestStagedInference("resnet");
   open_spiel::algorithms::torch_az::TestConcurrentReplicas("resnet");
   open_spiel::algorithms::torch_az::TestModelLearnsSimple("resnet");
 

@@ -182,8 +182,10 @@ VPNetModel::VPNetModel(const Game& game, const std::string& path,
   SPIEL_CHECK_EQ(game.NumPlayers(), 2);
   SPIEL_CHECK_EQ(game.GetType().utility, GameType::Utility::kZeroSum);
 
-  // Put this model on the specified device.
+  // Put this model on the specified device. Inference is the common case, so
+  // the model stays in eval mode; Learn switches to train mode and back.
   model_->to(torch_device_);
+  model_->eval();
 }
 
 std::string VPNetModel::SaveCheckpoint(int step) {
@@ -204,6 +206,7 @@ void VPNetModel::LoadCheckpoint(const std::string& path) {
   LoadModelChecked(model_, absl::StrCat(path, ".pt"), torch_device_);
   torch::load(model_optimizer_, absl::StrCat(path, "-optimizer.pt"),
               torch_device_);
+  model_->eval();
 }
 
 void VPNetModel::LoadCheckpointWeightsOnly(int step) {
@@ -212,81 +215,106 @@ void VPNetModel::LoadCheckpointWeightsOnly(int step) {
 
 void VPNetModel::LoadCheckpointWeightsOnly(const std::string& path) {
   LoadModelChecked(model_, absl::StrCat(path, ".pt"), torch_device_);
+  model_->eval();
 }
 
-// One model runs one batch at a time: DeviceManager::DeviceLoan holds that
-// model's own mutex for the whole call. Two models are independent even on the
-// same device, so several of them can share a GPU and run in parallel.
-std::vector<VPNetModel::InferenceOutputs> VPNetModel::Inference(
+VPNetModel::InferenceStaging::InferenceStaging(int max_batch_size,
+                                               int flat_input_size,
+                                               int num_actions, bool pinned)
+    : max_batch_size_(max_batch_size),
+      flat_input_size_(flat_input_size),
+      num_actions_(num_actions),
+      observations_(torch::empty(
+          {max_batch_size, flat_input_size},
+          torch::TensorOptions().dtype(torch::kFloat32).pinned_memory(pinned))),
+      legal_mask_(torch::empty(
+          {max_batch_size, num_actions},
+          torch::TensorOptions().dtype(torch::kBool).pinned_memory(pinned))) {}
+
+void VPNetModel::InferenceStaging::Pack(
     const std::vector<InferenceInputs>& inputs) {
-  int inference_batch_size = inputs.size();
+  batch_size_ = inputs.size();
+  SPIEL_CHECK_GT(batch_size_, 0);
+  SPIEL_CHECK_LE(batch_size_, max_batch_size_);
 
-  // Format the data outside of torch. Random assignments can be very slow on
-  // torch::Tensor objects and this approach is _much_ faster.
-  std::vector<float> raw_observations(inference_batch_size * flat_input_size_);
-  std::vector<uint8_t> raw_legal_mask(inference_batch_size * num_actions_, 0);
-
-  for (int batch = 0; batch < inference_batch_size; ++batch) {
-    for (Action action : inputs[batch].legal_actions) {
-      raw_legal_mask[batch * num_actions_ + action] = 1;
-    }
+  // Write into the tensors through raw pointers: assigning to a torch::Tensor
+  // element by element is far slower than this.
+  float* observations = observations_.data_ptr<float>();
+  bool* legal_mask = legal_mask_.data_ptr<bool>();
+  std::fill(legal_mask, legal_mask + batch_size_ * num_actions_, false);
+  for (int batch = 0; batch < batch_size_; ++batch) {
+    SPIEL_CHECK_EQ(inputs[batch].observations.size(), flat_input_size_);
     std::copy(inputs[batch].observations.begin(),
               inputs[batch].observations.end(),
-              raw_observations.begin() + (batch * flat_input_size_));
+              observations + batch * flat_input_size_);
+    for (Action action : inputs[batch].legal_actions) {
+      legal_mask[batch * num_actions_ + action] = true;
+    }
   }
+}
 
-  // Torch tensors by default use a dense, row-aligned memory layout.
-  //   - Their default data type is a 32-bit float
-  //   - Use the bool data type for legal-action masks
-  // Clone first to take ownership from the raw blob, then move to device.
-  // This avoids the previous pattern of .to(device).clone() which performed
-  // two allocations: one for the device transfer and one for the clone.
-  torch::Tensor torch_inf_inputs =
-      torch::from_blob(raw_observations.data(),
-                       {inference_batch_size, flat_input_size_})
-          .clone()
-          .to(torch_device_);
-  torch::Tensor torch_inf_legal_mask =
-      torch::from_blob(raw_legal_mask.data(),
-                       {inference_batch_size, num_actions_},
-                       torch::TensorOptions().dtype(torch::kBool))
-          .clone()
-          .to(torch_device_);
+std::vector<VPNetModel::InferenceOutputs> VPNetModel::InferenceStaging::Unpack(
+    const std::vector<InferenceInputs>& inputs) const {
+  SPIEL_CHECK_EQ(static_cast<int>(inputs.size()), batch_size_);
+  // Accessors rather than .item<>(): the outputs are already on the host, and
+  // .item<>() on a device tensor would synchronize on every element.
+  auto value = value_.accessor<float, 2>();
+  auto policy = policy_.accessor<float, 2>();
 
-  // Run the inference with gradient tracking disabled.
-  // NoGradGuard prevents LibTorch from building the autograd computation
-  // graph, saving memory and compute since we never backprop through
-  // inference.
-  model_->eval();
-  torch::NoGradGuard no_grad;
-  std::vector<torch::Tensor> torch_outputs =
-      model_(torch_inf_inputs, torch_inf_legal_mask);
-
-  // Move outputs to CPU in a single transfer, then use accessors for
-  // zero-overhead element access. This replaces the previous per-element
-  // .item<>() pattern which triggered a GPU-to-CPU sync on every call.
-  torch::Tensor value_cpu = torch_outputs[0].to(torch::kCPU).contiguous();
-  torch::Tensor policy_cpu = torch_outputs[1].to(torch::kCPU).contiguous();
-
-  auto value_acc = value_cpu.accessor<float, 2>();
-  auto policy_acc = policy_cpu.accessor<float, 2>();
-
-  // Copy the Torch tensor output to the appropriate structure.
-  std::vector<InferenceOutputs> output;
-  output.reserve(inference_batch_size);
-  for (int batch = 0; batch < inference_batch_size; ++batch) {
-    double value = static_cast<double>(value_acc[batch][0]);
-
+  std::vector<InferenceOutputs> outputs;
+  outputs.reserve(batch_size_);
+  for (int batch = 0; batch < batch_size_; ++batch) {
     ActionsAndProbs state_policy;
     state_policy.reserve(inputs[batch].legal_actions.size());
     for (Action action : inputs[batch].legal_actions) {
-      state_policy.push_back({action, policy_acc[batch][action]});
+      state_policy.push_back({action, policy[batch][action]});
     }
-
-    output.push_back({value, state_policy});
+    outputs.push_back(
+        {static_cast<double>(value[batch][0]), std::move(state_policy)});
   }
+  return outputs;
+}
 
-  return output;
+// One model runs one batch at a time: DeviceManager::DeviceLoan holds that
+// model's own mutex while the caller has it. Two models are independent even
+// on the same device, so several of them can share a GPU and run in parallel.
+void VPNetModel::RunInference(InferenceStaging* staging) {
+  const int batch_size = staging->batch_size_;
+  SPIEL_CHECK_GT(batch_size, 0);
+  SPIEL_CHECK_LE(batch_size, staging->max_batch_size_);
+
+  // NoGradGuard prevents LibTorch from building the autograd computation
+  // graph, saving memory and compute since we never backprop through
+  // inference.
+  torch::NoGradGuard no_grad;
+
+  // The host buffers are pinned, so these copies are asynchronous; the copy
+  // back below waits for them, which is also what makes it safe to pack the
+  // next batch into the same buffers afterwards.
+  torch::Tensor observations =
+      staging->observations_.narrow(0, 0, batch_size)
+          .to(torch_device_, /*non_blocking=*/true);
+  torch::Tensor legal_mask =
+      staging->legal_mask_.narrow(0, 0, batch_size)
+          .to(torch_device_, /*non_blocking=*/true);
+
+  std::vector<torch::Tensor> torch_outputs = model_(observations, legal_mask);
+
+  // Move the outputs back in one transfer each.
+  staging->value_ = torch_outputs[0].to(torch::kCPU).contiguous();
+  staging->policy_ = torch_outputs[1].to(torch::kCPU).contiguous();
+}
+
+std::vector<VPNetModel::InferenceOutputs> VPNetModel::Inference(
+    const std::vector<InferenceInputs>& inputs) {
+  // For callers without their own staging. A caller running batch after batch
+  // should keep an InferenceStaging instead, and pack and unpack outside the
+  // model's lock.
+  InferenceStaging staging(inputs.size(), flat_input_size_, num_actions_,
+                           /*pinned=*/false);
+  staging.Pack(inputs);
+  RunInference(&staging);
+  return staging.Unpack(inputs);
 }
 
 VPNetModel::LossInfo VPNetModel::Learn(const std::vector<TrainInputs>& inputs) {
@@ -358,6 +386,8 @@ VPNetModel::LossInfo VPNetModel::Learn(const std::vector<TrainInputs>& inputs,
   total_loss.backward();
 
   model_optimizer_.step();
+
+  model_->eval();
 
   return LossInfo(torch_outputs[0].item<float>(),
                   torch_outputs[1].item<float>(),

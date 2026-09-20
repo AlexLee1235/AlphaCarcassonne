@@ -16,6 +16,7 @@
 #define OPEN_SPIEL_UTILS_THREADED_QUEUE_H_
 
 #include <queue>
+#include <utility>
 
 #include "open_spiel/abseil-cpp/absl/synchronization/mutex.h"
 #include "open_spiel/abseil-cpp/absl/time/clock.h"
@@ -30,12 +31,13 @@ class ThreadedQueue {
  public:
   explicit ThreadedQueue(int max_size) : max_size_(max_size) {}
 
-  // Add an element to the queue.
-  bool Push(const T& value) { return Push(value, absl::InfiniteDuration()); }
-  bool Push(const T& value, absl::Duration wait) {
-    return Push(value, absl::Now() + wait);
+  // Add an element to the queue. Taking the value lets a caller hand over a
+  // large element with std::move instead of copying it.
+  bool Push(T value) { return Push(std::move(value), absl::InfiniteDuration()); }
+  bool Push(T value, absl::Duration wait) {
+    return Push(std::move(value), absl::Now() + wait);
   }
-  bool Push(const T& value, absl::Time deadline) {
+  bool Push(T value, absl::Time deadline) {
     absl::MutexLock lock(m_);
     if (block_new_values_) {
       return false;
@@ -46,7 +48,7 @@ class ThreadedQueue {
       }
       cv_.WaitWithDeadline(&m_, deadline);
     }
-    q_.push(value);
+    q_.push(std::move(value));
     cv_.Signal();
     return true;
   }
@@ -61,7 +63,7 @@ class ThreadedQueue {
       }
       cv_.WaitWithDeadline(&m_, deadline);
     }
-    T val = q_.front();
+    T val = std::move(q_.front());
     q_.pop();
     cv_.Signal();
     return val;

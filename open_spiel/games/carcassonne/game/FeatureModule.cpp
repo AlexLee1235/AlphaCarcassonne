@@ -1,8 +1,9 @@
 #include "game.hpp"
 
 #include <array>
+#include <atomic>
 #include <bitset>
-#include <cassert>
+#include <cstdio>
 #include <cstdlib>
 #include <utility>
 #include <vector>
@@ -19,6 +20,26 @@ constexpr std::array<int, 4> dy = {-1, 0, 1, 0};
 constexpr std::array<int, 4> op = {D, L, U, R};
 
 } // namespace
+
+namespace {
+
+std::atomic<long long> opens_underflows{0};
+
+// Says where it happened, rate limited: this runs on every actor thread.
+void ReportOpensUnderflow(int tile_id, int x, int y, int rot, int side, int opens) {
+    const long long count = ++opens_underflows;
+    if (count <= 20 || count % 1000 == 0) {
+        std::fprintf(stderr,
+                     "carcassonne: opens underflow #%lld: tile %d (type %d) rot %d "
+                     "at (%d,%d) side %d had opens=%d before closing two edges\n",
+                     count, tile_id, PHYSICAL_TO_CANONICAL_TYPE[tile_id], rot, x, y,
+                     side, opens);
+    }
+}
+
+} // namespace
+
+long long OpensUnderflowCount() { return opens_underflows.load(); }
 
 int FeatureModule::edgeIndex(int tile_id, int side) const { return (tile_id - 1) * 4 + side; }
 
@@ -89,10 +110,18 @@ void FeatureModule::placeTileOnBoard(int tile_id, int x, int y, int rot, const T
             int my_edge = edgeIndex(tile_id, i);
             int their_edge = edgeIndex(board.board[ny][nx].id, op[i]);
             featureMap.unionSet(my_edge, their_edge);
-            // Both edges were open, so the joined feature counts at least two.
+            // Two open edges meet here, so the joined feature should count at
+            // least two of them. A long self-play run found that it sometimes
+            // does not; until that is understood, close the feature instead of
+            // letting the uint8 wrap to 254, which would leave a finished
+            // feature unscored and its meeple stuck for the rest of the game.
             Feature &joined = featureMap.getSetData(my_edge);
-            assert(joined.opens >= 2);
-            joined.opens -= 2;
+            if (joined.opens < 2) {
+                ReportOpensUnderflow(tile_id, x, y, rot, i, joined.opens);
+                joined.opens = 0;
+            } else {
+                joined.opens -= 2;
+            }
         }
     }
 }

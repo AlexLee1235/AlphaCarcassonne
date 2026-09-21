@@ -79,6 +79,11 @@ class BoardModule {
     void placeTileOnBoard(int tile_id, int x, int y, int rot, const Tile &tile);
 };
 
+// How many times placeTileOnBoard found a joined feature with fewer than two
+// open edges and had to close it instead (see FeatureModule.cpp). Zero in every
+// test so far; a long self-play run hit it.
+long long OpensUnderflowCount();
+
 class FeatureModule {
     void settleCompletedFeatures(int tile_id, int side, int *player_scores, int *holding_meeples);
 

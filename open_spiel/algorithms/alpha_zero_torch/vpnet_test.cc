@@ -141,30 +141,39 @@ std::vector<VPNetModel::InferenceInputs> InferenceBatch(const Game& game,
   return inputs;
 }
 
-void CheckSameOutputs(const std::vector<VPNetModel::InferenceOutputs>& actual,
-                      const std::vector<VPNetModel::InferenceOutputs>& expected,
-                      const std::string& what) {
+// The largest difference between two sets of outputs.
+double MaxOutputDifference(
+    const std::vector<VPNetModel::InferenceOutputs>& actual,
+    const std::vector<VPNetModel::InferenceOutputs>& expected) {
   SPIEL_CHECK_EQ(actual.size(), expected.size());
+  double worst = 0;
   for (int i = 0; i < actual.size(); ++i) {
-    SPIEL_CHECK_FLOAT_NEAR(actual[i].value, expected[i].value, 1e-6);
+    worst = std::max(worst, std::abs(actual[i].value - expected[i].value));
     SPIEL_CHECK_EQ(actual[i].policy.size(), expected[i].policy.size());
     for (int j = 0; j < actual[i].policy.size(); ++j) {
       SPIEL_CHECK_EQ(actual[i].policy[j].first, expected[i].policy[j].first);
-      SPIEL_CHECK_FLOAT_NEAR(actual[i].policy[j].second,
-                             expected[i].policy[j].second, 1e-6);
+      worst = std::max(worst, std::abs(actual[i].policy[j].second -
+                                       expected[i].policy[j].second));
     }
   }
-  std::cout << "  " << what << ": same as Inference()" << std::endl;
+  return worst;
 }
 
 // The caller-owned staging is what lets the evaluator pack a batch and read
 // the results back outside the model's lock. Doing it that way has to give
-// exactly what the one-shot Inference() gives, including when the batch is
-// smaller than the buffers and when the buffers are reused.
-void TestStagedInference(const std::string& nn_model) {
-  std::cout << "TestStagedInference: " << nn_model << std::endl;
-  const std::string device =
-      torch::cuda::is_available() ? "cuda:0" : "/cpu:0";
+// what the one-shot Inference() gives, including when the batch is smaller
+// than the buffers and when the buffers are reused.
+//
+// A batch of the same size is the same arithmetic in the same order, so on
+// the CPU it comes back bit-identical (same_size_tolerance = 0). A batch of a
+// different size divides the work differently, and on CUDA also picks
+// convolution algorithms by batch size, with TF32 keeping 10 mantissa bits.
+void TestStagedInferenceOn(const std::string& nn_model,
+                           const std::string& device,
+                           double same_size_tolerance,
+                           double other_size_tolerance) {
+  std::cout << "TestStagedInference: " << nn_model << " on " << device
+            << std::endl;
   std::shared_ptr<const Game> game = LoadGame("tic_tac_toe");
   VPNetModel model = BuildModel(*game, nn_model, false, device);
 
@@ -183,11 +192,24 @@ void TestStagedInference(const std::string& nn_model) {
         inputs.begin(), inputs.begin() + batch_size);
     staging.Pack(batch);
     model.RunInference(&staging);
-    CheckSameOutputs(
+    const double difference = MaxOutputDifference(
         staging.Unpack(batch),
         std::vector<VPNetModel::InferenceOutputs>(
-            expected.begin(), expected.begin() + batch_size),
-        absl::StrCat("batch of ", batch_size));
+            expected.begin(), expected.begin() + batch_size));
+    std::cout << "  batch of " << batch_size << ": largest difference from "
+              << "Inference() is " << difference << std::endl;
+    SPIEL_CHECK_LE(difference, batch_size == kMaxBatch ? same_size_tolerance
+                                                       : other_size_tolerance);
+  }
+}
+
+void TestStagedInference(const std::string& nn_model) {
+  TestStagedInferenceOn(nn_model, "/cpu:0", /*same_size_tolerance=*/0.0,
+                        /*other_size_tolerance=*/1e-6);
+  if (torch::cuda::is_available()) {
+    // Pinned buffers and an asynchronous copy to the device.
+    TestStagedInferenceOn(nn_model, "cuda:0", /*same_size_tolerance=*/1e-5,
+                          /*other_size_tolerance=*/1e-3);
   }
 }
 

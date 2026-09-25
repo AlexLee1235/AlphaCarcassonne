@@ -339,6 +339,31 @@ void RotateTrainInputs(int k, VPNetModel::TrainInputs* sample) {
   sample->symmetry_context = carcassonne::RotateSideGroups(groups, k);
 }
 
+// Puts a whole batch in the random orientations training would have used, so
+// a batch that is only measured gets the same treatment as one trained on.
+void AugmentBatch(bool augment_rotations, std::mt19937* rng,
+                  std::vector<VPNetModel::TrainInputs>* batch) {
+  if (!augment_rotations) return;
+  std::uniform_int_distribution<int> rotation_dist(
+      0, carcassonne::kNumBoardRotations - 1);
+  for (VPNetModel::TrainInputs& sample : *batch) {
+    RotateTrainInputs(rotation_dist(*rng), &sample);
+  }
+}
+
+// One set of losses, for learner.jsonl.
+json::Object LossJson(const VPNetModel::LossInfo& losses) {
+  return json::Object({
+      {"policy", losses.Policy()},
+      {"value", losses.Value()},
+      {"l2reg", losses.L2()},
+      {"sum", losses.Total()},
+      {"policy_target_entropy", losses.TargetEntropy()},
+      {"policy_pred_entropy", losses.PredEntropy()},
+      {"policy_kl", losses.KL()},
+  });
+}
+
 }  // namespace
 
 void learner(const open_spiel::Game& game, const AlphaZeroConfig& config,
@@ -401,11 +426,25 @@ void learner(const open_spiel::Game& game, const AlphaZeroConfig& config,
       raw_value_prediction.Reset();
     }
 
+    // The trained half of the held-out pair. Drawn before this step's states
+    // arrive, so everything in it has already been through at least one
+    // update, and measured below with the same weights as the fresh half.
+    std::vector<VPNetModel::TrainInputs> trained_sample;
+    if (replay_buffer.Size() >= config.train_batch_size) {
+      trained_sample = replay_buffer.Sample(&rng, config.train_batch_size);
+    }
+
     // Collect trajectories
     absl::Time phase_start = absl::Now();
     int queue_size = trajectory_queue->Size();
     int num_states = 0;
     int num_trajectories = 0;
+    // A uniform sample of the states arriving this step. The network has not
+    // been trained on any of them yet, so measuring the loss on them before
+    // this step's updates is a held-out loss on data it produced itself.
+    std::vector<VPNetModel::TrainInputs> held_out;
+    held_out.reserve(config.train_batch_size);
+    int64_t fresh_seen = 0;
     while (!stop->StopRequested() && num_states < learn_rate) {
       absl::optional<Trajectory> trajectory = trajectory_queue->Pop();
       if (trajectory) {
@@ -422,9 +461,20 @@ void learner(const open_spiel::Game& game, const AlphaZeroConfig& config,
               config.value_is_current_player
                   ? trajectory->returns[state.current_player]
                   : p1_outcome;
-          replay_buffer.Add(VPNetModel::TrainInputs{
-              state.legal_actions, state.observation, state.policy,
-              value_target, state.symmetry_context});
+          VPNetModel::TrainInputs sample{state.legal_actions,
+                                         state.observation, state.policy,
+                                         value_target, state.symmetry_context};
+          // Reservoir sampling: every state arriving this step has the same
+          // chance of being measured, however many of them arrive.
+          if (static_cast<int>(held_out.size()) < config.train_batch_size) {
+            held_out.push_back(sample);
+          } else {
+            int64_t slot =
+                std::uniform_int_distribution<int64_t>(0, fresh_seen)(rng);
+            if (slot < config.train_batch_size) held_out[slot] = sample;
+          }
+          fresh_seen += 1;
+          replay_buffer.Add(sample);
           num_states += 1;
         }
 
@@ -468,6 +518,11 @@ void learner(const open_spiel::Game& game, const AlphaZeroConfig& config,
     double buffer_save_s = absl::ToDoubleSeconds(absl::Now() - phase_start);
 
     VPNetModel::LossInfo losses;
+    VPNetModel::LossInfo fresh_losses;
+    VPNetModel::LossInfo trained_losses;
+    const int held_out_states = held_out.size();
+    const int trained_states = trained_sample.size();
+    double held_out_s = 0;
     double augment_s = 0;
     double sample_s = 0;
     double train_s = 0;
@@ -481,6 +536,24 @@ void learner(const open_spiel::Game& game, const AlphaZeroConfig& config,
       // off-limits for inference and should only be used for learning
       // (if config.explicit_learning == true).
       device_manager->SetLearning(config.explicit_learning);
+
+      // Before any update: what this network scores on states it has never
+      // trained on, next to what it scores on states it has. Same weights,
+      // same batch-norm mode, no gradients either way, so what is left
+      // between the two is generalization rather than the weights moving
+      // during the step. Reported in learner.jsonl only.
+      absl::Time held_out_start = absl::Now();
+      if (!held_out.empty()) {
+        AugmentBatch(config.augment_rotations, &rng, &held_out);
+        fresh_losses = learn_model->Evaluate(held_out);
+      }
+      if (!trained_sample.empty()) {
+        AugmentBatch(config.augment_rotations, &rng, &trained_sample);
+        trained_losses = learn_model->Evaluate(trained_sample);
+      }
+      held_out_s = absl::ToDoubleSeconds(absl::Now() - held_out_start);
+      held_out = {};        // Each is a training batch's worth of states;
+      trained_sample = {};  // give the memory back before the updates start.
 
       // Learn from them.
       for (int i = 0; i < replay_buffer.Size() / config.train_batch_size; i++) {
@@ -562,6 +635,7 @@ void learner(const open_spiel::Game& game, const AlphaZeroConfig& config,
         {"timing", json::Object({
                        {"collect", collect_s},
                        {"buffer_save", buffer_save_s},
+                       {"held_out", held_out_s},
                        {"learn", learn_s},
                        {"sample", sample_s},
                        {"augment", augment_s},
@@ -571,16 +645,20 @@ void learner(const open_spiel::Game& game, const AlphaZeroConfig& config,
                    })},
         {"batch_size", eval->BatchSizeStats().ToJson()},
         {"batch_size_hist", eval->BatchSizeHistogram().ToJson()},
-        {"loss", json::Object({
-                     {"policy", losses.Policy()},
-                     {"value", losses.Value()},
-                     {"l2reg", losses.L2()},
-                     {"sum", losses.Total()},
-                     {"policy_target_entropy", losses.TargetEntropy()},
-                     {"policy_pred_entropy", losses.PredEntropy()},
-                     {"policy_kl", losses.KL()},
-                 })},
+        {"loss", LossJson(losses)},
     };
+
+    // Held-out loss: learner.jsonl only, nothing printed to the log. A
+    // default-constructed LossInfo averages over zero batches, so leave a
+    // half out entirely rather than writing NaN into the file.
+    json::Object held_out_record({{"states", held_out_states}});
+    if (held_out_states > 0) {
+      held_out_record.emplace("fresh", LossJson(fresh_losses));
+    }
+    if (trained_states > 0) {
+      held_out_record.emplace("trained", LossJson(trained_losses));
+    }
+    record.emplace("held_out", std::move(held_out_record));
     eval->ResetBatchSizeStats();
     logger.Print(
         "Losses: policy: %.4f, value: %.4f, l2: %.4f, sum: %.4f, "

@@ -200,6 +200,12 @@ class VPNetModel {
                  double policy_loss_weight, double value_loss_weight,
                  double l2_loss_weight);
 
+  // The same numbers Learn() reports, measured instead of trained on: no
+  // gradients, no optimizer step, and batch norm stays on its running
+  // statistics so the batch does not leak into them. This is what makes a
+  // held-out loss possible (see the learner).
+  LossInfo Evaluate(const std::vector<TrainInputs>& inputs);
+
   std::string SaveCheckpoint(int step);
   void LoadCheckpoint(int step);
   void LoadCheckpoint(const std::string& path);

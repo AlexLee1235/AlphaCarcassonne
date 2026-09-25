@@ -174,9 +174,39 @@ KL 0.075 → 0.32，而 eval 從 −1.0 升到 −0.21。原因有四個，都�
 另外 eval 本身很吵：n = 12–28 局、50 局滑動視窗，相鄰步共用大部分對局
 （所以會出現 −0.312 連 4 步、−0.208 連 3 步這種重複值），n=28 時標準誤約 0.19。
 
-想在這個「平原期」看出進展，要的是 CLAUDE.md §6.7 的 held-out loss：對剛出佇列、
-還沒進 buffer 的 trajectory 跑一次 forward-only 的 `losses()`，跟訓練 loss 比較，
-才分得出「到了容量/噪音底線」還是「在過擬合 buffer」。
+想在這個「平原期」看出進展，要的是 CLAUDE.md §6.7 的 held-out loss。**已實作**
+（2026-09-26），見下一節。
+
+---
+
+## 5.1 held-out loss（已實作）
+
+每個 learner step 在**任何一次 update 之前**，用當時的權重跑兩次 forward-only 的
+`VPNetModel::Evaluate()`（no-grad、eval 模式，BN 不吃這兩批資料）：
+
+- **fresh**：這一步剛從佇列拿到的 state 的均勻抽樣（reservoir，`train_batch_size` 筆）。
+  量測點在 update 之前，所以就算它們已經寫進 buffer，也還一次都沒被訓練過。
+- **trained**：在收 trajectory **之前**就從 buffer 抽好的同樣大小批次 —— 裡面每一筆
+  都至少被訓練過一次。
+
+兩批用同一組權重、同一個 BN 模式、同樣的旋轉增強，所以兩者之差只剩「看過 vs 沒看過」。
+只寫進 `learner.jsonl`，`log-learner` 完全不變：
+
+```json
+"held_out": {"states": 2048, "fresh": {...}, "trained": {...}}
+"timing":   {"held_out": 0.9, ...}
+```
+
+欄位與 `"loss"` 相同（`policy` / `value` / `policy_kl` / `policy_target_entropy` / …）。
+判讀照 §6.7 的表：`fresh.policy_kl` ≈ `trained.policy_kl` → 到了容量或噪音底線，
+調 lr 或 reuse 都沒用；`fresh` 明顯大於 `trained` → overfit，降 reuse、加正則。
+
+注意**不要**直接拿 `fresh` 和 `loss`（訓練時報出來的）比：後者是 128 次 update
+**過程中**的平均、而且是在 `train()` 模式下用 batch statistics 算的，兩個偏差都會
+讓 fresh 看起來偏高，也就是假報 overfit。`trained` 就是為了拿掉這兩個偏差。
+
+成本：兩次 batch 2048 的 forward（相對每步 62 秒的 learn 約 1%）、
+以及約 2 × 180 MB 的暫存，在訓練迴圈開始前就釋放。
 
 ---
 
@@ -189,7 +219,7 @@ KL 0.075 → 0.32，而 eval 從 −1.0 升到 −0.21。原因有四個，都�
 4. 加 `buffer_save_freq`（現在沒有這個選項），把每步 140 s 的 buffer 寫入降下來；
    或把 libnop 的逐元素序列化換成整塊寫入（約可省 40% 時間與檔案大小）。
 5. （可選，小改動）讓 actor 錯開起跑，打散「一波 2048 局」的叢聚。
-6. 加 held-out loss，讓平原期也有可讀的指標。
+6. ~~加 held-out loss，讓平原期也有可讀的指標。~~ 已完成，見 §5.1。
 
 ---
 

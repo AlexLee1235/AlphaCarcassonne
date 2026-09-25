@@ -328,6 +328,48 @@ void TestModelLearnsSimple(const std::string& nn_model) {
   SPIEL_CHECK_LT(losses.back().Policy(), 0.05);
 }
 
+// Evaluate() measures without changing anything: the same batch twice has to
+// give the same numbers, which rules out both an optimizer step and batch norm
+// folding the batch into its running statistics. Learn() then has to move
+// them, or what Evaluate() reports is not this network.
+void TestModelEvaluateIsForwardOnly(const std::string& nn_model) {
+  std::cout << "TestModelEvaluateIsForwardOnly: " << nn_model << std::endl;
+  std::shared_ptr<const Game> game = LoadGame("tic_tac_toe");
+  VPNetModel model = BuildModel(*game, nn_model, false);
+
+  std::vector<VPNetModel::TrainInputs> train_inputs;
+  std::unique_ptr<open_spiel::State> state = game->NewInitialState();
+  while (!state->IsTerminal()) {
+    std::vector<Action> legal_actions = state->LegalActions();
+    Action action = legal_actions[0];
+    train_inputs.emplace_back(VPNetModel::TrainInputs{
+        legal_actions, state->ObservationTensor(),
+        ActionsAndProbs({{action, 1}}), 1});
+    state->ApplyAction(action);
+  }
+
+  const VPNetModel::LossInfo first = model.Evaluate(train_inputs);
+  const VPNetModel::LossInfo second = model.Evaluate(train_inputs);
+  SPIEL_CHECK_TRUE(first.Policy() == second.Policy());
+  SPIEL_CHECK_TRUE(first.Value() == second.Value());
+  SPIEL_CHECK_TRUE(first.L2() == second.L2());
+  SPIEL_CHECK_TRUE(first.KL() == second.KL());
+  // The KL is the part of the policy loss that is the network's to lose.
+  SPIEL_CHECK_FLOAT_NEAR(first.KL(), first.Policy() - first.TargetEntropy(),
+                         1e-5);
+
+  for (int i = 0; i < 100; ++i) {
+    model.Learn(train_inputs);
+  }
+  const VPNetModel::LossInfo after = model.Evaluate(train_inputs);
+  std::cout << absl::StrFormat(
+      "  untrained: policy %.3f, value %.3f; after 100 steps: policy %.3f, "
+      "value %.3f\n",
+      first.Policy(), first.Value(), after.Policy(), after.Value());
+  SPIEL_CHECK_LT(after.Policy(), first.Policy());
+  SPIEL_CHECK_LT(after.Value(), first.Value());
+}
+
 // Can learn the optimal policy.
 void TestModelLearnsOptimal(
     const std::string& nn_model,
@@ -370,6 +412,7 @@ int main(int argc, char** argv) {
   open_spiel::algorithms::torch_az::TestStagedInference("resnet");
   open_spiel::algorithms::torch_az::TestConcurrentReplicas("resnet");
   open_spiel::algorithms::torch_az::TestModelLearnsSimple("resnet");
+  open_spiel::algorithms::torch_az::TestModelEvaluateIsForwardOnly("resnet");
 
   auto train_inputs = open_spiel::algorithms::torch_az::SolveGame();
   open_spiel::algorithms::torch_az::TestModelLearnsOptimal("resnet",

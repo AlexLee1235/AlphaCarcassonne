@@ -18,6 +18,7 @@
 #include <torch/types.h>
 
 #include <algorithm>
+#include <array>
 #include <cstdint>
 #include <fstream>  // For ifstream/ofstream.
 #include <map>
@@ -317,6 +318,64 @@ std::vector<VPNetModel::InferenceOutputs> VPNetModel::Inference(
   return staging.Unpack(inputs);
 }
 
+namespace {
+
+// Lays a training batch out as the four tensors the loss needs, on the device:
+// observations, legal mask, policy targets, value targets.
+std::array<torch::Tensor, 4> PackTrainBatch(
+    const std::vector<VPNetModel::TrainInputs>& inputs, int flat_input_size,
+    int num_actions, const torch::Device& device) {
+  const int batch_size = inputs.size();
+
+  std::vector<float> raw_train_inputs(batch_size * flat_input_size);
+  std::vector<uint8_t> raw_legal_mask(batch_size * num_actions, 0);
+  std::vector<float> raw_policy_targets(batch_size * num_actions, 0);
+  std::vector<float> raw_value_targets(batch_size);
+
+  for (int batch = 0; batch < batch_size; ++batch) {
+    std::copy(inputs[batch].observations.begin(),
+              inputs[batch].observations.end(),
+              raw_train_inputs.begin() + (batch * flat_input_size));
+    for (Action action : inputs[batch].legal_actions) {
+      raw_legal_mask[num_actions * batch + action] = 1;
+    }
+    for (const auto &[action, probability] : inputs[batch].policy) {
+      raw_policy_targets[num_actions * batch + action] = probability;
+    }
+    raw_value_targets[batch] = inputs[batch].value;
+  }
+
+  // Torch tensors by default use a dense, row-aligned memory layout.
+  //   - Their default data type is a 32-bit float
+  //   - Use the byte data type for boolean
+  // Clone first to take ownership from the raw blob, then move to device.
+  return {
+      torch::from_blob(raw_train_inputs.data(), {batch_size, flat_input_size})
+          .clone()
+          .to(device),
+      torch::from_blob(raw_legal_mask.data(), {batch_size, num_actions},
+                       torch::TensorOptions().dtype(torch::kBool))
+          .clone()
+          .to(device),
+      torch::from_blob(raw_policy_targets.data(), {batch_size, num_actions})
+          .clone()
+          .to(device),
+      torch::from_blob(raw_value_targets.data(), {batch_size, 1})
+          .clone()
+          .to(device),
+  };
+}
+
+// What model_->losses() returns, in the order LossInfo takes them.
+VPNetModel::LossInfo ToLossInfo(const std::vector<torch::Tensor>& outputs) {
+  return VPNetModel::LossInfo(
+      outputs[0].item<float>(), outputs[1].item<float>(),
+      outputs[2].item<float>(), outputs[3].item<float>(),
+      outputs[4].item<float>(), outputs[5].item<float>());
+}
+
+}  // namespace
+
 VPNetModel::LossInfo VPNetModel::Learn(const std::vector<TrainInputs>& inputs) {
   return Learn(inputs, /*policy_loss_weight=*/1.0, /*value_loss_weight=*/1.0,
                /*l2_loss_weight=*/1.0);
@@ -326,58 +385,15 @@ VPNetModel::LossInfo VPNetModel::Learn(const std::vector<TrainInputs>& inputs,
                                        double policy_loss_weight,
                                        double value_loss_weight,
                                        double l2_loss_weight) {
-  int training_batch_size = inputs.size();
-
-  std::vector<float> raw_train_inputs(training_batch_size * flat_input_size_);
-  std::vector<uint8_t> raw_legal_mask(training_batch_size * num_actions_, 0);
-  std::vector<float> raw_policy_targets(training_batch_size * num_actions_, 0);
-  std::vector<float> raw_value_targets(training_batch_size);
-
-  for (int batch = 0; batch < training_batch_size; ++batch) {
-    std::copy(inputs[batch].observations.begin(),
-              inputs[batch].observations.end(),
-              raw_train_inputs.begin() + (batch * flat_input_size_));
-    for (Action action : inputs[batch].legal_actions) {
-      raw_legal_mask[num_actions_ * batch + action] = 1;
-    }
-    for (const auto &[action, probability] : inputs[batch].policy) {
-      raw_policy_targets[num_actions_ * batch + action] = probability;
-    }
-    raw_value_targets[batch] = inputs[batch].value;
-  }
-
-  // Torch tensors by default use a dense, row-aligned memory layout.
-  //   - Their default data type is a 32-bit float
-  //   - Use the byte data type for boolean
-  // Clone first to take ownership from the raw blob, then move to device.
-  torch::Tensor torch_train_inputs =
-      torch::from_blob(raw_train_inputs.data(),
-                       {training_batch_size, flat_input_size_})
-          .clone()
-          .to(torch_device_);
-  torch::Tensor torch_train_legal_mask =
-      torch::from_blob(raw_legal_mask.data(),
-                       {training_batch_size, num_actions_},
-                       torch::TensorOptions().dtype(torch::kBool))
-          .clone()
-          .to(torch_device_);
-  torch::Tensor torch_policy_targets =
-      torch::from_blob(raw_policy_targets.data(),
-                       {training_batch_size, num_actions_})
-          .clone()
-          .to(torch_device_);
-  torch::Tensor torch_value_targets =
-      torch::from_blob(raw_value_targets.data(), {training_batch_size, 1})
-          .clone()
-          .to(torch_device_);
+  std::array<torch::Tensor, 4> batch =
+      PackTrainBatch(inputs, flat_input_size_, num_actions_, torch_device_);
 
   // Run a training step and get the losses.
   model_->train();
   model_->zero_grad();
 
   std::vector<torch::Tensor> torch_outputs =
-      model_->losses(torch_train_inputs, torch_train_legal_mask,
-                     torch_policy_targets, torch_value_targets);
+      model_->losses(batch[0], batch[1], batch[2], batch[3]);
 
   torch::Tensor total_loss = policy_loss_weight * torch_outputs[0] +
                              value_loss_weight * torch_outputs[1] +
@@ -389,12 +405,20 @@ VPNetModel::LossInfo VPNetModel::Learn(const std::vector<TrainInputs>& inputs,
 
   model_->eval();
 
-  return LossInfo(torch_outputs[0].item<float>(),
-                  torch_outputs[1].item<float>(),
-                  torch_outputs[2].item<float>(),
-                  torch_outputs[3].item<float>(),
-                  torch_outputs[4].item<float>(),
-                  torch_outputs[5].item<float>());
+  return ToLossInfo(torch_outputs);
+}
+
+VPNetModel::LossInfo VPNetModel::Evaluate(
+    const std::vector<TrainInputs>& inputs) {
+  std::array<torch::Tensor, 4> batch =
+      PackTrainBatch(inputs, flat_input_size_, num_actions_, torch_device_);
+
+  torch::NoGradGuard no_grad;
+  // Said explicitly: in train() mode batch norm would fold this batch into its
+  // running statistics, so measuring would change the network.
+  model_->eval();
+
+  return ToLossInfo(model_->losses(batch[0], batch[1], batch[2], batch[3]));
 }
 
 }  // namespace torch_az

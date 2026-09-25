@@ -291,14 +291,27 @@ printf '{"time_rel":0.0,"step":0,"total_trajectories":0}\n' > learner.jsonl
     --weight_decay=0.0001
 
 
+# play against a trained model (GUI, play/)
+# 1. After the OpenSpiel CMake build, rebuild the bot CLI and the pybind module.
+#    The committed play/bin/carcassonne_bot_cli predates the 21x21 board and
+#    will not load 0919+ checkpoints.
+venv/bin/python -m pip install -r play/requirements.txt
+venv/bin/python play/setup.py build_ext --inplace
+
+# 2. Start with no arguments and pick seat / model dir / checkpoint / simulations
+#    in the setup panel (opens http://127.0.0.1:8550; CARCASSONNE_UI_MODE=desktop for a window).
+venv/bin/python play/main.py
+
+#    Or skip the setup panel by naming the opponent:
 venv/bin/python play/main.py \
-    --game=carcassonne \
     --p1_type=human \
     --p2_type=az \
-    --p2_az_path=/mnt/c/achieve/Carcassonne/0616 \
-    --p2_az_checkpoint=5 \
-    --p2_az_graph_def=vpnet.pb \
-    --p2_max_simulations=2400
+    --p2_az_path=/az_carcassonne_0919 \
+    --p2_az_checkpoint=34 \
+    --p2_max_simulations=800
+
+# value_is_current_player is read from <az_path>/config.json.
+# Override with CARCASSONNE_AZ_VALUE_IS_CURRENT_PLAYER=true|false if that file is missing.
 
 venv/bin/python play/main.py \
     --game=carcassonne \

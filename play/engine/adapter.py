@@ -26,8 +26,9 @@ except ImportError:
         ) from exc
 
 
-BOARD_SIZE = 15
-ENGINE_BOARD_SIZE = int(getattr(_carcassonne_cpp, "BOARD_SIZE", BOARD_SIZE))
+ENGINE_BOARD_SIZE = int(_carcassonne_cpp.BOARD_SIZE)
+# The UI shows the whole engine board, so UI and engine coordinates coincide.
+BOARD_SIZE = ENGINE_BOARD_SIZE
 START_POS = (ENGINE_BOARD_SIZE // 2, ENGINE_BOARD_SIZE // 2)
 PHASE_CHANCE = int(_carcassonne_cpp.PHASE_CHANCE)
 PHASE_TILE = int(_carcassonne_cpp.PHASE_TILE)
@@ -39,6 +40,7 @@ PLAYER_TYPES = {"human", "random", "mcts", "alphazero", "az"}
 BOT_TYPES = {"random", "mcts", "alphazero"}
 DEFAULT_MAX_SIMULATIONS = 200
 DEFAULT_BOT_CLI = Path(__file__).resolve().parents[1] / "bin" / "carcassonne_bot_cli"
+REBUILD_HINT = "Rebuild it with `python play/setup.py build_ext --inplace` after the OpenSpiel CMake build."
 
 
 def _clamp(value: int, lower: int, upper: int) -> int:
@@ -69,6 +71,8 @@ class PlayerSpec:
     az_checkpoint: Optional[int] = None
     az_graph_def: str = "vpnet.pb"
     max_simulations: Optional[int] = None
+    # None lets the bot CLI read it from <az_path>/config.json.
+    value_is_current_player: Optional[bool] = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "type", _normalize_player_type(self.type))
@@ -100,6 +104,8 @@ class PlayerSpec:
                 env["CARCASSONNE_AZ_SIMULATIONS"] = str(self.max_simulations)
             elif self.type == "mcts":
                 env["CARCASSONNE_MCTS_SIMULATIONS"] = str(self.max_simulations)
+        if self.value_is_current_player is not None:
+            env["CARCASSONNE_AZ_VALUE_IS_CURRENT_PLAYER"] = "true" if self.value_is_current_player else "false"
         return env
 
 
@@ -108,7 +114,7 @@ class BotCliClient:
         cli_path = Path(path or os.getenv("CARCASSONNE_BOT_CLI", str(DEFAULT_BOT_CLI)))
         if not cli_path.exists():
             raise RuntimeError(
-                f"Carcassonne bot CLI not found at {cli_path}. Build it with `python play/setup.py build_ext --inplace`."
+                f"Carcassonne bot CLI not found at {cli_path}. {REBUILD_HINT}"
             )
         process_env = os.environ.copy()
         if env:
@@ -123,6 +129,16 @@ class BotCliClient:
             env=process_env,
         )
         self.request({"cmd": "reset"})
+        self._check_board_size()
+
+    def _check_board_size(self) -> None:
+        shape = self.request({"cmd": "info"}).get("observation_shape", [])
+        if len(shape) != 3 or shape[1] != ENGINE_BOARD_SIZE:
+            self.close()
+            raise RuntimeError(
+                f"The bot CLI was built for a different board (observation shape {shape}, "
+                f"expected {ENGINE_BOARD_SIZE}x{ENGINE_BOARD_SIZE}). {REBUILD_HINT}"
+            )
 
     def close(self) -> None:
         proc = self._proc
@@ -166,6 +182,7 @@ class CppCarcassonneAdapter:
         self.player_specs = self._resolve_player_specs(opponent_mode, player_specs)
         self.opponent_mode = "player" if self.player_specs[1].is_human else self.player_specs[1].type
         self.ai_status = ""
+        self.auto_run_bots = auto_run_bots
         self._engine = _carcassonne_cpp.Carcassonne()
         self._bot_clis: Dict[int, BotCliClient] = {}
         self._latest_tile_marker: Optional[Tuple[Tuple[int, int], int]] = None
@@ -449,7 +466,8 @@ class CppCarcassonneAdapter:
         self._pending_meeple_options = []
         self._turn += 1
         self._resolve_chance_phase()
-        self.run_ai_turns()
+        if self.auto_run_bots:
+            self.run_ai_turns()
         self.state = self._build_state()
 
     def run_ai_turns(self, max_turns: Optional[int] = None) -> int:

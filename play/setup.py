@@ -52,8 +52,6 @@ def absl_static_libs() -> list[str]:
     return libs
 
 
-absl_libs = absl_static_libs()
-
 carcassonne_sources = [
     CARCASSONNE_GAME / "game.cpp",
     CARCASSONNE_GAME / "BoardModule.cpp",
@@ -175,7 +173,7 @@ class BuildWithBotCli(build_ext):
             "-o",
             path(output),
             "-Wl,--start-group",
-            *absl_libs,
+            *absl_static_libs(),
             "-Wl,--end-group",
             *torch_link_args(),
             "-pthread",

@@ -4,9 +4,10 @@ import pytest
 
 from play import _carcassonne_cpp
 from play.cpp_engine import BOARD_SIZE, CppCarcassonneAdapter, ENGINE_BOARD_SIZE, PHASE_TILE, START_POS, PlayerSpec
+from play.engine import adapter as adapter_module
 from play.engine.adapter import BotCliClient
 from play.models import Move, MoveRecord
-from play.ui.app import format_move_record, parse_ui_config, should_show_start_game
+from play.ui.app import build_player_specs, format_move_record, human_seat, parse_ui_config, should_show_start_game
 
 
 def _resolve_native_to_tile_phase(engine: _carcassonne_cpp.Carcassonne) -> None:
@@ -454,3 +455,121 @@ def test_adapter_accepts_az_alias() -> None:
         assert adapter.opponent_mode == "alphazero"
     finally:
         adapter.close()
+
+
+class FakeBotCli:
+    """Stands in for the bot CLI process: mirrors the game and plays the first legal move."""
+
+    def __init__(self, path=None, env=None):
+        self.env = env or {}
+        self.mirror = _carcassonne_cpp.Carcassonne()
+
+    def close(self) -> None:
+        pass
+
+    def request(self, payload: dict) -> dict:
+        command = payload["cmd"]
+        if command == "apply_draw":
+            self.mirror.draw_tile(payload["type"])
+        elif command == "apply_tile":
+            self.mirror.place_tile(payload["x"], payload["y"], payload["rot"])
+        elif command == "apply_meeple":
+            self.mirror.place_meeple(payload["pos"])
+        elif command == "choose":
+            if self.mirror.current_phase == _carcassonne_cpp.PHASE_TILE:
+                x, y, rot = list(self.mirror.get_legal_tile_moves())[0]
+                return {"ok": True, "kind": "tile", "x": x, "y": y, "rot": rot}
+            return {"ok": True, "kind": "meeple", "pos": list(self.mirror.get_legal_meeple_moves())[0]}
+        return {"ok": True}
+
+
+def test_player_spec_passes_value_perspective_to_bot_env() -> None:
+    assert "CARCASSONNE_AZ_VALUE_IS_CURRENT_PLAYER" not in PlayerSpec(type="az", az_path="/m").bot_env()
+    on = PlayerSpec(type="az", az_path="/m", value_is_current_player=True).bot_env()
+    off = PlayerSpec(type="az", az_path="/m", value_is_current_player=False).bot_env()
+    assert on["CARCASSONNE_AZ_VALUE_IS_CURRENT_PLAYER"] == "true"
+    assert off["CARCASSONNE_AZ_VALUE_IS_CURRENT_PLAYER"] == "false"
+
+
+def test_setup_panel_seats_human_against_bot() -> None:
+    first = build_player_specs(1, "az", az_path=" /runs/0919 ", az_checkpoint=34, max_simulations=800)
+    assert first[0].is_human
+    assert (first[1].type, first[1].az_path, first[1].az_checkpoint, first[1].max_simulations) == (
+        "alphazero",
+        "/runs/0919",
+        34,
+        800,
+    )
+    assert human_seat(first) == 1
+
+    second = build_player_specs(2, "random", az_path="/ignored", az_checkpoint=34, max_simulations=800)
+    assert second[0].type == "random" and second[0].az_path == "" and second[0].max_simulations is None
+    assert human_seat(second) == 2
+
+    with pytest.raises(ValueError, match="model directory"):
+        build_player_specs(1, "az", az_path="  ")
+
+
+def test_ui_shows_the_whole_engine_board() -> None:
+    adapter = CppCarcassonneAdapter(seed=7)
+    assert BOARD_SIZE == ENGINE_BOARD_SIZE
+    assert adapter.view_origin == (0, 0)
+    # Every legal move, edge cells included, is offered to the human for a whole game.
+    while not adapter.state.game_over:
+        engine_moves = sorted(adapter._engine.get_legal_tile_moves())
+        ui_moves = sorted((move.x, move.y, move.rotation) for move in adapter.get_valid_moves())
+        assert ui_moves == engine_moves
+        adapter.confirm_tile(adapter.get_valid_moves()[-1])
+        adapter.apply_meeple(-1)
+
+
+def test_adapter_without_auto_run_leaves_bot_turn_to_caller(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(adapter_module, "BotCliClient", FakeBotCli)
+    adapter = CppCarcassonneAdapter(
+        seed=42,
+        player_specs=(PlayerSpec(type="human"), PlayerSpec(type="random")),
+        auto_run_bots=False,
+    )
+    adapter.confirm_tile(adapter.get_valid_moves()[0])
+    adapter.apply_meeple(-1)
+
+    assert adapter.state.current_player == 2
+    assert adapter.is_ai_turn()
+    assert len(adapter.move_records) == 1
+
+    assert adapter.run_ai_turns(1) == 1
+    assert adapter.state.current_player == 1
+    assert not adapter.is_ai_turn()
+    assert [record.player for record in adapter.move_records] == [2, 1]
+
+
+def test_bot_cli_rejects_binary_built_for_another_board() -> None:
+    client = BotCliClient.__new__(BotCliClient)
+    closed = []
+    client.request = lambda payload: {"ok": True, "observation_shape": [80, 15, 15]}
+    client.close = lambda: closed.append(True)
+
+    with pytest.raises(RuntimeError, match="build_ext --inplace"):
+        client._check_board_size()
+    assert closed
+
+
+def test_bot_cli_reads_value_perspective_from_training_config(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    monkeypatch.delenv("CARCASSONNE_AZ_VALUE_IS_CURRENT_PLAYER", raising=False)
+    (tmp_path / "config.json").write_text('{"value_is_current_player": true}')
+
+    cli = BotCliClient(env={"CARCASSONNE_AZ_PATH": str(tmp_path)})
+    try:
+        assert cli.request({"cmd": "info"})["value_is_current_player"] is True
+    finally:
+        cli.close()
+
+    cli = BotCliClient(
+        env={"CARCASSONNE_AZ_PATH": str(tmp_path), "CARCASSONNE_AZ_VALUE_IS_CURRENT_PLAYER": "false"}
+    )
+    try:
+        assert cli.request({"cmd": "info"})["value_is_current_player"] is False
+    finally:
+        cli.close()

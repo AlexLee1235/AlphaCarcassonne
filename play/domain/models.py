@@ -5,7 +5,7 @@ from enum import Enum
 from typing import Dict, List, Optional, Tuple
 
 
-BOARD_SIZE = 15
+BOARD_SIZE = 21  # must match the engine's BOARD_SIZE (game.hpp)
 
 
 class FeatureType(str, Enum):

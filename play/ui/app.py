@@ -127,6 +127,13 @@ def format_move_record(record: MoveRecord) -> str:
     return f"{base} {deltas}(得分)"
 
 
+def summarize_ai_status(status: str, limit: int = 240) -> str:
+    """First line of a bot message. libtorch errors carry a stack trace long enough
+    to push the rest of the side panel (Record included) out of view."""
+    first_line = next((line.strip() for line in status.splitlines() if line.strip()), "")
+    return first_line if len(first_line) <= limit else first_line[: limit - 3] + "..."
+
+
 def is_bot_vs_bot(player_specs: Tuple[PlayerSpec, PlayerSpec]) -> bool:
     return all(spec.is_bot for spec in player_specs)
 
@@ -236,7 +243,10 @@ class CarcassonneUI:
             padding=ft.Padding(left=8, top=8, right=8, bottom=8),
             border=_border(1, "#d0d7de"),
             border_radius=8,
-            content=self.setup_column,
+            # Both panels stay mounted and only their visibility flips. Swapping
+            # side_panel.content instead left the re-attached Record list frozen:
+            # after "New game" it no longer showed any record.
+            content=ft.Column([self.setup_column, self.game_column], spacing=0, expand=True),
         )
         self.root = ft.Row(
             controls=[self.board_panel, self.side_panel],
@@ -301,10 +311,15 @@ class CarcassonneUI:
             ],
             spacing=10,
             scroll=ft.ScrollMode.AUTO,
+            expand=True,
         )
 
+    def _show_side_panel(self, setup: bool) -> None:
+        self.setup_column.visible = setup
+        self.game_column.visible = not setup
+
     def show_setup(self) -> None:
-        self.side_panel.content = self.setup_column
+        self._show_side_panel(setup=True)
         self.refresh()
 
     def on_setup_start(self, _: ft.ControlEvent) -> None:
@@ -399,7 +414,7 @@ class CarcassonneUI:
         # The UI runs bot turns itself (off the UI thread), so the adapter must not.
         self.engine = CppCarcassonneAdapter(seed=seed, player_specs=player_specs, auto_run_bots=False)
         self.state = self.engine.state
-        self.side_panel.content = self.game_column
+        self._show_side_panel(setup=False)
         self.refresh()
         self._center_board()
         self._start_ai_turns()
@@ -460,7 +475,7 @@ class CarcassonneUI:
         self.turn_text.value = f"Turn: {self.state.turn} | To move: {player_label}"
         self.ai_text.value = f"Mode: {self.engine.mode_label()}"
         if self.engine.ai_status:
-            self.ai_text.value += f"\nAI: {self.engine.ai_status}"
+            self.ai_text.value += f"\nAI: {summarize_ai_status(self.engine.ai_status)}"
 
         if self.state.holding_tile_id is None:
             self.holding_image.visible = False
@@ -752,8 +767,12 @@ class CarcassonneUI:
             if self.engine is engine:
                 self.ai_running = False
                 if not engine.state.game_over:
-                    # A bot that is still to move here failed; ai_status holds why.
-                    self.status.value = engine.ai_status if engine.is_ai_turn() else "Your turn."
+                    if engine.is_ai_turn():
+                        # A bot that is still to move here failed; ai_status holds why.
+                        print(f"Bot failed: {engine.ai_status}", flush=True)
+                        self.status.value = summarize_ai_status(engine.ai_status)
+                    else:
+                        self.status.value = "Your turn."
                 self.refresh()
 
     def on_start_game(self, _: ft.ControlEvent) -> None:

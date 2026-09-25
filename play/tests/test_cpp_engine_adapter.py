@@ -7,7 +7,14 @@ from play.cpp_engine import BOARD_SIZE, CppCarcassonneAdapter, ENGINE_BOARD_SIZE
 from play.engine import adapter as adapter_module
 from play.engine.adapter import BotCliClient
 from play.models import Move, MoveRecord
-from play.ui.app import build_player_specs, format_move_record, human_seat, parse_ui_config, should_show_start_game
+from play.ui.app import (
+    build_player_specs,
+    format_move_record,
+    human_seat,
+    parse_ui_config,
+    should_show_start_game,
+    summarize_ai_status,
+)
 
 
 def _resolve_native_to_tile_phase(engine: _carcassonne_cpp.Carcassonne) -> None:
@@ -610,3 +617,11 @@ def test_bot_cli_reads_value_perspective_from_training_config(
         assert cli.request({"cmd": "info"})["value_is_current_player"] is False
     finally:
         cli.close()
+
+
+def test_summarize_ai_status_keeps_first_line_only() -> None:
+    trace = "P2 az: open file failed, file path: /m/checkpoint--1.pt\nframe #0: c10::Error::Error(...)\nframe #1: ..."
+
+    assert summarize_ai_status(trace) == "P2 az: open file failed, file path: /m/checkpoint--1.pt"
+    assert summarize_ai_status("x" * 500).endswith("...")
+    assert len(summarize_ai_status("x" * 500)) == 240

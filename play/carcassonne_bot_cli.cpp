@@ -112,6 +112,36 @@ open_spiel::algorithms::torch_az::ModelConfig LoadModelConfig(const std::string 
     return config;
 }
 
+// Which side the network's value is for. Runs trained with
+// --value_is_current_player=true (0916 onwards) predict the value for the
+// player to move; older runs predict it for player 0. Reading it wrong makes
+// the search maximise the opponent's value whenever the bot is not player 0.
+// Order: CARCASSONNE_AZ_VALUE_IS_CURRENT_PLAYER, then <az_path>/config.json
+// (written by the training run), then false.
+bool ResolveValueIsCurrentPlayer(const std::string &az_path) {
+    const std::string forced = EnvString("CARCASSONNE_AZ_VALUE_IS_CURRENT_PLAYER", "");
+    if (forced == "true" || forced == "1") {
+        return true;
+    }
+    if (forced == "false" || forced == "0") {
+        return false;
+    }
+    if (!forced.empty()) {
+        throw std::runtime_error("CARCASSONNE_AZ_VALUE_IS_CURRENT_PLAYER must be true or false, got " + forced);
+    }
+
+    std::ifstream file(az_path + "/config.json");
+    if (!file) {
+        return false;
+    }
+    const json config = json::parse(file, /*cb=*/nullptr, /*allow_exceptions=*/false);
+    if (!config.is_object()) {
+        return false;
+    }
+    const auto it = config.find("value_is_current_player");
+    return it != config.end() && it->is_boolean() && it->get<bool>();
+}
+
 void ValidateModelConfig(const open_spiel::Game &game,
                          const open_spiel::algorithms::torch_az::ModelConfig &config) {
     const std::vector<int> game_shape = game.ObservationTensorShape();
@@ -173,10 +203,15 @@ class CarcassonneBotCli {
 
     json Info() const {
         const std::vector<int> shape = game_->ObservationTensorShape();
-        return json{{"ok", true},
-                    {"observation_shape", shape},
-                    {"observation_tensor_size", game_->ObservationTensorSize()},
-                    {"num_distinct_actions", game_->NumDistinctActions()}};
+        json info{{"ok", true},
+                  {"observation_shape", shape},
+                  {"observation_tensor_size", game_->ObservationTensorSize()},
+                  {"num_distinct_actions", game_->NumDistinctActions()}};
+        const std::string az_path = EnvString("CARCASSONNE_AZ_PATH", "");
+        if (!az_path.empty()) {
+            info["value_is_current_player"] = ResolveValueIsCurrentPlayer(az_path);
+        }
+        return info;
     }
 
     open_spiel::carcassonne::CarcassonneState MakeState() const {
@@ -215,7 +250,8 @@ class CarcassonneBotCli {
         az_evaluator_ = std::make_shared<open_spiel::algorithms::torch_az::VPNetEvaluator>(
             az_device_manager_.get(), PositiveEnvInt("CARCASSONNE_AZ_BATCH_SIZE", 1),
             PositiveEnvInt("CARCASSONNE_AZ_THREADS", 1), PositiveEnvInt("CARCASSONNE_AZ_CACHE_SIZE", 16384),
-            PositiveEnvInt("CARCASSONNE_AZ_CACHE_SHARDS", 1));
+            PositiveEnvInt("CARCASSONNE_AZ_CACHE_SHARDS", 1), /*batch_wait_ms=*/1,
+            ResolveValueIsCurrentPlayer(az_path));
     }
 
     open_spiel::Action ChooseAlphaZero(const open_spiel::State &state, int simulations, int seed) {

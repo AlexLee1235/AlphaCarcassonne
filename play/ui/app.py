@@ -27,9 +27,12 @@ ALIGN_CENTER_RIGHT = ft.alignment.Alignment(1, 0)
 ALIGN_BOTTOM_CENTER = ft.alignment.Alignment(0, 1)
 ALIGN_CENTER_LEFT = ft.alignment.Alignment(-1, 0)
 
-CELL_SIZE = 30
-TILE_SIZE = CELL_SIZE - 2
-MEEPLE_SIZE = 8
+CELL_SIZE = 40
+MEEPLE_SIZE = 10
+MEEPLE_GLYPH = "■"  # ■
+MIN_BOARD_SCALE = 0.3
+MAX_BOARD_SCALE = 4.0
+ZOOM_STEP = 1.25
 QUARTER_TURN = math.pi / 2
 OPPONENT_TYPES = ("az", "mcts", "random", "human")
 DEFAULT_SIMULATIONS = 800
@@ -43,6 +46,10 @@ def _padding(left: int = 0, top: int = 0, right: int = 0, bottom: int = 0) -> ft
 def _border(width: int, color: str) -> ft.Border:
     side = ft.BorderSide(width=width, color=color)
     return ft.Border(left=side, top=side, right=side, bottom=side)
+
+
+def _margin(value: float) -> ft.Margin:
+    return ft.Margin(left=value, top=value, right=value, bottom=value)
 
 
 def _positive_int(value: str) -> int:
@@ -173,18 +180,52 @@ class CarcassonneUI:
         self.selected_move: Optional[Move] = None
         self.awaiting_meeple = False
         self.meeple_options: List[int] = []
+        self.board_zoom = 1.0
+        self.board_viewport: Optional[Tuple[float, float]] = None
+        self.center_board_pending = True
 
         self._build_setup_panel()
         self._build_game_panel()
 
-        self.grid_column = ft.Column(spacing=1, scroll=ft.ScrollMode.AUTO)
+        # Rows and cells sit edge to edge (spacing 0) so neighbouring tiles touch.
+        self.grid_column = ft.Column(spacing=0, tight=True)
+        # Drag to pan, mouse wheel / pinch to zoom. It keeps its transform while
+        # refresh() swaps the rows inside it.
+        self.board_viewer = ft.InteractiveViewer(
+            content=self.grid_column,
+            constrained=False,
+            min_scale=MIN_BOARD_SCALE,
+            max_scale=MAX_BOARD_SCALE,
+            # Flutter web may report a mouse wheel as a trackpad; either way scrolling zooms.
+            trackpad_scroll_causes_scale=True,
+            boundary_margin=_margin(CELL_SIZE * 4),
+            expand=True,
+            on_size_change=self.on_board_resize,
+        )
         self.board_panel = ft.Container(
             expand=True,
             padding=_padding(right=12),
             content=ft.Column(
                 controls=[
-                    ft.Text("Carcassonne", size=24, weight=ft.FontWeight.BOLD),
-                    ft.Row([self.grid_column], scroll=ft.ScrollMode.AUTO),
+                    ft.Row(
+                        [
+                            ft.Text("Carcassonne", size=24, weight=ft.FontWeight.BOLD),
+                            ft.IconButton(ft.Icons.ZOOM_IN, tooltip="Zoom in", on_click=self.on_zoom_in),
+                            ft.IconButton(ft.Icons.ZOOM_OUT, tooltip="Zoom out", on_click=self.on_zoom_out),
+                            ft.IconButton(
+                                ft.Icons.CENTER_FOCUS_STRONG, tooltip="Center on tiles", on_click=self.on_reset_view
+                            ),
+                        ],
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    ),
+                    ft.Container(
+                        expand=True,
+                        bgcolor="#f3f4f6",
+                        border=_border(1, "#d0d7de"),
+                        border_radius=8,
+                        clip_behavior=ft.ClipBehavior.HARD_EDGE,
+                        content=self.board_viewer,
+                    ),
                 ],
                 spacing=8,
                 expand=True,
@@ -200,12 +241,12 @@ class CarcassonneUI:
         self.root = ft.Row(
             controls=[self.board_panel, self.side_panel],
             expand=True,
-            vertical_alignment=ft.CrossAxisAlignment.START,
+            # Stretch so the side panel is window-tall and the Record box can fill the rest.
+            vertical_alignment=ft.CrossAxisAlignment.STRETCH,
         )
 
         self.page.title = "Carcassonne"
         self.page.padding = 10
-        self.page.scroll = ft.ScrollMode.AUTO
         self.page.add(self.root)
 
         if has_bot_player(self.player_specs):
@@ -299,8 +340,8 @@ class CarcassonneUI:
             [ft.ProgressRing(width=16, height=16, stroke_width=2), ft.Text("AI thinking...")],
             visible=False,
         )
-        self.holding_image = ft.Image(src="tiles/1.png", width=140, height=140, fit=IMAGE_FIT.CONTAIN)
-        self.records_column = ft.Column(spacing=4, scroll=ft.ScrollMode.AUTO)
+        self.holding_image = ft.Image(src="tiles/1.png", width=100, height=100, fit=IMAGE_FIT.CONTAIN)
+        self.records_column = ft.Column(spacing=4, scroll=ft.ScrollMode.AUTO, expand=True)
 
         self.start_game_btn = BUTTON("Start Game", on_click=self.on_start_game)
         self.new_game_btn = ft.OutlinedButton("New game", on_click=self.on_new_game)
@@ -324,8 +365,8 @@ class CarcassonneUI:
                 self.status,
                 ft.Text("Tile in hand (click a green cell again to rotate)", weight=ft.FontWeight.W_600),
                 ft.Container(
-                    width=160,
-                    height=160,
+                    width=120,
+                    height=120,
                     border=_border(1, "#cccccc"),
                     alignment=ALIGN_CENTER,
                     content=self.holding_image,
@@ -335,9 +376,11 @@ class CarcassonneUI:
                 ft.Row([self.confirm_btn, self.skip_btn], wrap=True),
                 ft.Row(list(self.meeple_buttons.values()), wrap=True),
                 ft.Text("Record", size=18, weight=ft.FontWeight.BOLD),
+                # Takes whatever height is left and scrolls on its own. A fixed-height box at
+                # the end of a scrolling column fell off the bottom of shorter windows.
                 ft.Container(
                     width=320,
-                    height=220,
+                    expand=True,
                     border=_border(1, "#d0d7de"),
                     border_radius=4,
                     padding=ft.Padding(left=6, top=6, right=6, bottom=6),
@@ -345,7 +388,7 @@ class CarcassonneUI:
                 ),
             ],
             spacing=8,
-            scroll=ft.ScrollMode.AUTO,
+            expand=True,
         )
 
     def start_game(self, player_specs: Tuple[PlayerSpec, PlayerSpec], seed: Optional[int]) -> None:
@@ -358,6 +401,7 @@ class CarcassonneUI:
         self.state = self.engine.state
         self.side_panel.content = self.game_column
         self.refresh()
+        self._center_board()
         self._start_ai_turns()
 
     def _close_engine(self) -> None:
@@ -427,9 +471,7 @@ class CarcassonneUI:
         self.holding_image.rotate = ft.Rotate(angle=rotation * QUARTER_TURN)
 
         self.score_text.value = f"Scores -> P1: {self.state.scores[1]} | P2: {self.state.scores[2]}"
-        self.meeple_text.value = (
-            f"Meeples -> P1: {self.state.meeples_remaining[1]} | P2: {self.state.meeples_remaining[2]}"
-        )
+        self.meeple_text.spans = self._meeple_spans()
         record_controls: List[ft.Control] = [
             ft.Text(format_move_record(record), selectable=True) for record in self.engine.move_records
         ]
@@ -443,6 +485,20 @@ class CarcassonneUI:
 
         self.page.update()
 
+    def _meeple_spans(self) -> List[ft.TextSpan]:
+        """One square per meeple still in hand, in the player's colour."""
+        spans: List[ft.TextSpan] = []
+        for player in (1, 2):
+            left = self.state.meeples_remaining[player]
+            spans.append(ft.TextSpan(f"{'' if player == 1 else chr(10)}P{player} meeples  "))
+            spans.append(
+                ft.TextSpan(
+                    MEEPLE_GLYPH * left if left else "-",
+                    style=ft.TextStyle(color=self._player_color(player), letter_spacing=1),
+                )
+            )
+        return spans
+
     def _result_text(self) -> str:
         scores = self.state.scores
         seat = human_seat(self.player_specs)
@@ -455,7 +511,7 @@ class CarcassonneUI:
 
     def _build_row(self, y: int, moves_by_cell: Dict[Tuple[int, int], List[int]]) -> ft.Row:
         row_controls = [self._build_cell(x, y, moves_by_cell) for x in range(BOARD_SIZE)]
-        return ft.Row(row_controls, spacing=1)
+        return ft.Row(row_controls, spacing=0, tight=True)
 
     def _build_cell(self, x: int, y: int, moves_by_cell: Dict[Tuple[int, int], List[int]]) -> ft.Container:
         pos = (x, y)
@@ -466,7 +522,7 @@ class CarcassonneUI:
         is_selected = self.selected_move is not None and (self.selected_move.x, self.selected_move.y) == pos
 
         bg = "#ffffff"
-        border_color = "#cccccc"
+        border_color = "#e5e7eb"
         border_width = 1
         if is_valid:
             bg = "#ecfdf3"
@@ -474,49 +530,55 @@ class CarcassonneUI:
         if is_selected:
             bg = "#fff3cd"
             border_color = "#d18e00"
-        if tile is not None and tile.tile_owner is not None:
-            border_color = self._player_color(tile.tile_owner)
-            border_width = 3
 
-        content: ft.Control
+        # Tiles fill the whole cell with no border of their own, so placed tiles touch.
+        # Highlights are drawn as an overlay on top instead of shrinking the tile.
+        layers: List[ft.Control] = []
+        highlight: Optional[Tuple[int, str]] = None
         if tile is not None:
-            overlay_controls: List[ft.Control] = [
-                ft.Image(
-                    src=f"tiles/{tile.tile_id}.png",
-                    width=TILE_SIZE,
-                    height=TILE_SIZE,
-                    fit=IMAGE_FIT.COVER,
-                    rotate=ft.Rotate(angle=tile.rotation * QUARTER_TURN),
-                )
-            ]
-            if tile.meeple_markers:
-                for owner, pos_marker in tile.meeple_markers:
-                    overlay_controls.append(self._build_meeple_marker(owner, pos_marker))
-            elif tile.meeple_owner is not None and tile.meeple_pos is not None:
-                overlay_controls.append(self._build_meeple_marker(tile.meeple_owner, tile.meeple_pos))
-            content = ft.Stack(controls=overlay_controls)
+            layers.append(self._build_tile_image(tile.tile_id, tile.rotation))
+            for owner, pos_marker in tile.meeple_markers:
+                layers.append(self._build_meeple_marker(owner, pos_marker))
+            if tile.tile_owner is not None:
+                highlight = (3, self._player_color(tile.tile_owner))
         elif is_selected and self.state.holding_tile_id is not None and self.selected_move is not None:
-            content = ft.Container(
-                opacity=0.55,
-                content=ft.Image(
-                    src=f"tiles/{self.state.holding_tile_id}.png",
-                    width=TILE_SIZE,
-                    height=TILE_SIZE,
-                    fit=IMAGE_FIT.COVER,
-                    rotate=ft.Rotate(angle=self.selected_move.rotation * QUARTER_TURN),
-                ),
+            layers.append(
+                ft.Container(
+                    opacity=0.55,
+                    content=self._build_tile_image(self.state.holding_tile_id, self.selected_move.rotation),
+                )
             )
-        else:
-            content = ft.Text("")
+            highlight = (2, border_color)
 
+        on_click = lambda _: self.on_cell_click(x, y, moves_by_cell)
+        if not layers:
+            return ft.Container(
+                width=CELL_SIZE,
+                height=CELL_SIZE,
+                bgcolor=bg,
+                border=_border(border_width, border_color),
+                on_click=on_click,
+            )
+        if highlight is not None:
+            width, color = highlight
+            layers.append(ft.Container(width=CELL_SIZE, height=CELL_SIZE, border=_border(width, color)))
         return ft.Container(
             width=CELL_SIZE,
             height=CELL_SIZE,
             bgcolor=bg,
-            border=_border(border_width, border_color),
-            alignment=ALIGN_CENTER,
-            content=content,
-            on_click=lambda _: self.on_cell_click(x, y, moves_by_cell),
+            content=ft.Stack(controls=layers, width=CELL_SIZE, height=CELL_SIZE),
+            on_click=on_click,
+        )
+
+    def _build_tile_image(self, tile_id: int, rotation: int) -> ft.Image:
+        # The tile art is not quite square (about 156x151); FILL stretches it over the
+        # whole cell so there is no strip of background between neighbouring tiles.
+        return ft.Image(
+            src=f"tiles/{tile_id}.png",
+            width=CELL_SIZE,
+            height=CELL_SIZE,
+            fit=IMAGE_FIT.FILL,
+            rotate=ft.Rotate(angle=rotation * QUARTER_TURN),
         )
 
     def _player_color(self, owner: int) -> str:
@@ -534,15 +596,15 @@ class CarcassonneUI:
             4: ALIGN_CENTER,
         }
         padding_map = {
-            0: _padding(top=2),
-            1: _padding(right=2),
-            2: _padding(bottom=2),
-            3: _padding(left=2),
+            0: _padding(top=3),
+            1: _padding(right=3),
+            2: _padding(bottom=3),
+            3: _padding(left=3),
             4: _padding(),
         }
         return ft.Container(
-            width=TILE_SIZE,
-            height=TILE_SIZE,
+            width=CELL_SIZE,
+            height=CELL_SIZE,
             alignment=position_align.get(meeple_pos, ALIGN_CENTER),
             padding=padding_map.get(meeple_pos, _padding()),
             content=ft.Container(
@@ -553,6 +615,56 @@ class CarcassonneUI:
                 border_radius=2,
             ),
         )
+
+    # InteractiveViewer.zoom() scales about the content origin, and Python cannot read
+    # the transform back after the user drags or wheels. So the buttons start from a
+    # known transform: reset to identity, zoom, then pan the placed tiles to the middle.
+
+    def on_board_resize(self, e: ft.LayoutSizeChangeEvent) -> None:
+        self.board_viewport = (e.width, e.height)
+        if self.center_board_pending:
+            self._center_board()
+
+    def _center_board(self) -> None:
+        self.board_zoom = 1.0
+        if self.board_viewport is None:
+            self.center_board_pending = True  # on_board_resize finishes it
+            return
+        self.center_board_pending = False
+        self.page.run_task(self._show_board, self.board_zoom)
+
+    def _tiles_center(self) -> Tuple[float, float]:
+        cells = list(self.state.board) if self.state is not None else []
+        if not cells:
+            return BOARD_SIZE * CELL_SIZE / 2, BOARD_SIZE * CELL_SIZE / 2
+        origin_x, origin_y = self.engine.view_origin
+        xs = [x - origin_x for x, _ in cells]
+        ys = [y - origin_y for _, y in cells]
+        return (min(xs) + max(xs) + 1) * CELL_SIZE / 2, (min(ys) + max(ys) + 1) * CELL_SIZE / 2
+
+    async def _show_board(self, zoom: float) -> None:
+        await self.board_viewer.reset()
+        if zoom != 1.0:
+            await self.board_viewer.zoom(zoom)
+        if self.board_viewport is not None:
+            width, height = self.board_viewport
+            center_x, center_y = self._tiles_center()
+            # pan() moves in content units: the viewport shows s * (p + d), s = zoom.
+            await self.board_viewer.pan(width / 2 / zoom - center_x, height / 2 / zoom - center_y)
+
+    def _step_zoom(self, factor: float) -> None:
+        self.board_zoom = min(MAX_BOARD_SCALE, max(MIN_BOARD_SCALE, self.board_zoom * factor))
+        self.page.run_task(self._show_board, self.board_zoom)
+
+    def on_zoom_in(self, _: ft.ControlEvent) -> None:
+        self._step_zoom(ZOOM_STEP)
+
+    def on_zoom_out(self, _: ft.ControlEvent) -> None:
+        self._step_zoom(1 / ZOOM_STEP)
+
+    def on_reset_view(self, _: ft.ControlEvent) -> None:
+        self.board_zoom = 1.0
+        self.page.run_task(self._show_board, self.board_zoom)
 
     def on_cell_click(self, x: int, y: int, moves_by_cell: Dict[Tuple[int, int], List[int]]) -> None:
         if self.awaiting_meeple or not self._human_turn():

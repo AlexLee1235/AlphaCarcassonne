@@ -14,6 +14,7 @@
 
 #include "open_spiel/algorithms/mcts.h"
 
+#include <cmath>
 #include <memory>
 #include <utility>
 
@@ -167,6 +168,46 @@ void MCTSTest_GarbageCollect() {
                    root->explore_count == 1000000);
 }
 
+// Root noise is skipped where it would only distort the policy target: see
+// kNoiseMinActions in mcts.cc. RandomRolloutEvaluator's prior is uniform, so
+// any noise shows up as a child whose prior is not 1/n.
+void MCTSTest_NoNoiseWhenTooFewActions() {
+  auto game = LoadGame("tic_tac_toe");
+  auto evaluator = std::make_shared<RandomRolloutEvaluator>(1, 42);
+
+  auto search = [&](const State& state) {
+    algorithms::MCTSBot bot(*game, evaluator, UCT_C,
+                            /*max_simulations=*/20,
+                            /*max_memory_mb=*/5,
+                            /*solve=*/false,
+                            /*seed=*/42,
+                            /*verbose=*/false,
+                            algorithms::ChildSelectionPolicy::UCT,
+                            /*dirichlet_alpha=*/1.0,
+                            /*dirichlet_epsilon=*/0.25);
+    return bot.MCTSearch(state);
+  };
+  auto priors_untouched = [](const algorithms::SearchNode& root) {
+    for (const algorithms::SearchNode& child : root.children) {
+      if (std::abs(child.prior - 1.0 / root.children.size()) > 1e-9) {
+        return false;
+      }
+    }
+    return true;
+  };
+
+  // Nine legal actions to start with: noisy.
+  std::unique_ptr<State> state = game->NewInitialState();
+  SPIEL_CHECK_FALSE(priors_untouched(*search(*state)));
+
+  // Four moves in, five are left, none of them a win: left alone.
+  for (Action action : {0, 1, 2, 3}) {
+    state->ApplyAction(action);
+  }
+  SPIEL_CHECK_EQ(state->LegalActions().size(), 5);
+  SPIEL_CHECK_TRUE(priors_untouched(*search(*state)));
+}
+
 }  // namespace
 }  // namespace open_spiel
 
@@ -180,4 +221,5 @@ int main(int argc, char** argv) {
   open_spiel::MCTSTest_SolveLoss();
   open_spiel::MCTSTest_SolveWin();
   open_spiel::MCTSTest_GarbageCollect();
+  open_spiel::MCTSTest_NoNoiseWhenTooFewActions();
 }

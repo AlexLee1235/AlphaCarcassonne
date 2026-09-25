@@ -185,6 +185,15 @@ Action SearchNode::SampleFromPrior(const State& state,
   return chosen_action;
 }
 
+// Dirichlet noise buys exploration: it lifts moves the network would not
+// have tried often enough to find out. A node this small has nothing left to
+// buy, because the simulations reach every child hundreds of times whatever
+// the prior says (Carcassonne's meeple nodes average 1.63 legal actions, and
+// it searches them with the same 800 simulations as a tile placement). What
+// the noise does do there is move the visit counts away from what the search
+// believes, and those visit counts are the policy target.
+constexpr int kNoiseMinActions = 6;
+
 std::vector<double> dirichlet_noise(int count, double alpha,
                                     std::mt19937* rng) {
   std::vector<double> noise;
@@ -280,7 +289,8 @@ std::unique_ptr<State> MCTSBot::ApplyTreePolicy(
     if (current_node->children.empty()) {
       // For a new node, initialize its state, then choose a child as normal.
       ActionsAndProbs legal_actions = evaluator_->Prior(*working_state);
-      if (current_node == root && dirichlet_alpha_ > 0) {
+      if (current_node == root && dirichlet_alpha_ > 0 &&
+          static_cast<int>(legal_actions.size()) >= kNoiseMinActions) {
         std::vector<double> noise =
             dirichlet_noise(legal_actions.size(), dirichlet_alpha_, &rng_);
         for (int i = 0; i < legal_actions.size(); i++) {

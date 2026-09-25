@@ -527,34 +527,22 @@ class CppCarcassonneAdapter:
                 rotation=rotation,
                 tile_owner=latest_owner if (x, y) == latest_pos else None,
             )
-        for player, x, y, pos in self._engine.get_meeple_tokens():
-            tile = board.get((x, y))
+        # The engine only knows meeple counts per feature, so get_meeple_tokens() marks every
+        # edge of a claimed road/city. Draw each meeple where it was actually placed (from
+        # move_records) and use the tokens only to tell whether it is still on the board:
+        # completing a feature or monastery clears its token and returns the meeple.
+        live_tokens = set(self._engine.get_meeple_tokens())
+        for record in self.move_records:
+            if record.meeple_pos == -1:
+                continue
+            if (record.player - 1, record.x, record.y, record.meeple_pos) not in live_tokens:
+                continue
+            tile = board.get((record.x, record.y))
             if tile is None:
-                raise RuntimeError(f"Native meeple token ({player}, {x}, {y}, {pos}) has no matching tile snapshot")
-            owner = 0 if player < 0 else player + 1
-            tile.meeple_markers.append((owner, pos))
-        for tile in board.values():
-            self._merge_contested_meeple_markers(tile)
+                raise RuntimeError(f"Meeple record {record} has no matching tile snapshot")
+            tile.meeple_markers.append((record.player, record.meeple_pos))
+            tile.meeple_owner, tile.meeple_pos = record.player, record.meeple_pos
         return board
-
-    def _merge_contested_meeple_markers(self, tile: PlacedTile) -> None:
-        if not tile.meeple_markers:
-            return
-
-        owners_by_pos: Dict[int, set[int]] = {}
-        for owner, pos in tile.meeple_markers:
-            owners_by_pos.setdefault(pos, set()).add(owner)
-
-        merged: List[Tuple[int, int]] = []
-        for pos in sorted(owners_by_pos):
-            owners = owners_by_pos[pos]
-            if 0 in owners or (1 in owners and 2 in owners):
-                merged.append((0, pos))
-            else:
-                merged.extend((owner, pos) for owner in sorted(owners))
-
-        tile.meeple_markers = merged
-        tile.meeple_owner, tile.meeple_pos = merged[0]
 
     def _build_state(self) -> GameState:
         game_over = bool(self._engine.is_game_over)

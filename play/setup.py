@@ -128,13 +128,20 @@ def bot_algorithm_objects() -> list[str]:
     return existing_objects(
         [
             BUILD / "algorithms" / "CMakeFiles" / "algorithms.dir" / "mcts.cc.o",
-            BUILD / "algorithms" / "alpha_zero_torch" / "CMakeFiles" / "alpha_zero_torch.dir" / "model.cc.o",
-            BUILD / "algorithms" / "alpha_zero_torch" / "CMakeFiles" / "alpha_zero_torch.dir" / "vpevaluator.cc.o",
-            BUILD / "algorithms" / "alpha_zero_torch" / "CMakeFiles" / "alpha_zero_torch.dir" / "vpnet.cc.o",
             BUILD / "utils" / "CMakeFiles" / "utils.dir" / "thread.cc.o",
         ],
         "OpenSpiel bot",
     )
+
+
+# Compiled from source rather than linked from build/: these change with the
+# training code, and a stale object in build/ fails to link (e.g. a missing
+# VPNetModel::LoadCheckpointWeightsOnly).
+alpha_zero_torch_sources = [
+    OPEN_SPIEL / "algorithms" / "alpha_zero_torch" / "model.cc",
+    OPEN_SPIEL / "algorithms" / "alpha_zero_torch" / "vpevaluator.cc",
+    OPEN_SPIEL / "algorithms" / "alpha_zero_torch" / "vpnet.cc",
+]
 
 
 class BuildWithBotCli(build_ext):
@@ -151,6 +158,7 @@ class BuildWithBotCli(build_ext):
             HERE / "carcassonne_bot_cli.cpp",
             OPEN_SPIEL / "games" / "carcassonne" / "carcassonne.cc",
             *carcassonne_sources,
+            *alpha_zero_torch_sources,
         ]
         command = [
             "g++",

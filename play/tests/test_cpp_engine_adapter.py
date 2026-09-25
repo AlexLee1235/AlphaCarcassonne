@@ -314,28 +314,65 @@ def test_adapter_maps_active_meeple_into_board_snapshot() -> None:
     assert playable_options
 
     adapter.apply_meeple(playable_options[0])
+    assert adapter.state.meeples_remaining[1] == 6  # still on the board, not scored back
 
-    marked_tiles = [tile for tile in adapter.state.board.values() if tile.meeple_owner == 1]
-    assert marked_tiles
-    assert all(tile.meeple_pos is not None and 0 <= tile.meeple_pos <= 4 for tile in marked_tiles)
+    record = adapter.move_records[0]
+    marked = {pos: tile for pos, tile in adapter.state.board.items() if tile.meeple_markers}
+    assert list(marked) == [(record.x, record.y)]
+    assert marked[(record.x, record.y)].meeple_markers == [(1, playable_options[0])]
 
 
-def test_adapter_merges_overlapping_player_meeple_markers_to_owner_zero() -> None:
-    class FakeEngine:
-        def get_placed_tiles(self):
-            return [(START_POS[0], START_POS[1], 1, 0)]
+class FakeMeepleEngine:
+    def __init__(self, tiles, tokens):
+        self.tiles = tiles
+        self.tokens = tokens
 
-        def get_meeple_tokens(self):
-            return [(0, START_POS[0], START_POS[1], 2), (1, START_POS[0], START_POS[1], 2)]
+    def get_placed_tiles(self):
+        return [(x, y, 1, 0) for x, y in self.tiles]
 
+    def get_meeple_tokens(self):
+        return self.tokens
+
+
+def _meeple_record(player: int, x: int, y: int, meeple_pos: int) -> MoveRecord:
+    return MoveRecord(player=player, tile_id=1, x=x, y=y, rotation=0, meeple_pos=meeple_pos)
+
+
+def test_adapter_draws_meeple_only_where_it_was_placed() -> None:
+    sx, sy = START_POS
+    road = [(sx, sy), (sx + 1, sy), (sx + 2, sy)]
     adapter = CppCarcassonneAdapter(seed=42)
-    adapter._engine = FakeEngine()
+    # The engine marks the claimed road on every tile it runs through.
+    adapter._engine = FakeMeepleEngine(road, [(0, x, y, 1) for x, y in road] + [(0, x, y, 3) for x, y in road])
+    adapter.move_records = [_meeple_record(1, sx + 1, sy, 3), _meeple_record(2, sx + 2, sy, -1)]
 
-    tile = adapter._build_board()[START_POS]
+    board = adapter._build_board()
 
-    assert tile.meeple_markers == [(0, 2)]
-    assert tile.meeple_owner == 0
-    assert tile.meeple_pos == 2
+    assert {pos: tile.meeple_markers for pos, tile in board.items() if tile.meeple_markers} == {(sx + 1, sy): [(1, 3)]}
+    assert (board[(sx + 1, sy)].meeple_owner, board[(sx + 1, sy)].meeple_pos) == (1, 3)
+
+
+def test_adapter_hides_meeple_returned_by_a_completed_feature() -> None:
+    sx, sy = START_POS
+    adapter = CppCarcassonneAdapter(seed=42)
+    adapter._engine = FakeMeepleEngine([(sx, sy), (sx + 1, sy)], [])
+    adapter.move_records = [_meeple_record(1, sx + 1, sy, 0), _meeple_record(2, sx, sy, 4)]
+
+    assert not any(tile.meeple_markers for tile in adapter._build_board().values())
+
+
+def test_adapter_keeps_each_player_meeple_on_a_shared_feature() -> None:
+    sx, sy = START_POS
+    city = [(sx, sy), (sx + 1, sy)]
+    adapter = CppCarcassonneAdapter(seed=42)
+    tokens = [(player, x, y, pos) for player in (0, 1) for x, y in city for pos in (1, 3)]
+    adapter._engine = FakeMeepleEngine(city, tokens)
+    adapter.move_records = [_meeple_record(2, sx + 1, sy, 3), _meeple_record(1, sx, sy, 1)]
+
+    board = adapter._build_board()
+
+    assert board[(sx, sy)].meeple_markers == [(1, 1)]
+    assert board[(sx + 1, sy)].meeple_markers == [(2, 3)]
 
 
 def test_adapter_random_opponent_auto_plays_back_to_human() -> None:

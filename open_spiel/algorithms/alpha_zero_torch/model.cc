@@ -531,7 +531,7 @@ std::vector<torch::Tensor> ModelImpl::losses(torch::Tensor inputs,
   torch::nn::MSELoss mse_loss;
   torch::Tensor value_loss = mse_loss(value_predictions, value_targets);
 
-  // L2 regularization loss (weights only).
+  // L2 regularization loss (conv and linear weights only).
   torch::Tensor l2_regularization_loss = torch::full(
       {1, 1}, 0, torch::TensorOptions().dtype(torch::kFloat32).device(device_));
   for (auto& named_parameter : this->named_parameters()) {
@@ -539,8 +539,15 @@ std::vector<torch::Tensor> ModelImpl::losses(torch::Tensor inputs,
     //   {key, value} == {std::string name, torch::Tensor parameter}
     std::string parameter_name = named_parameter.key();
 
-    // Do not include bias' in the loss.
-    if (absl::StrContains(parameter_name, "bias")) {
+    // Neither biases nor batch norm belong in the penalty. Batch norm makes
+    // the convolution before it scale invariant, so its gamma is the only
+    // scale that layer has left: decaying it does not regularize anything, it
+    // quietly turns the effective learning rate down, and hardest on the
+    // layers whose task gradient is weakest. Upstream's JAX models
+    // (python/algorithms/alpha_zero/model_linen.py, model_nnx.py) mask both
+    // out; this C++ port never caught up.
+    if (absl::StrContains(parameter_name, "bias") ||
+        absl::StrContains(parameter_name, "batch_norm")) {
       continue;
     }
 

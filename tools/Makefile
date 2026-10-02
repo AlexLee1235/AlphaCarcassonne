@@ -9,13 +9,13 @@
 
 GAME     := ../open_spiel/games/carcassonne/game
 CXXFLAGS := -O2 -std=c++17 -Wall
-SRCS     := $(GAME)/Feature.cpp $(GAME)/FeatureModule.cpp $(GAME)/MonasteryModule.cpp \
+SRCS     := $(GAME)/Feature.cpp $(GAME)/FeatureModule.cpp $(GAME)/FieldModule.cpp $(GAME)/MonasteryModule.cpp \
             $(GAME)/BoardModule.cpp $(GAME)/FrontierModule.cpp $(GAME)/DeckModule.cpp \
             $(GAME)/game.cpp
 
 # BOARD_SIZE=25 的副本，用來量「沒有被裁切時」對局有多大
 G25      := build/game25
-SRCS25   := $(G25)/Feature.cpp $(G25)/FeatureModule.cpp $(G25)/MonasteryModule.cpp \
+SRCS25   := $(G25)/Feature.cpp $(G25)/FeatureModule.cpp $(G25)/FieldModule.cpp $(G25)/MonasteryModule.cpp \
             $(G25)/BoardModule.cpp $(G25)/FrontierModule.cpp $(G25)/DeckModule.cpp \
             $(G25)/game.cpp
 

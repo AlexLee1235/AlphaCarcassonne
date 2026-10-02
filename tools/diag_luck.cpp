@@ -36,7 +36,7 @@ static bool PlayTile(Carcassonne &g, Agent a, int me, std::mt19937 &rng) {
 }
 
 static bool PlayMeeple(Carcassonne &g, Agent a, int me, std::mt19937 &rng) {
-    FixedVector<int, 6> mm = g.getLegalMeepleMoves();
+    MeepleMoves mm = g.getLegalMeepleMoves();
     if (mm.size() == 0) return false;
     if (a == RANDOM) {
         g.placeMeeple(mm[std::uniform_int_distribution<int>(0, mm.size() - 1)(rng)]);

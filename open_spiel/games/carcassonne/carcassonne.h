@@ -21,9 +21,14 @@ namespace carcassonne {
 inline constexpr int kNumPlayers = 2;
 inline constexpr int kChanceActionCount = CANONICAL_TILE_TYPE_COUNT;
 inline constexpr int kTileActionCount = BOARD_SIZE * BOARD_SIZE * 4;
-inline constexpr int kMeepleActionCount = 6;
+// One action per meeple position, -1 (skip) to MEEPLE_POS_COUNT - 2.
+inline constexpr int kMeepleActionCount = MEEPLE_POS_COUNT;
 inline constexpr int kMeepleActionOffset = kTileActionCount;
 inline constexpr int kNumDistinctPlayerActions = kTileActionCount + kMeepleActionCount;
+// The conv policy head of alpha_zero_torch (model.cc) reads at most
+// kMaxExtraActions = 16 actions beyond the tile placements; with more it
+// silently falls back to the dense head.
+static_assert(kMeepleActionCount <= 16, "alpha_zero_torch's conv policy head would not fit");
 
 // Observation: spatial planes for what is on the board, then one plane that
 // is not spatial. Its first kGlobalFeatures cells hold a vector of board-wide
@@ -59,11 +64,20 @@ inline constexpr int kFeatureSignedScorePlane = kFeatureOpponentMeeplesPlane + 4
 // Monasteries: tiles around it / 9, and +1 mine, -1 the opponent's.
 inline constexpr int kMonasteryCoveragePlane = kFeatureSignedScorePlane + 4;
 inline constexpr int kMonasteryOwnerPlane = kMonasteryCoveragePlane + 1;
-inline constexpr int kSpatialPlanes = kMonasteryOwnerPlane + 1;
+// The field each half-edge of a tile belongs to (see FieldLayout), one plane
+// per half-edge for each quantity; 0 on city sides.
+inline constexpr int kFieldMyFarmersPlane = kMonasteryOwnerPlane + 1;                 // count / 7
+inline constexpr int kFieldOpponentFarmersPlane = kFieldMyFarmersPlane + HALF_EDGE_COUNT;
+inline constexpr int kFieldScorePlane = kFieldOpponentFarmersPlane + HALF_EDGE_COUNT; // 3 * completed cities / 30
+// The same for a tile's inner field, which touches no half-edge.
+inline constexpr int kInnerFieldMyFarmersPlane = kFieldScorePlane + HALF_EDGE_COUNT;
+inline constexpr int kInnerFieldOpponentFarmersPlane = kInnerFieldMyFarmersPlane + 1;
+inline constexpr int kInnerFieldScorePlane = kInnerFieldOpponentFarmersPlane + 1;
+inline constexpr int kSpatialPlanes = kInnerFieldScorePlane + 1;
 inline constexpr int kGlobalFeaturePlane = kSpatialPlanes;
 inline constexpr int kObservationPlanes = kGlobalFeaturePlane + 1;
 static_assert(kLastPlacedPlane == 26);
-static_assert(kSpatialPlanes == 49);
+static_assert(kSpatialPlanes == 76);
 
 // Offsets in the global vector, all from the observing player's side.
 inline constexpr int kGlobalMyScore = 0;           // / 40
@@ -81,12 +95,16 @@ inline constexpr int kGlobalRemainingByType = kGlobalCompletedTurns + 1;      //
 inline constexpr int kGlobalTileInHand = kGlobalRemainingByType + CANONICAL_TILE_TYPE_COUNT; // one-hot
 inline constexpr int kGlobalTilePhase = kGlobalTileInHand + CANONICAL_TILE_TYPE_COUNT;
 inline constexpr int kGlobalMeeplePhase = kGlobalTilePhase + 1;
-// Legal meeple moves in action order: skip, sides 0-3, monastery.
+// Legal meeple moves in action order: skip, sides 0-3, monastery, half-edges
+// 0-7, inner field.
 inline constexpr int kGlobalLegalMeeple = kGlobalMeeplePhase + 1;
 inline constexpr int kGlobalLegalPlacements = kGlobalLegalMeeple + kMeepleActionCount; // / 100
 inline constexpr int kGlobalIsPlayer0 = kGlobalLegalPlacements + 1;
-inline constexpr int kGlobalFeatures = kGlobalIsPlayer0 + 1;
-static_assert(kGlobalFeatures == 70);
+// The part of the pending scores that fields score, / 40.
+inline constexpr int kGlobalMyFieldPending = kGlobalIsPlayer0 + 1;
+inline constexpr int kGlobalOpponentFieldPending = kGlobalMyFieldPending + 1;
+inline constexpr int kGlobalFeatures = kGlobalOpponentFieldPending + 1;
+static_assert(kGlobalFeatures == 81);
 static_assert(kGlobalFeatures <= BOARD_SIZE * BOARD_SIZE);
 inline constexpr int kObservationTensorSize = kObservationPlanes * BOARD_SIZE * BOARD_SIZE;
 
@@ -151,11 +169,14 @@ class CarcassonneGame : public Game {
 inline constexpr int kNumBoardRotations = 4;
 
 // Which sides of the just-placed tile belong to the same feature (see
-// Carcassonne::getLastTileSideGroups); all -1 outside the meeple phase. Meeple
-// actions 0-3 name a feature by its lowest side, which a rotation can change,
-// and the observation alone does not say which sides share a feature.
-using SideGroups = std::array<int8_t, 4>;
-inline constexpr SideGroups kNoSideGroups = {-1, -1, -1, -1};
+// Carcassonne::getLastTileSideGroups), then which half-edges belong to the
+// same field (getLastTileFieldGroups); all -1 outside the meeple phase. Meeple
+// actions name a feature by its lowest side and a field by its lowest
+// half-edge, which a rotation can change, and the observation alone does not
+// say which sides share a feature.
+inline constexpr int kFieldGroupOffset = 4;
+using SideGroups = std::array<int8_t, kFieldGroupOffset + HALF_EDGE_COUNT>;
+inline constexpr SideGroups kNoSideGroups = {-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1};
 
 SideGroups GetSideGroups(const CarcassonneState &state);
 

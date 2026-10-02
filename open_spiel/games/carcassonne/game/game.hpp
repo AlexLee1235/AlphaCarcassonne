@@ -18,6 +18,21 @@ static_assert(BOARD_SIZE % 2 == 1, "the start tile sits on the centre cell");
 constexpr int TOTAL_TILE_COUNT = PHYSICAL_TILE_COUNT;
 constexpr int MAX_FRONTIER_CELLS = TOTAL_TILE_COUNT * 2 + 2;
 constexpr int EDGE_SLOT_COUNT = TOTAL_TILE_COUNT * 4;
+constexpr int FIELD_SLOT_COUNT = TOTAL_TILE_COUNT * MAX_TILE_FIELDS;
+// A field scores this for every completed city it borders.
+constexpr int FIELD_POINTS_PER_CITY = 3;
+// Farmers are never returned, so a game has at most every meeple as one.
+constexpr int MAX_FARMERS = 2 * 7;
+
+// Where a meeple goes on the tile just placed. A feature is named by its
+// lowest side on that tile and a field by its lowest half-edge, so each move
+// has one name.
+constexpr int MEEPLE_POS_SKIP = -1;
+constexpr int MEEPLE_POS_MONASTERY = 4;                                    // 0..3: the feature on that side
+constexpr int MEEPLE_POS_FIELD = 5;                                        // 5..12: a farmer, by half-edge
+constexpr int MEEPLE_POS_INNER_FIELD = MEEPLE_POS_FIELD + HALF_EDGE_COUNT; // 13: on the tile's inner field
+constexpr int MEEPLE_POS_COUNT = MEEPLE_POS_INNER_FIELD - MEEPLE_POS_SKIP + 1;   // positions -1 .. 13
+using MeepleMoves = FixedVector<int, MEEPLE_POS_COUNT>;
 
 enum GamePhase { PHASE_CHANCE = 0, PHASE_TILE = 1, PHASE_MEEPLE = 2, PHASE_TERMINAL = 3 };
 
@@ -93,12 +108,47 @@ class FeatureModule {
     int edgeIndex(int tile_id, int side) const;
     void resolveEndGameScore(int *player_scores);
     void placeTileOnBoard(int tile_id, int x, int y, int rot, const Tile &tile, const BoardModule &board);
-    void getLegalMeepleMoves(FixedVector<int, 6> &ret, int x, int y, const BoardModule &board, const Tile &tile) const;
+    void getLegalMeepleMoves(MeepleMoves &ret, int x, int y, const BoardModule &board, const Tile &tile) const;
     void placeMeeple(int x, int y, int pos, int player, const BoardModule &board, int *player_scores, int *holding_meeples);
     void settleAfterPlaceMeeple(int x, int y, const BoardModule &board, int *player_scores, int *holding_meeples);
     // Adds each feature that holds meeples to its majority holders, as the
     // end-game scoring and turn-end settlement would.
     void accumulatePendingScore(int *pending) const;
+};
+
+class Field {
+  public:
+    // For each piece of city the field borders, one of its edge slots
+    // (FeatureModule::edgeIndex); featureMap finds the whole city from it.
+    std::bitset<EDGE_SLOT_COUNT> city_edges;
+    uint8_t farmer_count[2] = {};
+
+    Field operator+(const Field &other) const;
+
+    bool hasFarmers() const;
+};
+
+// Farmers stay on their field for the whole game and score only at the end.
+class FieldModule {
+  public:
+    // Slot (tile_id - 1) * MAX_TILE_FIELDS + local field of that tile.
+    DisjointSet<Field, std::plus<Field>, FIELD_SLOT_COUNT> fieldMap;
+    // The slot of every farmer placed, so scoring visits only those fields.
+    FixedVector<int16_t, MAX_FARMERS> farmed_slots;
+    FieldModule();
+    int fieldIndex(int tile_id, int local) const;
+    void placeTileOnBoard(int tile_id, int x, int y, const Tile &tile, const BoardModule &board,
+                          const FeatureModule &features);
+    void getLegalFarmerMoves(MeepleMoves &ret, int tile_id, const Tile &tile) const;
+    void placeFarmer(int tile_id, const Tile &tile, int pos, int player);
+    // For each half-edge of the tile, the lowest half-edge of the tile in the
+    // same field (-1 on city sides).
+    void getHalfEdgeGroups(int tile_id, const Tile &tile, int8_t groups[HALF_EDGE_COUNT]) const;
+    // Completed cities the field borders, each counted once.
+    int completedCityCount(const Field &field, const FeatureModule &features) const;
+    // Adds each field that holds farmers to its majority holders, as the
+    // end-game scoring would.
+    void accumulateScore(int *scores, const FeatureModule &features) const;
 };
 
 class MonasteryModule {
@@ -170,6 +220,7 @@ class LogModule {
 class Carcassonne {
   private:
     FeatureModule features;
+    FieldModule fields;
     MonasteryModule monasteries;
     FrontierModule frontier;
     BoardModule board;
@@ -208,6 +259,11 @@ class Carcassonne {
     const Feature &featureAt(int tile_id, int side) const {
         return features.featureMap.getSetData(features.edgeIndex(tile_id, side));
     }
+    // The field local field `local` of a tile belongs to, named by its slot
+    // (the same for every part of one field), and that field.
+    int fieldRoot(int tile_id, int local) const { return fields.fieldMap.find(fields.fieldIndex(tile_id, local)); }
+    const Field &fieldAtRoot(int root) const { return fields.fieldMap.getSetData(root); }
+    int completedCitiesNextTo(const Field &field) const { return fields.completedCityCount(field, features); }
     bool isFrontier(int x, int y) const { return frontier.frontier[y][x]; }
     int coverage3x3(int x, int y) const { return board.count3x3(x, y); }
     int monasteryOwner(int x, int y) const { return monasteries.ownerAt(x, y); }
@@ -218,15 +274,20 @@ class Carcassonne {
     void getPendingScore(int pending[2]) const;
     // The same, by settling and end-game scoring a copy. Slow; for tests.
     void getPendingScoreByResolving(int pending[2]) const;
+    // The part of getPendingScore() that fields score.
+    void getPendingFieldScore(int pending[2]) const;
 
     void getAvailableDraws(ChanceBranch *out, int &count) const;
     void drawTile(int type_id);
     void getLegalTileMoves(TileMove *out, int &count) const;
     void placeTile(int x, int y, int rot);
-    FixedVector<int, 6> getLegalMeepleMoves() const;
+    MeepleMoves getLegalMeepleMoves() const;
     // For each side of the last placed tile, the lowest side of that tile in the
     // same feature (-1 for grass or no tile). Meeple moves name a feature by that
     // lowest side, so this is what maps meeple moves under board rotation.
     void getLastTileSideGroups(int8_t groups[4]) const;
+    // The same for fields: for each half-edge of the last placed tile, the
+    // lowest half-edge of that tile in the same field (-1 on city sides).
+    void getLastTileFieldGroups(int8_t groups[HALF_EDGE_COUNT]) const;
     void placeMeeple(int pos);
 };

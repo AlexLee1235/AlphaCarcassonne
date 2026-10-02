@@ -159,7 +159,8 @@ class VPNetModel {
     double value;
     // Game-specific data needed to rotate this sample for augmentation
     // (Carcassonne: carcassonne::SideGroups of the state). -1 when unused.
-    std::array<int8_t, 4> symmetry_context = {-1, -1, -1, -1};
+    std::array<int8_t, 12> symmetry_context = {-1, -1, -1, -1, -1, -1,
+                                               -1, -1, -1, -1, -1, -1};
 
     NOP_STRUCTURE(TrainInputs, legal_actions, observations, policy, value,
                   symmetry_context);

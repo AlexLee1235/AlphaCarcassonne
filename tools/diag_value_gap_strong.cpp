@@ -22,7 +22,7 @@ static void PlayTileGreedy(Carcassonne &g, int me) {
     g.placeTile(buf[best].x, buf[best].y, buf[best].rot);
 }
 static void PlayMeepleGreedy(Carcassonne &g, int me) {
-    FixedVector<int, 6> mm = g.getLegalMeepleMoves();
+    MeepleMoves mm = g.getLegalMeepleMoves();
     if (mm.size() == 0) return;
     int best = mm[0], bs = -1000000;
     for (int i = 0; i < mm.size(); ++i) {

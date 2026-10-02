@@ -43,7 +43,7 @@ std::vector<std::tuple<int, int, int>> GetLegalTileMoves(const Carcassonne &game
 }
 
 std::vector<int> GetLegalMeepleMoves(const Carcassonne &game) {
-    FixedVector<int, 6> moves = game.getLegalMeepleMoves();
+    MeepleMoves moves = game.getLegalMeepleMoves();
 
     std::vector<int> result;
     result.reserve(moves.size());

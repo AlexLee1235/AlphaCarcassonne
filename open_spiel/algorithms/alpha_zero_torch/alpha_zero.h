@@ -45,7 +45,7 @@ struct Trajectory {
     // PlayGame was not given a raw_value_evaluator.
     double raw_value;
     // See VPNetModel::TrainInputs::symmetry_context.
-    std::array<int8_t, 4> symmetry_context;
+    std::array<int8_t, 12> symmetry_context;
   };
 
   std::vector<State> states;

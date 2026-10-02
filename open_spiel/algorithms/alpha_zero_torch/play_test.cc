@@ -65,11 +65,17 @@ void PlayerTerminalAndCutoffTest() {
       SPIEL_CHECK_EQ(trajectory.returns[sample.current_player], sample.value);
     }
     // The recorded side groups must agree with the legal meeple moves: each
-    // legal meeple side is the lowest side of its feature.
+    // legal meeple side is the lowest side of its feature, and each legal
+    // farmer half-edge the lowest half-edge of its field.
+    constexpr int kFields = carcassonne::kFieldGroupOffset;
     for (const auto& sample : trajectory.states) {
       const auto& groups = sample.symmetry_context;
       for (int side = 0; side < 4; ++side) {
         if (groups[side] != -1) SPIEL_CHECK_EQ(groups[groups[side]], groups[side]);
+      }
+      for (int half_edge = 0; half_edge < HALF_EDGE_COUNT; ++half_edge) {
+        const int group = groups[kFields + half_edge];
+        if (group != -1) SPIEL_CHECK_EQ(groups[kFields + group], group);
       }
       for (Action action : sample.legal_actions) {
         const int pos = action - carcassonne::kMeepleActionOffset - 1;
@@ -77,6 +83,9 @@ void PlayerTerminalAndCutoffTest() {
           SPIEL_CHECK_TRUE(groups == carcassonne::kNoSideGroups);
         } else if (pos >= 0 && pos < 4) {
           SPIEL_CHECK_EQ(groups[pos], pos);
+        } else if (pos >= MEEPLE_POS_FIELD && pos < MEEPLE_POS_INNER_FIELD) {
+          SPIEL_CHECK_EQ(groups[kFields + pos - MEEPLE_POS_FIELD],
+                         pos - MEEPLE_POS_FIELD);
         }
       }
     }

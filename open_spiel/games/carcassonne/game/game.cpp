@@ -36,6 +36,7 @@ bool Carcassonne::hasValidMove(int tile_id) const {
 void Carcassonne::resolveEndGameScore() {
     features.resolveEndGameScore(player_scores);
     monasteries.resolveEndGameScore(player_scores);
+    fields.accumulateScore(player_scores, features);
 }
 
 void Carcassonne::resolveNoMoreDraws() {
@@ -51,6 +52,7 @@ void Carcassonne::placeTileOnBoard(int tile_id, int x, int y, int rot) {
     frontier.placeTileOnBoard(tile_id, x, y, rot, board);
     board.placeTileOnBoard(tile_id, x, y, rot, tile);
     features.placeTileOnBoard(tile_id, x, y, rot, tile, board);
+    fields.placeTileOnBoard(tile_id, x, y, tile, board, features);
     monasteries.placeTileOnBoard(tile_id, x, y, rot);
     logs.placeTileOnBoard(tile_id, x, y, rot);
 }
@@ -116,22 +118,24 @@ void Carcassonne::placeTile(int x, int y, int rot) {
     current_phase = PHASE_MEEPLE;
 }
 
-FixedVector<int, 6> Carcassonne::getLegalMeepleMoves() const {
-    FixedVector<int, 6> ret;
+MeepleMoves Carcassonne::getLegalMeepleMoves() const {
+    MeepleMoves ret;
     if (current_phase != PHASE_MEEPLE) {
         return ret;
     }
-    ret.push_back(-1);
+    ret.push_back(MEEPLE_POS_SKIP);
     if (holding_meeples[currentPlayer] == 0) {
         return ret;
     }
     int x = last_x;
     int y = last_y;
-    const Tile &tile = full_deck[board.board[y][x].id][board.board[y][x].rotation];
+    const Placement &placement = board.board[y][x];
+    const Tile &tile = full_deck[placement.id][placement.rotation];
     features.getLegalMeepleMoves(ret, x, y, board, tile);
     if (tile.monastery) {
-        ret.push_back(4);
+        ret.push_back(MEEPLE_POS_MONASTERY);
     }
+    fields.getLegalFarmerMoves(ret, placement.id, tile);
     return ret;
 }
 
@@ -160,6 +164,17 @@ void Carcassonne::getLastTileSideGroups(int8_t groups[4]) const {
     }
 }
 
+void Carcassonne::getLastTileFieldGroups(int8_t groups[HALF_EDGE_COUNT]) const {
+    for (int e = 0; e < HALF_EDGE_COUNT; ++e) {
+        groups[e] = -1;
+    }
+    if (last_x < 0 || last_y < 0) {
+        return;
+    }
+    const Placement &placement = board.board[last_y][last_x];
+    fields.getHalfEdgeGroups(placement.id, full_deck[placement.id][placement.rotation], groups);
+}
+
 void Carcassonne::getPendingScore(int pending[2]) const {
     pending[0] = pending[1] = 0;
     if (current_phase == PHASE_TERMINAL) {
@@ -167,6 +182,15 @@ void Carcassonne::getPendingScore(int pending[2]) const {
     }
     features.accumulatePendingScore(pending);
     monasteries.accumulatePendingScore(pending);
+    fields.accumulateScore(pending, features);
+}
+
+void Carcassonne::getPendingFieldScore(int pending[2]) const {
+    pending[0] = pending[1] = 0;
+    if (current_phase == PHASE_TERMINAL) {
+        return;
+    }
+    fields.accumulateScore(pending, features);
 }
 
 void Carcassonne::getPendingScoreByResolving(int pending[2]) const {
@@ -188,10 +212,14 @@ void Carcassonne::getPendingScoreByResolving(int pending[2]) const {
 void Carcassonne::placeMeeple(int pos) {
     int x = last_x;
     int y = last_y;
-    if (pos != -1) {
+    if (pos != MEEPLE_POS_SKIP) {
         holding_meeples[currentPlayer]--;
-        if (pos == 4) {
+        if (pos == MEEPLE_POS_MONASTERY) {
             monasteries.placeMeeple(x, y, pos, currentPlayer, board, player_scores, holding_meeples);
+        } else if (pos >= MEEPLE_POS_FIELD) {
+            // A farmer is never settled or returned.
+            const Placement &placement = board.board[y][x];
+            fields.placeFarmer(placement.id, full_deck[placement.id][placement.rotation], pos, currentPlayer);
         } else {
             features.placeMeeple(x, y, pos, currentPlayer, board, player_scores, holding_meeples);
         }

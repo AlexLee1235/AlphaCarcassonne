@@ -424,7 +424,7 @@ ModelImpl::ModelImpl(const ModelConfig& config, const std::string& device)
 
     // A conv policy head needs the actions to factor into a few choices per
     // board cell plus a handful that belong to no cell. Carcassonne's do: four
-    // tile rotations per cell (900) and then six meeple moves. Games whose
+    // tile rotations per cell (1764) and then fifteen meeple moves. Games whose
     // action count is nothing like 4 * height * width (tic_tac_toe,
     // connect_four, othello) keep the dense head.
     constexpr int kPolicyRotations = 4;

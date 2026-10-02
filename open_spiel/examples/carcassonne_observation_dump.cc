@@ -111,6 +111,16 @@ std::vector<std::string> PlaneNames() {
   }
   names[kMonasteryCoveragePlane] = "monastery_coverage";
   names[kMonasteryOwnerPlane] = "monastery_owner";
+  for (int half_edge = 0; half_edge < HALF_EDGE_COUNT; ++half_edge) {
+    const std::string suffix = "_half_edge_" + std::to_string(half_edge);
+    names[kFieldMyFarmersPlane + half_edge] = "field_my_farmers" + suffix;
+    names[kFieldOpponentFarmersPlane + half_edge] =
+        "field_opponent_farmers" + suffix;
+    names[kFieldScorePlane + half_edge] = "field_score" + suffix;
+  }
+  names[kInnerFieldMyFarmersPlane] = "inner_field_my_farmers";
+  names[kInnerFieldOpponentFarmersPlane] = "inner_field_opponent_farmers";
+  names[kInnerFieldScorePlane] = "inner_field_score";
   names[kGlobalFeaturePlane] = "global_vector";
   return names;
 }
@@ -139,12 +149,16 @@ std::vector<std::string> GlobalFeatureNames() {
   names[kGlobalTilePhase] = "is_tile_phase";
   names[kGlobalMeeplePhase] = "is_meeple_phase";
   const char* meeple_moves[kMeepleActionCount] = {
-      "skip", "edge_0", "edge_1", "edge_2", "edge_3", "monastery"};
+      "skip",    "edge_0",  "edge_1",  "edge_2",  "edge_3",
+      "monastery", "field_0", "field_1", "field_2", "field_3",
+      "field_4", "field_5", "field_6", "field_7", "inner_field"};
   for (int i = 0; i < kMeepleActionCount; ++i) {
     names[kGlobalLegalMeeple + i] = std::string("legal_meeple_") + meeple_moves[i];
   }
   names[kGlobalLegalPlacements] = "legal_placements";
   names[kGlobalIsPlayer0] = "current_player_is_player0";
+  names[kGlobalMyFieldPending] = "my_field_pending";
+  names[kGlobalOpponentFieldPending] = "opponent_field_pending";
   return names;
 }
 

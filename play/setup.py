@@ -58,6 +58,7 @@ carcassonne_sources = [
     CARCASSONNE_GAME / "DeckModule.cpp",
     CARCASSONNE_GAME / "Feature.cpp",
     CARCASSONNE_GAME / "FeatureModule.cpp",
+    CARCASSONNE_GAME / "FieldModule.cpp",
     CARCASSONNE_GAME / "FrontierModule.cpp",
     CARCASSONNE_GAME / "MonasteryModule.cpp",
 ]

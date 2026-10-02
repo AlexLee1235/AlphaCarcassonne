@@ -48,7 +48,7 @@ inline bool RandomPlaceTile(Carcassonne &g, std::mt19937 &rng, TileMove *out = n
 }
 
 inline bool RandomPlaceMeeple(Carcassonne &g, std::mt19937 &rng) {
-    FixedVector<int, 6> mm = g.getLegalMeepleMoves();
+    MeepleMoves mm = g.getLegalMeepleMoves();
     if (mm.size() == 0) return false;
     g.placeMeeple(mm[std::uniform_int_distribution<int>(0, mm.size() - 1)(rng)]);
     return true;

@@ -2,6 +2,7 @@
 #include "open_spiel/games/carcassonne/carcassonne_test_utils.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <iostream>
 #include <memory>
@@ -150,11 +151,11 @@ void ObservationTensorSmokeTest() {
   const std::vector<int> shape = game->ObservationTensorShape();
 
   SPIEL_CHECK_EQ(shape.size(), 3);
-  SPIEL_CHECK_EQ(shape[0], 50);
+  SPIEL_CHECK_EQ(shape[0], 77);
   SPIEL_CHECK_EQ(shape[0], kObservationPlanes);
   SPIEL_CHECK_EQ(shape[1], BOARD_SIZE);
   SPIEL_CHECK_EQ(shape[2], BOARD_SIZE);
-  SPIEL_CHECK_EQ(game->NumDistinctActions(), 4 * BOARD_SIZE * BOARD_SIZE + 6);
+  SPIEL_CHECK_EQ(game->NumDistinctActions(), 4 * BOARD_SIZE * BOARD_SIZE + 15);
 
   SPIEL_CHECK_EQ(state->ObservationTensor(0).size(), kObservationTensorSize);
   SPIEL_CHECK_EQ(state->ObservationTensor(1).size(), kObservationTensorSize);
@@ -198,12 +199,17 @@ void ObservationTensorSmokeTest() {
   CheckZeroPlanes(initial_obs, kFeatureMyMeeplesPlane, 12);
   CheckZeroPlanes(initial_obs, kLegalPlacementPlane, kLegalPlacementPlanes);
   CheckZeroPlanes(initial_obs, kMonasteryCoveragePlane, 2);
+  // Its fields, north and south of the road, hold no farmers and border no
+  // completed city.
+  CheckZeroPlanes(initial_obs, kFieldMyFarmersPlane,
+                  kInnerFieldScorePlane + 1 - kFieldMyFarmersPlane);
   CheckRemainingByType(initial_obs, initial_state->UnderlyingState());
   for (int i : {kGlobalMyScore, kGlobalOpponentScore, kGlobalScoreDiff,
                 kGlobalMyPending, kGlobalOpponentPending, kGlobalStaticDiff,
                 kGlobalStaticDiff + 1, kGlobalStaticDiff + 2,
                 kGlobalCompletedTurns, kGlobalTilePhase, kGlobalMeeplePhase,
-                kGlobalLegalPlacements}) {
+                kGlobalLegalPlacements, kGlobalMyFieldPending,
+                kGlobalOpponentFieldPending}) {
     SPIEL_CHECK_EQ(GlobalValue(initial_obs, i), 0.0f);
   }
   SPIEL_CHECK_EQ(GlobalValue(initial_obs, kGlobalMyMeeples), 1.0f);
@@ -305,9 +311,22 @@ void RelativePerspectiveTest() {
   SPIEL_CHECK_GT(player0_meeples + PlaneSum(obs0, kMonasteryOwnerPlane), 0.0f);
   CheckPlanesEqual(obs0, kMonasteryOwnerPlane, obs1, kMonasteryOwnerPlane,
                    -1.0f);
+  for (int half_edge = 0; half_edge < HALF_EDGE_COUNT; ++half_edge) {
+    CheckPlanesEqual(obs0, kFieldMyFarmersPlane + half_edge, obs1,
+                     kFieldOpponentFarmersPlane + half_edge);
+    CheckPlanesEqual(obs0, kFieldOpponentFarmersPlane + half_edge, obs1,
+                     kFieldMyFarmersPlane + half_edge);
+    CheckPlanesEqual(obs0, kFieldScorePlane + half_edge, obs1,
+                     kFieldScorePlane + half_edge);
+  }
+  CheckPlanesEqual(obs0, kInnerFieldMyFarmersPlane, obs1,
+                   kInnerFieldOpponentFarmersPlane);
+  CheckPlanesEqual(obs0, kInnerFieldScorePlane, obs1, kInnerFieldScorePlane);
 
   int pending[2];
   core.getPendingScore(pending);
+  int field_pending[2];
+  core.getPendingFieldScore(field_pending);
   const std::vector<float>* views[2] = {&obs0, &obs1};
   for (Player player = 0; player < kNumPlayers; ++player) {
     const std::vector<float>& obs = *views[player];
@@ -317,9 +336,13 @@ void RelativePerspectiveTest() {
     SPIEL_CHECK_TRUE(Near(GlobalValue(obs, kGlobalOpponentScore),
                           core.player_scores[opponent] / 40.0f));
     SPIEL_CHECK_TRUE(Near(GlobalValue(obs, kGlobalMyPending),
-                          pending[player] / 20.0f));
+                          std::min(1.0f, pending[player] / 40.0f)));
     SPIEL_CHECK_TRUE(Near(GlobalValue(obs, kGlobalOpponentPending),
-                          pending[opponent] / 20.0f));
+                          std::min(1.0f, pending[opponent] / 40.0f)));
+    SPIEL_CHECK_TRUE(Near(GlobalValue(obs, kGlobalMyFieldPending),
+                          std::min(1.0f, field_pending[player] / 40.0f)));
+    SPIEL_CHECK_TRUE(Near(GlobalValue(obs, kGlobalOpponentFieldPending),
+                          std::min(1.0f, field_pending[opponent] / 40.0f)));
     SPIEL_CHECK_TRUE(Near(GlobalValue(obs, kGlobalMyMeeples),
                           core.holding_meeples[player] / 7.0f));
     SPIEL_CHECK_TRUE(Near(GlobalValue(obs, kGlobalOpponentMeeples),
@@ -440,6 +463,286 @@ void TiedFeatureTest() {
   SPIEL_CHECK_GT(tied_sides, 0);
 }
 
+// Fields renamed in order of first appearance (half-edges, then the inner one),
+// followed by the field count and each field's city sides: equal for two
+// tiles exactly when their field layouts are.
+std::vector<int> CanonicalFieldLayout(const Tile& tile) {
+  std::array<int, MAX_TILE_FIELDS> renamed;
+  renamed.fill(-1);
+  int next = 0;
+  std::vector<int> layout;
+  for (int half_edge = 0; half_edge < HALF_EDGE_COUNT; ++half_edge) {
+    const int field = tile.field[half_edge];
+    if (field != -1 && renamed[field] == -1) renamed[field] = next++;
+    layout.push_back(field == -1 ? -1 : renamed[field]);
+  }
+  if (tile.innerField() != -1) renamed[tile.innerField()] = next++;
+  layout.push_back(tile.field_count);
+  std::array<int, MAX_TILE_FIELDS> city_sides{};
+  for (int field = 0; field < tile.field_count; ++field) {
+    city_sides[renamed[field]] = tile.field_city_sides[field];
+  }
+  layout.insert(layout.end(), city_sides.begin(), city_sides.end());
+  return layout;
+}
+
+// What the observation shows of a tile's shape: its terrain and which pairs
+// of non-grass sides it joins.
+std::vector<int> TileLook(const Tile& tile) {
+  std::vector<int> look(tile.edge, tile.edge + 4);
+  for (int a = 0; a < 4; ++a) {
+    for (int b = a + 1; b < 4; ++b) {
+      look.push_back(tile.edge[a] != GRASS && tile.edge[b] != GRASS &&
+                     tile.link[a] == tile.link[b]);
+    }
+  }
+  return look;
+}
+
+// Every base tile, in every rotation, keeps the rules FieldLayout states.
+void FieldLayoutTest() {
+  std::vector<Tile> all_rotations;
+  for (const TileBlueprint& blueprint : base_deck) {
+    Tile tile = blueprint.tile;
+    for (int rot = 0; rot < 4; ++rot, tile = tile.rotate()) {
+      all_rotations.push_back(tile);
+      SPIEL_CHECK_LE(tile.field_count, MAX_TILE_FIELDS);
+      // Fields 0 .. edge_fields - 1 are on half-edges; at most one more, the
+      // inner field, is on none.
+      int edge_fields = 0;
+      for (int half_edge = 0; half_edge < HALF_EDGE_COUNT; ++half_edge) {
+        edge_fields = std::max(edge_fields, tile.field[half_edge] + 1);
+      }
+      SPIEL_CHECK_LE(edge_fields, tile.field_count);
+      SPIEL_CHECK_LE(tile.field_count, edge_fields + 1);
+      std::array<bool, MAX_TILE_FIELDS> on_half_edge{};
+      for (int side = 0; side < 4; ++side) {
+        const int a = tile.field[2 * side];
+        const int b = tile.field[2 * side + 1];
+        if (tile.edge[side] == CITY) {
+          SPIEL_CHECK_EQ(a, -1);
+          SPIEL_CHECK_EQ(b, -1);
+          continue;
+        }
+        SPIEL_CHECK_GE(std::min(a, b), 0);
+        SPIEL_CHECK_LT(std::max(a, b), tile.field_count);
+        on_half_edge[a] = on_half_edge[b] = true;
+        if (tile.edge[side] == GRASS) SPIEL_CHECK_EQ(a, b);
+        // A road splits its side between two fields, unless it ends at a
+        // monastery on this tile (type 2).
+        if (tile.edge[side] == ROAD) SPIEL_CHECK_EQ(a == b, tile.monastery);
+      }
+      for (int field = 0; field < edge_fields; ++field) {
+        SPIEL_CHECK_TRUE(on_half_edge[field]);
+      }
+      for (int field = 0; field < MAX_TILE_FIELDS; ++field) {
+        const int sides = tile.field_city_sides[field];
+        if (field >= tile.field_count) {
+          SPIEL_CHECK_EQ(sides, 0);
+          continue;
+        }
+        for (int side = 0; side < 4; ++side) {
+          if (!(sides & (1 << side))) continue;
+          SPIEL_CHECK_EQ(tile.edge[side], CITY);
+          // Every side of a city the field borders.
+          for (int other = 0; other < 4; ++other) {
+            if (tile.edge[other] == CITY && tile.link[other] == tile.link[side]) {
+              SPIEL_CHECK_TRUE(sides & (1 << other));
+            }
+          }
+        }
+      }
+    }
+    // Four quarter turns are the identity.
+    SPIEL_CHECK_TRUE(CanonicalFieldLayout(tile) ==
+                     CanonicalFieldLayout(blueprint.tile));
+    SPIEL_CHECK_TRUE(std::equal(tile.field, tile.field + HALF_EDGE_COUNT,
+                                blueprint.tile.field));
+  }
+
+  const auto first_of_type = [](int type) -> const Tile& {
+    return full_deck[tile_type_tables.draw_physical_ids_by_type[type][0]][0];
+  };
+  SPIEL_CHECK_EQ(first_of_type(24).field_count, 4);  // RRRR
+  SPIEL_CHECK_EQ(first_of_type(3).field_count, 0);   // CCCC
+  SPIEL_CHECK_EQ(first_of_type(2).field[4], first_of_type(2).field[5]);
+
+  // The observation has no field planes for a tile's own layout, so the
+  // layout must follow from what it does show.
+  for (const Tile& a : all_rotations) {
+    for (const Tile& b : all_rotations) {
+      if (TileLook(a) == TileLook(b)) {
+        SPIEL_CHECK_TRUE(CanonicalFieldLayout(a) == CanonicalFieldLayout(b));
+      }
+    }
+  }
+}
+
+// Draws `type`, places it at (tile_x, tile_y) turned `rot` and plays meeple
+// position `pos`, checking each step is legal.
+void PlayTurn(::Carcassonne* game, int type, int tile_x, int tile_y, int rot,
+              int pos) {
+  SPIEL_CHECK_EQ(game->current_phase, PHASE_CHANCE);
+  game->drawTile(type);
+  SPIEL_CHECK_EQ(game->current_phase, PHASE_TILE);
+  std::array<TileMove, kTileActionCount> moves{};
+  int count = 0;
+  game->getLegalTileMoves(moves.data(), count);
+  bool legal = false;
+  for (int i = 0; i < count; ++i) {
+    legal = legal || (moves[i].x == tile_x && moves[i].y == tile_y &&
+                      moves[i].rot == rot);
+  }
+  SPIEL_CHECK_TRUE(legal);
+  game->placeTile(tile_x, tile_y, rot);
+  const MeepleMoves meeple_moves = game->getLegalMeepleMoves();
+  SPIEL_CHECK_TRUE(std::find(meeple_moves.begin(), meeple_moves.end(), pos) !=
+                   meeple_moves.end());
+  game->placeMeeple(pos);
+}
+
+void CheckFieldPending(const ::Carcassonne& game, int player0, int player1) {
+  int pending[2];
+  game.getPendingFieldScore(pending);
+  SPIEL_CHECK_EQ(pending[0], player0);
+  SPIEL_CHECK_EQ(pending[1], player1);
+}
+
+// Fields built by hand, scored 3 per completed city next to them for whoever
+// has the most farmers there.
+void FieldScoringTest() {
+  const int c = BOARD_SIZE / 2;
+  // The start tile (type 20) at (c, c): city north, road east-west, grass
+  // south. Its north field borders the city, its south field nothing.
+  {
+    ::Carcassonne game(/*max_turns=*/8);
+    // P0: another type 20 east of it; a farmer on the north field (half-edge
+    // 2), next to both open cities.
+    PlayTurn(&game, 20, c + 1, c, 0, MEEPLE_POS_FIELD + 2);
+    // P1: a CGGG south, city facing south; a farmer on the south field.
+    PlayTurn(&game, 16, c, c + 1, 2, MEEPLE_POS_FIELD + 0);
+    // P0: a T junction east; a farmer on its south-east corner, a field of
+    // its own between two roads.
+    PlayTurn(&game, 23, c + 2, c, 0, MEEPLE_POS_FIELD + 3);
+    CheckFieldPending(game, 0, 0);
+    // P1: closes the start tile's city; a farmer on the field north of it.
+    PlayTurn(&game, 16, c, c - 1, 2, MEEPLE_POS_FIELD + 0);
+    CheckFieldPending(game, 3, 3);
+    // P0: closes the second city, which the same two fields border.
+    PlayTurn(&game, 16, c + 1, c - 1, 2, MEEPLE_POS_SKIP);
+    CheckFieldPending(game, 6, 6);
+    // P1: a monastery ends the junction's south road, joining P1's south
+    // field with P0's corner: tied, but next to an open city only.
+    PlayTurn(&game, 2, c + 2, c + 1, 2, MEEPLE_POS_SKIP);
+    CheckFieldPending(game, 6, 6);
+    // P0: closes the south city; the tied field scores for both.
+    PlayTurn(&game, 16, c, c + 2, 0, MEEPLE_POS_SKIP);
+    CheckFieldPending(game, 9, 9);
+    int pending[2];
+    int resolved[2];
+    game.getPendingScore(pending);
+    game.getPendingScoreByResolving(resolved);
+    SPIEL_CHECK_EQ(pending[0], resolved[0]);
+    SPIEL_CHECK_EQ(pending[1], resolved[1]);
+    // P1: a monastery ends the junction's east road and joins everything
+    // south of the two cities: two P0 farmers to one, next to all three
+    // cities. P1 keeps the field north of them.
+    PlayTurn(&game, 2, c + 3, c, 1, MEEPLE_POS_SKIP);
+    SPIEL_CHECK_EQ(game.current_phase, PHASE_TERMINAL);
+    SPIEL_CHECK_EQ(game.player_scores[0], 9);
+    SPIEL_CHECK_EQ(game.player_scores[1], 6);
+    // Farmers never come back.
+    SPIEL_CHECK_EQ(game.holding_meeples[0], 5);
+    SPIEL_CHECK_EQ(game.holding_meeples[1], 5);
+  }
+  // A field next to two separate cities on one tile scores each of them.
+  {
+    ::Carcassonne game(/*max_turns=*/3);
+    // P0: a CGCG south of the start tile, cities east and west; a farmer on
+    // its field.
+    PlayTurn(&game, 15, c, c + 1, 1, MEEPLE_POS_FIELD + 0);
+    CheckFieldPending(game, 0, 0);
+    PlayTurn(&game, 16, c + 1, c + 1, 3, MEEPLE_POS_SKIP);  // closes the east city
+    CheckFieldPending(game, 3, 0);
+    PlayTurn(&game, 16, c - 1, c + 1, 1, MEEPLE_POS_SKIP);  // and the west one
+    SPIEL_CHECK_EQ(game.current_phase, PHASE_TERMINAL);
+    SPIEL_CHECK_EQ(game.player_scores[0], 6);
+    SPIEL_CHECK_EQ(game.player_scores[1], 0);
+  }
+}
+
+// Grass ringed by four separate cities is one field on no half-edge, next to
+// all four. No base tile is like that, so this drives the modules directly.
+void InnerFieldTest() {
+  const Tile four_cities(CITY, CITY, CITY, CITY, 0, 1, 2, 3,
+                         {{-1, -1, -1, -1, -1, -1, -1, -1},
+                          1,
+                          {SIDE_N | SIDE_E | SIDE_S | SIDE_W}});
+  Tile rotated = four_cities;
+  for (int k = 0; k < kNumBoardRotations; ++k, rotated = rotated.rotate()) {
+    SPIEL_CHECK_EQ(rotated.innerField(), 0);
+    SPIEL_CHECK_EQ(rotated.field_count, 1);
+    SPIEL_CHECK_EQ(rotated.field_city_sides[0], 0xF);
+  }
+
+  // Borrow the id of a tile without a shield that this test does not place.
+  // FieldModule never looks the borrowed id up in full_deck: a neighbour only
+  // does that across a side that is not a city, and this tile has none.
+  const int id = tile_type_tables.draw_physical_ids_by_type[1][0];
+  SPIEL_CHECK_FALSE(SHIELD_MASK[id]);
+  auto board = std::make_unique<BoardModule>();
+  auto features = std::make_unique<FeatureModule>();
+  auto fields = std::make_unique<FieldModule>();
+  auto place = [&](int tile_id, int tile_x, int tile_y, int rot,
+                   const Tile& tile) {
+    SPIEL_CHECK_TRUE(board->canPlaceTileAt(tile_x, tile_y, tile));
+    board->placeTileOnBoard(tile_id, tile_x, tile_y, rot, tile);
+    features->placeTileOnBoard(tile_id, tile_x, tile_y, rot, tile, *board);
+    fields->placeTileOnBoard(tile_id, tile_x, tile_y, tile, *board, *features);
+  };
+  auto check_scores = [&](int player0, int player1) {
+    int scores[2] = {0, 0};
+    fields->accumulateScore(scores, *features);
+    SPIEL_CHECK_EQ(scores[0], player0);
+    SPIEL_CHECK_EQ(scores[1], player1);
+  };
+
+  const int c = BOARD_SIZE / 2;
+  place(id, c, c, 0, four_cities);
+  MeepleMoves moves;
+  fields->getLegalFarmerMoves(moves, id, four_cities);
+  SPIEL_CHECK_EQ(moves.size(), 1);
+  SPIEL_CHECK_EQ(moves[0], MEEPLE_POS_INNER_FIELD);
+  fields->placeFarmer(id, four_cities, MEEPLE_POS_INNER_FIELD, 0);
+  MeepleMoves taken;
+  fields->getLegalFarmerMoves(taken, id, four_cities);
+  SPIEL_CHECK_EQ(taken.size(), 0);
+  check_scores(0, 0);
+
+  // Close each city with a CGGG whose city faces the centre: N, E, S, W.
+  const auto& caps = tile_type_tables.draw_physical_ids_by_type[16];
+  const int cap_cells[4][2] = {{c, c - 1}, {c + 1, c}, {c, c + 1}, {c - 1, c}};
+  const int cap_rotations[4] = {2, 3, 0, 1};
+  for (int i = 0; i < 4; ++i) {
+    place(caps[i], cap_cells[i][0], cap_cells[i][1], cap_rotations[i],
+          full_deck[caps[i]][cap_rotations[i]]);
+    check_scores(FIELD_POINTS_PER_CITY * (i + 1), 0);
+  }
+
+  // The majority takes it all; a tie scores for both. (A second farmer on a
+  // field is not a legal move; this only checks the count.)
+  fields->placeFarmer(id, four_cities, MEEPLE_POS_INNER_FIELD, 1);
+  check_scores(12, 12);
+  fields->placeFarmer(id, four_cities, MEEPLE_POS_INNER_FIELD, 1);
+  check_scores(0, 12);
+
+  // The inner field is the same field whichever way the board turns.
+  const Action inner_action = kMeepleActionOffset + MEEPLE_POS_INNER_FIELD + 1;
+  for (int k = 0; k < kNumBoardRotations; ++k) {
+    SPIEL_CHECK_EQ(RotateAction(inner_action, k, kNoSideGroups), inner_action);
+  }
+}
+
 void ReturnsMatchScoresTest() {
   absl::BitGen gen;
   std::shared_ptr<const Game> game = LoadGame("carcassonne");
@@ -541,9 +844,10 @@ void LastUnplaceableTileTest() {
 // legal moves and side groups must equal the rotation of the original's, and
 // both games must end with the same scores. Returns how many legal meeple moves
 // were renamed differently from a plain side shift (the lowest side of the
-// feature changed), so the caller can check that case was exercised.
+// feature changed), so the caller can check that case was exercised, and adds
+// the same count for farmer moves (half-edge shifts) to `renamed_farmer_moves`.
 int CheckRotatedTwin(absl::Span<const Action> history, int k,
-                     std::mt19937* rng) {
+                     std::mt19937* rng, int* renamed_farmer_moves) {
   std::shared_ptr<const Game> game = LoadGame("carcassonne");
   CarcassonneState state(game);
   CarcassonneState twin(game, ::Carcassonne(/*max_turns=*/0,
@@ -601,6 +905,13 @@ int CheckRotatedTwin(absl::Span<const Action> history, int k,
           DecodeMeepleActionForTest(rotated_action) != (pos + k) % 4) {
         ++renamed_meeple_moves;
       }
+      const int half_edge = pos - MEEPLE_POS_FIELD;
+      if (legal_action >= kMeepleActionOffset && pos >= MEEPLE_POS_FIELD &&
+          pos < MEEPLE_POS_INNER_FIELD &&
+          DecodeMeepleActionForTest(rotated_action) - MEEPLE_POS_FIELD !=
+              (half_edge + 2 * k) % HALF_EDGE_COUNT) {
+        ++*renamed_farmer_moves;
+      }
     }
     std::sort(rotated_legal.begin(), rotated_legal.end());
     SPIEL_CHECK_EQ(rotated_legal, twin.LegalActions());
@@ -624,16 +935,21 @@ int CheckRotatedTwin(absl::Span<const Action> history, int k,
 void RotationEquivarianceTest() {
   std::mt19937 rng(20260915);
   int renamed_meeple_moves = 0;
+  int renamed_farmer_moves = 0;
   for (int k = 1; k < kNumBoardRotations; ++k) {
-    renamed_meeple_moves +=
-        CheckRotatedTwin(kLastUnplaceableTileHistory, k, &rng);
+    renamed_meeple_moves += CheckRotatedTwin(kLastUnplaceableTileHistory, k,
+                                             &rng, &renamed_farmer_moves);
     for (int game = 0; game < 20; ++game) {
-      renamed_meeple_moves += CheckRotatedTwin({}, k, &rng);
+      renamed_meeple_moves +=
+          CheckRotatedTwin({}, k, &rng, &renamed_farmer_moves);
     }
   }
   std::cout << "RotationEquivarianceTest: " << renamed_meeple_moves
-            << " meeple moves renamed beyond a side shift" << std::endl;
+            << " meeple moves renamed beyond a side shift, "
+            << renamed_farmer_moves
+            << " farmer moves beyond a half-edge shift" << std::endl;
   SPIEL_CHECK_GT(renamed_meeple_moves, 0);
+  SPIEL_CHECK_GT(renamed_farmer_moves, 0);
 }
 
 void BasicCarcassonneTests() {
@@ -645,6 +961,9 @@ void BasicCarcassonneTests() {
   RelativePerspectiveTest();
   PendingScoreTest();
   TiedFeatureTest();
+  FieldLayoutTest();
+  FieldScoringTest();
+  InnerFieldTest();
   ReturnsMatchScoresTest();
   ShortGameMaxTurnsTest();
   LastUnplaceableTileTest();

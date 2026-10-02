@@ -5,6 +5,7 @@ set(GAME_SOURCES
   carcassonne/game/DeckModule.cpp
   carcassonne/game/Feature.cpp
   carcassonne/game/FeatureModule.cpp
+  carcassonne/game/FieldModule.cpp
   carcassonne/game/FrontierModule.cpp
   carcassonne/game/MonasteryModule.cpp
   carcassonne/game/game.cpp

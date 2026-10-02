@@ -34,7 +34,7 @@ int main(int argc, char **argv) {
                 const TileMove &m = buf[std::uniform_int_distribution<int>(0, c - 1)(rng)];
                 game.placeTile(m.x, m.y, m.rot);
             } else {
-                FixedVector<int, 6> mm = game.getLegalMeepleMoves();
+                MeepleMoves mm = game.getLegalMeepleMoves();
                 if (mm.size() == 0) break;
                 rec.push_back({2, (int)mm.size()});
                 game.placeMeeple(mm[std::uniform_int_distribution<int>(0, mm.size() - 1)(rng)]);

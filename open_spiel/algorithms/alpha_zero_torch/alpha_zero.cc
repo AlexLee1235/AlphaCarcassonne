@@ -22,6 +22,7 @@
 #include <memory>
 #include <random>
 #include <string>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -57,6 +58,13 @@
 namespace open_spiel {
 namespace algorithms {
 namespace torch_az {
+
+// vpnet.h and alpha_zero.h hold the symmetry context without the game's
+// header; it must be the Carcassonne side groups.
+static_assert(std::is_same_v<carcassonne::SideGroups,
+                             decltype(VPNetModel::TrainInputs::symmetry_context)>);
+static_assert(std::is_same_v<carcassonne::SideGroups,
+                             decltype(Trajectory::State::symmetry_context)>);
 
 struct StartInfo {
   absl::Time start_time;
@@ -141,7 +149,7 @@ Trajectory PlayGame(Logger* logger, int game_num, const open_spiel::Game& game,
       double raw_value = raw_value_evaluator != nullptr
                              ? raw_value_evaluator->Evaluate(*state)[player]
                              : std::nan("");
-      std::array<int8_t, 4> symmetry_context = carcassonne::kNoSideGroups;
+      carcassonne::SideGroups symmetry_context = carcassonne::kNoSideGroups;
       if (const auto* carcassonne_state =
               dynamic_cast<const carcassonne::CarcassonneState*>(state.get())) {
         symmetry_context = carcassonne::GetSideGroups(*carcassonne_state);

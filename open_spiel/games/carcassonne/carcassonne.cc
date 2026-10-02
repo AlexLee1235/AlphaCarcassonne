@@ -21,13 +21,16 @@ constexpr float kMeepleNormalization = 7.0f;
 constexpr float kRemainingNormalization = TOTAL_TILE_COUNT;
 constexpr float kScoreNormalization = 40.0f;
 constexpr float kScoreDiffNormalization = 20.0f;
-constexpr float kPendingNormalization = 20.0f;
+// With farmers, random games end at p99 33 / max 46 pending points a player
+// (tools/diag_pending_scale); clipped.
+constexpr float kPendingNormalization = 40.0f;
 constexpr std::array<float, kStaticDiffScales> kStaticDiffNormalizations = {3.0f, 10.0f, 30.0f};
 constexpr float kTurnNormalization = 36.0f;
 constexpr float kLegalPlacementNormalization = 100.0f;
 constexpr int kMaxOpens = 6;
 constexpr float kFeatureScoreNormalization = 12.0f;
 constexpr float kMonasteryCoverageNormalization = 9.0f;
+constexpr float kFieldScoreNormalization = 30.0f;
 
 // The side pairs of the side-link planes, in plane order.
 constexpr std::array<std::array<int, 2>, kNumSidePairs> kSidePairs = {{{0, 1}, {0, 2}, {0, 3}, {1, 2}, {1, 3}, {2, 3}}};
@@ -87,8 +90,8 @@ void DecodeTileAction(Action action, int *x, int *y, int *rot) {
 }
 
 Action EncodeMeepleAction(int pos) {
-    SPIEL_CHECK_GE(pos, -1);
-    SPIEL_CHECK_LE(pos, 4);
+    SPIEL_CHECK_GE(pos, MEEPLE_POS_SKIP);
+    SPIEL_CHECK_LT(pos, MEEPLE_POS_COUNT - 1);
     return kMeepleActionOffset + pos + 1;
 }
 
@@ -191,6 +194,12 @@ int RotatePlane(int plane, int k) {
             return first + (plane - first + k) % 4;
         }
     }
+    // A quarter turn moves each half-edge two places on.
+    for (int first : {kFieldMyFarmersPlane, kFieldOpponentFarmersPlane, kFieldScorePlane}) {
+        if (plane >= first && plane < first + HALF_EDGE_COUNT) {
+            return first + (plane - first + 2 * k) % HALF_EDGE_COUNT;
+        }
+    }
     return plane;
 }
 
@@ -233,6 +242,19 @@ int RotateMeepleSide(int side, int k, const SideGroups &groups) {
     return rotated;
 }
 
+// The same for a field named by its lowest half-edge.
+int RotateFieldHalfEdge(int half_edge, int k, const SideGroups &groups) {
+    const int8_t *field_groups = groups.data() + kFieldGroupOffset;
+    SPIEL_CHECK_NE(field_groups[half_edge], -1);
+    int rotated = HALF_EDGE_COUNT;
+    for (int e = 0; e < HALF_EDGE_COUNT; ++e) {
+        if (field_groups[e] == field_groups[half_edge]) {
+            rotated = std::min(rotated, (e + 2 * k) % HALF_EDGE_COUNT);
+        }
+    }
+    return rotated;
+}
+
 } // namespace
 
 CarcassonneState::CarcassonneState(std::shared_ptr<const Game> game) : State(std::move(game)), game_state_() {}
@@ -267,11 +289,17 @@ std::string CarcassonneState::ActionToString(Player player, Action action) const
     }
 
     const int meeple_pos = DecodeMeepleAction(action);
-    if (meeple_pos == -1) {
+    if (meeple_pos == MEEPLE_POS_SKIP) {
         return "place_meeple(skip)";
     }
-    if (meeple_pos == 4) {
+    if (meeple_pos == MEEPLE_POS_MONASTERY) {
         return "place_meeple(monastery)";
+    }
+    if (meeple_pos == MEEPLE_POS_INNER_FIELD) {
+        return "place_meeple(inner_field)";
+    }
+    if (meeple_pos >= MEEPLE_POS_FIELD) {
+        return absl::StrCat("place_meeple(field=", meeple_pos - MEEPLE_POS_FIELD, ")");
     }
     return absl::StrCat("place_meeple(edge=", meeple_pos, ")");
 }
@@ -329,6 +357,21 @@ void CarcassonneState::ObservationTensor(Player player, absl::Span<float> values
     std::fill(values.begin(), values.end(), 0.0f);
     const int opponent = 1 - player;
 
+    // Completed cities next to each field, by root slot; computed once per
+    // field rather than once per half-edge.
+    std::array<int8_t, FIELD_SLOT_COUNT> field_cities;
+    field_cities.fill(-1);
+    auto set_field_planes = [&](int root, int my_plane, int opponent_plane, int score_plane, int x, int y) {
+        const Field &field = game_state_.fieldAtRoot(root);
+        if (field_cities[root] < 0) {
+            field_cities[root] = static_cast<int8_t>(game_state_.completedCitiesNextTo(field));
+        }
+        SetPlaneValue(values, my_plane, x, y, field.farmer_count[player] / kMeepleNormalization);
+        SetPlaneValue(values, opponent_plane, x, y, field.farmer_count[opponent] / kMeepleNormalization);
+        SetPlaneValue(values, score_plane, x, y,
+                      std::min(FIELD_POINTS_PER_CITY * field_cities[root] / kFieldScoreNormalization, 1.0f));
+    };
+
     for (int y = 0; y < BOARD_SIZE; ++y) {
         for (int x = 0; x < BOARD_SIZE; ++x) {
             if (game_state_.isFrontier(x, y)) {
@@ -381,6 +424,19 @@ void CarcassonneState::ObservationTensor(Player player, absl::Span<float> values
                 SetPlaneValue(values, kFeatureSignedScorePlane + side, x, y,
                               Clip(holder * score / kFeatureScoreNormalization));
             }
+            for (int half_edge = 0; half_edge < HALF_EDGE_COUNT; ++half_edge) {
+                if (tile.field[half_edge] == -1) {
+                    continue;
+                }
+                set_field_planes(game_state_.fieldRoot(placement.id, tile.field[half_edge]),
+                                 kFieldMyFarmersPlane + half_edge, kFieldOpponentFarmersPlane + half_edge,
+                                 kFieldScorePlane + half_edge, x, y);
+            }
+            const int inner_field = tile.innerField();
+            if (inner_field != -1) {
+                set_field_planes(game_state_.fieldRoot(placement.id, inner_field), kInnerFieldMyFarmersPlane,
+                                 kInnerFieldOpponentFarmersPlane, kInnerFieldScorePlane, x, y);
+            }
         }
     }
 
@@ -402,8 +458,8 @@ void CarcassonneState::ObservationTensor(Player player, absl::Span<float> values
     global[kGlobalMyScore] = scores[player] / kScoreNormalization;
     global[kGlobalOpponentScore] = scores[opponent] / kScoreNormalization;
     global[kGlobalScoreDiff] = Clip(score_diff / kScoreDiffNormalization);
-    global[kGlobalMyPending] = pending[player] / kPendingNormalization;
-    global[kGlobalOpponentPending] = pending[opponent] / kPendingNormalization;
+    global[kGlobalMyPending] = Clip(pending[player] / kPendingNormalization);
+    global[kGlobalOpponentPending] = Clip(pending[opponent] / kPendingNormalization);
     for (int scale = 0; scale < kStaticDiffScales; ++scale) {
         global[kGlobalStaticDiff + scale] = Clip(static_diff / kStaticDiffNormalizations[scale]);
     }
@@ -423,13 +479,17 @@ void CarcassonneState::ObservationTensor(Player player, absl::Span<float> values
     global[kGlobalTilePhase] = game_state_.current_phase == PHASE_TILE ? 1.0f : 0.0f;
     global[kGlobalMeeplePhase] = game_state_.current_phase == PHASE_MEEPLE ? 1.0f : 0.0f;
     if (game_state_.current_phase == PHASE_MEEPLE) {
-        FixedVector<int, kMeepleActionCount> meeple_moves = game_state_.getLegalMeepleMoves();
+        MeepleMoves meeple_moves = game_state_.getLegalMeepleMoves();
         for (int i = 0; i < meeple_moves.size(); ++i) {
             global[kGlobalLegalMeeple + meeple_moves[i] + 1] = 1.0f;
         }
     }
     global[kGlobalLegalPlacements] = legal_placements / kLegalPlacementNormalization;
     global[kGlobalIsPlayer0] = game_state_.currentPlayer == 0 ? 1.0f : 0.0f;
+    int field_pending[2];
+    game_state_.getPendingFieldScore(field_pending);
+    global[kGlobalMyFieldPending] = Clip(field_pending[player] / kPendingNormalization);
+    global[kGlobalOpponentFieldPending] = Clip(field_pending[opponent] / kPendingNormalization);
 }
 
 std::unique_ptr<State> CarcassonneState::Clone() const { return std::unique_ptr<State>(new CarcassonneState(*this)); }
@@ -480,7 +540,7 @@ std::vector<Action> CarcassonneState::LegalActions() const {
 
     SPIEL_CHECK_EQ(game_state_.current_phase, PHASE_MEEPLE);
     std::vector<Action> actions;
-    FixedVector<int, 6> meeple_moves = game_state_.getLegalMeepleMoves();
+    MeepleMoves meeple_moves = game_state_.getLegalMeepleMoves();
     actions.reserve(meeple_moves.size());
     for (int i = 0; i < meeple_moves.size(); ++i) {
         actions.push_back(EncodeMeepleAction(meeple_moves[i]));
@@ -518,6 +578,7 @@ SideGroups GetSideGroups(const CarcassonneState &state) {
     const ::Carcassonne &core = state.UnderlyingState();
     if (core.current_phase == PHASE_MEEPLE) {
         core.getLastTileSideGroups(groups.data());
+        core.getLastTileFieldGroups(groups.data() + kFieldGroupOffset);
     }
     return groups;
 }
@@ -534,10 +595,13 @@ Action RotateAction(Action action, int k, const SideGroups &groups) {
         return EncodeTileAction(x, y, (rot + k) % 4);
     }
     const int pos = DecodeMeepleAction(action);
-    if (pos < 0 || pos > 3) {
-        return action;  // Skip and monastery do not depend on orientation.
+    if (pos >= 0 && pos < 4) {
+        return EncodeMeepleAction(RotateMeepleSide(pos, k, groups));
     }
-    return EncodeMeepleAction(RotateMeepleSide(pos, k, groups));
+    if (pos >= MEEPLE_POS_FIELD && pos < MEEPLE_POS_INNER_FIELD) {
+        return EncodeMeepleAction(MEEPLE_POS_FIELD + RotateFieldHalfEdge(pos - MEEPLE_POS_FIELD, k, groups));
+    }
+    return action;  // Skip, monastery and inner fields do not depend on orientation.
 }
 
 SideGroups RotateSideGroups(const SideGroups &groups, int k) {
@@ -545,6 +609,12 @@ SideGroups RotateSideGroups(const SideGroups &groups, int k) {
     for (int side = 0; side < 4; ++side) {
         if (groups[side] != -1) {
             rotated[(side + k) % 4] = static_cast<int8_t>(RotateMeepleSide(side, k, groups));
+        }
+    }
+    for (int half_edge = 0; half_edge < HALF_EDGE_COUNT; ++half_edge) {
+        if (groups[kFieldGroupOffset + half_edge] != -1) {
+            rotated[kFieldGroupOffset + (half_edge + 2 * k) % HALF_EDGE_COUNT] =
+                static_cast<int8_t>(RotateFieldHalfEdge(half_edge, k, groups));
         }
     }
     return rotated;
@@ -560,15 +630,24 @@ void RotateObservation(absl::Span<const float> observation, int k, const SideGro
     for (int i = 0; i < kObservationTensorSize; ++i) {
         rotated[i] = observation[source[i]];
     }
-    // The legal meeple sides sit in the global vector, which the table leaves
-    // in place; rename each legal side instead.
+    // The legal meeple sides and half-edges sit in the global vector, which the
+    // table leaves in place; rename each legal one instead.
     const int legal_sides = kGlobalFeaturePlane * BOARD_SIZE * BOARD_SIZE + kGlobalLegalMeeple + 1;
+    const int legal_half_edges = legal_sides + MEEPLE_POS_FIELD;
     for (int side = 0; side < 4; ++side) {
         rotated[legal_sides + side] = 0.0f;
+    }
+    for (int half_edge = 0; half_edge < HALF_EDGE_COUNT; ++half_edge) {
+        rotated[legal_half_edges + half_edge] = 0.0f;
     }
     for (int side = 0; side < 4; ++side) {
         if (observation[legal_sides + side] != 0.0f) {
             rotated[legal_sides + RotateMeepleSide(side, k, groups)] = 1.0f;
+        }
+    }
+    for (int half_edge = 0; half_edge < HALF_EDGE_COUNT; ++half_edge) {
+        if (observation[legal_half_edges + half_edge] != 0.0f) {
+            rotated[legal_half_edges + RotateFieldHalfEdge(half_edge, k, groups)] = 1.0f;
         }
     }
 }

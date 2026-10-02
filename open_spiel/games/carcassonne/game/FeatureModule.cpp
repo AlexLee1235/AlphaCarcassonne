@@ -126,7 +126,7 @@ void FeatureModule::placeTileOnBoard(int tile_id, int x, int y, int rot, const T
     }
 }
 
-void FeatureModule::getLegalMeepleMoves(FixedVector<int, 6> &ret, int x, int y, const BoardModule &board,
+void FeatureModule::getLegalMeepleMoves(MeepleMoves &ret, int x, int y, const BoardModule &board,
                                         const Tile &tile) const {
     int seen_roots[4];
     int root_count = 0;

@@ -8,6 +8,12 @@ add_executable(carcassonne_observation_dump
   carcassonne_observation_dump.cc
   ${OPEN_SPIEL_OBJECTS})
 
+if (OPEN_SPIEL_BUILD_WITH_LIBNOP)
+  add_executable(observation_codec_benchmark
+    observation_codec_benchmark.cc
+    ${OPEN_SPIEL_OBJECTS})
+endif()
+
 if (OPEN_SPIEL_BUILD_WITH_LIBTORCH)
   add_executable(alpha_zero_torch_example
     alpha_zero_torch_example.cc

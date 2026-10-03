@@ -20,12 +20,15 @@ constexpr std::array<int, 4> op = {D, L, U, R};
 Field Field::operator+(const Field &other) const {
     Field res;
     res.city_edges = city_edges | other.city_edges;
+    res.tile_mask = tile_mask | other.tile_mask;
     res.farmer_count[0] = farmer_count[0] + other.farmer_count[0];
     res.farmer_count[1] = farmer_count[1] + other.farmer_count[1];
     return res;
 }
 
 bool Field::hasFarmers() const { return farmer_count[0] != 0 || farmer_count[1] != 0; }
+
+int Field::getTileCount() const { return static_cast<int>(tile_mask.count()); }
 
 FieldModule::FieldModule() : fieldMap(std::plus<Field>{}) {}
 
@@ -35,6 +38,7 @@ void FieldModule::placeTileOnBoard(int tile_id, int x, int y, const Tile &tile, 
                                    const FeatureModule &features) {
     for (int f = 0; f < tile.field_count; ++f) {
         Field field;
+        field.tile_mask.set(tile_id);
         for (int side = 0; side < 4; ++side) {
             if (!(tile.field_city_sides[f] & (1 << side))) {
                 continue;
@@ -126,13 +130,13 @@ void FieldModule::getHalfEdgeGroups(int tile_id, const Tile &tile, int8_t groups
     }
 }
 
-int FieldModule::completedCityCount(const Field &field, const FeatureModule &features) const {
+CityCounts FieldModule::adjacentCities(const Field &field, const FeatureModule &features) const {
+    CityCounts counts;
     if (field.city_edges.none()) {
-        return 0;
+        return counts;
     }
     // Cities that grew together are one city, counted once.
     std::bitset<EDGE_SLOT_COUNT> seen_roots;
-    int count = 0;
     auto visit = [&](int slot) {
         int root = features.featureMap.find(slot);
         if (seen_roots[root]) {
@@ -140,7 +144,9 @@ int FieldModule::completedCityCount(const Field &field, const FeatureModule &fea
         }
         seen_roots[root] = true;
         if (features.featureMap.getSetData(root).opens == 0) {
-            count++;
+            counts.completed++;
+        } else {
+            counts.open++;
         }
     };
 #if defined(__GLIBCXX__)
@@ -156,7 +162,7 @@ int FieldModule::completedCityCount(const Field &field, const FeatureModule &fea
         }
     }
 #endif
-    return count;
+    return counts;
 }
 
 void FieldModule::accumulateScore(int *scores, const FeatureModule &features) const {
@@ -182,7 +188,7 @@ void FieldModule::accumulateScore(int *scores, const FeatureModule &features) co
         if (m0 == 0 && m1 == 0) {
             continue;
         }
-        int score = FIELD_POINTS_PER_CITY * completedCityCount(field, features);
+        int score = FIELD_POINTS_PER_CITY * adjacentCities(field, features).completed;
         if (m0 >= m1) {
             scores[0] += score;
         }

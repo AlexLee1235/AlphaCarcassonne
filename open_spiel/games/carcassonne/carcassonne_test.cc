@@ -151,7 +151,7 @@ void ObservationTensorSmokeTest() {
   const std::vector<int> shape = game->ObservationTensorShape();
 
   SPIEL_CHECK_EQ(shape.size(), 3);
-  SPIEL_CHECK_EQ(shape[0], 77);
+  SPIEL_CHECK_EQ(shape[0], 95);
   SPIEL_CHECK_EQ(shape[0], kObservationPlanes);
   SPIEL_CHECK_EQ(shape[1], BOARD_SIZE);
   SPIEL_CHECK_EQ(shape[2], BOARD_SIZE);
@@ -199,10 +199,26 @@ void ObservationTensorSmokeTest() {
   CheckZeroPlanes(initial_obs, kFeatureMyMeeplesPlane, 12);
   CheckZeroPlanes(initial_obs, kLegalPlacementPlane, kLegalPlacementPlanes);
   CheckZeroPlanes(initial_obs, kMonasteryCoveragePlane, 2);
-  // Its fields, north and south of the road, hold no farmers and border no
-  // completed city.
+  // Its fields, north (half-edges 2, 7) and south (3-6) of the road, hold no
+  // farmers and border no completed city. Each is one tile; the north one
+  // borders the open city.
   CheckZeroPlanes(initial_obs, kFieldMyFarmersPlane,
-                  kInnerFieldScorePlane + 1 - kFieldMyFarmersPlane);
+                  kFieldSizePlane - kFieldMyFarmersPlane);
+  for (int half_edge = 0; half_edge < HALF_EDGE_COUNT; ++half_edge) {
+    const bool on_field = half_edge >= 2;
+    const bool north = half_edge == 2 || half_edge == 7;
+    SPIEL_CHECK_TRUE(Near(PlaneSum(initial_obs, kFieldSizePlane + half_edge),
+                          on_field ? 1.0f / 30 : 0.0f));
+    SPIEL_CHECK_TRUE(Near(PlaneValue(initial_obs, kFieldSizePlane + half_edge, c, c),
+                          on_field ? 1.0f / 30 : 0.0f));
+    SPIEL_CHECK_TRUE(Near(PlaneSum(initial_obs, kFieldOpenCitiesPlane + half_edge),
+                          north ? 1.0f / 10 : 0.0f));
+    SPIEL_CHECK_TRUE(
+        Near(PlaneValue(initial_obs, kFieldOpenCitiesPlane + half_edge, c, c),
+             north ? 1.0f / 10 : 0.0f));
+  }
+  CheckZeroPlanes(initial_obs, kInnerFieldMyFarmersPlane,
+                  kInnerFieldOpenCitiesPlane + 1 - kInnerFieldMyFarmersPlane);
   CheckRemainingByType(initial_obs, initial_state->UnderlyingState());
   for (int i : {kGlobalMyScore, kGlobalOpponentScore, kGlobalScoreDiff,
                 kGlobalMyPending, kGlobalOpponentPending, kGlobalStaticDiff,
@@ -316,12 +332,16 @@ void RelativePerspectiveTest() {
                      kFieldOpponentFarmersPlane + half_edge);
     CheckPlanesEqual(obs0, kFieldOpponentFarmersPlane + half_edge, obs1,
                      kFieldMyFarmersPlane + half_edge);
-    CheckPlanesEqual(obs0, kFieldScorePlane + half_edge, obs1,
-                     kFieldScorePlane + half_edge);
+    for (int plane : {kFieldScorePlane, kFieldSizePlane, kFieldOpenCitiesPlane}) {
+      CheckPlanesEqual(obs0, plane + half_edge, obs1, plane + half_edge);
+    }
   }
   CheckPlanesEqual(obs0, kInnerFieldMyFarmersPlane, obs1,
                    kInnerFieldOpponentFarmersPlane);
-  CheckPlanesEqual(obs0, kInnerFieldScorePlane, obs1, kInnerFieldScorePlane);
+  for (int plane : {kInnerFieldScorePlane, kInnerFieldSizePlane,
+                    kInnerFieldOpenCitiesPlane}) {
+    CheckPlanesEqual(obs0, plane, obs1, plane);
+  }
 
   int pending[2];
   core.getPendingScore(pending);
@@ -608,8 +628,21 @@ void CheckFieldPending(const ::Carcassonne& game, int player0, int player1) {
   SPIEL_CHECK_EQ(pending[1], player1);
 }
 
+// The field that local field `local` of the tile at (tile_x, tile_y) belongs
+// to: how many tiles it spans, and the open and completed cities next to it.
+void CheckField(const ::Carcassonne& game, int tile_x, int tile_y, int local,
+                int tiles, int open_cities, int completed_cities) {
+  const Placement placement = game.getPlacement(tile_x, tile_y);
+  const Field& field = game.fieldAtRoot(game.fieldRoot(placement.id, local));
+  const CityCounts cities = game.citiesNextTo(field);
+  SPIEL_CHECK_EQ(field.getTileCount(), tiles);
+  SPIEL_CHECK_EQ(cities.open, open_cities);
+  SPIEL_CHECK_EQ(cities.completed, completed_cities);
+}
+
 // Fields built by hand, scored 3 per completed city next to them for whoever
-// has the most farmers there.
+// has the most farmers there. Local field 0 of the start tile is its north
+// field, 1 its south field.
 void FieldScoringTest() {
   const int c = BOARD_SIZE / 2;
   // The start tile (type 20) at (c, c): city north, road east-west, grass
@@ -619,25 +652,36 @@ void FieldScoringTest() {
     // P0: another type 20 east of it; a farmer on the north field (half-edge
     // 2), next to both open cities.
     PlayTurn(&game, 20, c + 1, c, 0, MEEPLE_POS_FIELD + 2);
+    CheckField(game, c, c, 0, /*tiles=*/2, /*open=*/2, /*completed=*/0);
     // P1: a CGGG south, city facing south; a farmer on the south field.
     PlayTurn(&game, 16, c, c + 1, 2, MEEPLE_POS_FIELD + 0);
     // P0: a T junction east; a farmer on its south-east corner, a field of
     // its own between two roads.
     PlayTurn(&game, 23, c + 2, c, 0, MEEPLE_POS_FIELD + 3);
     CheckFieldPending(game, 0, 0);
+    CheckField(game, c, c, 0, 3, 2, 0);
+    CheckField(game, c, c, 1, 4, 1, 0);
+    CheckField(game, c + 2, c, 1, 1, 0, 0);
     // P1: closes the start tile's city; a farmer on the field north of it.
     PlayTurn(&game, 16, c, c - 1, 2, MEEPLE_POS_FIELD + 0);
     CheckFieldPending(game, 3, 3);
+    CheckField(game, c, c, 0, 3, 1, 1);
+    CheckField(game, c, c - 1, 0, 1, 0, 1);
     // P0: closes the second city, which the same two fields border.
     PlayTurn(&game, 16, c + 1, c - 1, 2, MEEPLE_POS_SKIP);
     CheckFieldPending(game, 6, 6);
+    CheckField(game, c, c, 0, 3, 0, 2);
+    CheckField(game, c, c - 1, 0, 2, 0, 2);
     // P1: a monastery ends the junction's south road, joining P1's south
-    // field with P0's corner: tied, but next to an open city only.
+    // field with P0's corner: tied, but next to an open city only. The
+    // junction tile has a piece in both and counts once.
     PlayTurn(&game, 2, c + 2, c + 1, 2, MEEPLE_POS_SKIP);
     CheckFieldPending(game, 6, 6);
+    CheckField(game, c, c, 1, 5, 1, 0);
     // P0: closes the south city; the tied field scores for both.
     PlayTurn(&game, 16, c, c + 2, 0, MEEPLE_POS_SKIP);
     CheckFieldPending(game, 9, 9);
+    CheckField(game, c, c, 1, 5, 0, 1);
     int pending[2];
     int resolved[2];
     game.getPendingScore(pending);
@@ -651,6 +695,9 @@ void FieldScoringTest() {
     SPIEL_CHECK_EQ(game.current_phase, PHASE_TERMINAL);
     SPIEL_CHECK_EQ(game.player_scores[0], 9);
     SPIEL_CHECK_EQ(game.player_scores[1], 6);
+    // Ten pieces on six tiles: the start tile, its neighbour and the junction
+    // each have pieces on both sides of the road.
+    CheckField(game, c, c, 0, 6, 0, 3);
     // Farmers never come back.
     SPIEL_CHECK_EQ(game.holding_meeples[0], 5);
     SPIEL_CHECK_EQ(game.holding_meeples[1], 5);
@@ -662,12 +709,15 @@ void FieldScoringTest() {
     // its field.
     PlayTurn(&game, 15, c, c + 1, 1, MEEPLE_POS_FIELD + 0);
     CheckFieldPending(game, 0, 0);
+    CheckField(game, c, c + 1, 0, 2, 2, 0);
     PlayTurn(&game, 16, c + 1, c + 1, 3, MEEPLE_POS_SKIP);  // closes the east city
     CheckFieldPending(game, 3, 0);
+    CheckField(game, c, c + 1, 0, 2, 1, 1);
     PlayTurn(&game, 16, c - 1, c + 1, 1, MEEPLE_POS_SKIP);  // and the west one
     SPIEL_CHECK_EQ(game.current_phase, PHASE_TERMINAL);
     SPIEL_CHECK_EQ(game.player_scores[0], 6);
     SPIEL_CHECK_EQ(game.player_scores[1], 0);
+    CheckField(game, c, c + 1, 0, 2, 0, 2);
   }
 }
 
@@ -706,6 +756,13 @@ void InnerFieldTest() {
     SPIEL_CHECK_EQ(scores[0], player0);
     SPIEL_CHECK_EQ(scores[1], player1);
   };
+  auto check_cities = [&](int open_cities, int completed_cities) {
+    const Field& field = fields->fieldMap.getSetData(fields->fieldIndex(id, 0));
+    const CityCounts cities = fields->adjacentCities(field, *features);
+    SPIEL_CHECK_EQ(field.getTileCount(), 1);
+    SPIEL_CHECK_EQ(cities.open, open_cities);
+    SPIEL_CHECK_EQ(cities.completed, completed_cities);
+  };
 
   const int c = BOARD_SIZE / 2;
   place(id, c, c, 0, four_cities);
@@ -718,6 +775,7 @@ void InnerFieldTest() {
   fields->getLegalFarmerMoves(taken, id, four_cities);
   SPIEL_CHECK_EQ(taken.size(), 0);
   check_scores(0, 0);
+  check_cities(4, 0);
 
   // Close each city with a CGGG whose city faces the centre: N, E, S, W.
   const auto& caps = tile_type_tables.draw_physical_ids_by_type[16];
@@ -727,6 +785,7 @@ void InnerFieldTest() {
     place(caps[i], cap_cells[i][0], cap_cells[i][1], cap_rotations[i],
           full_deck[caps[i]][cap_rotations[i]]);
     check_scores(FIELD_POINTS_PER_CITY * (i + 1), 0);
+    check_cities(3 - i, i + 1);
   }
 
   // The majority takes it all; a tie scores for both. (A second farmer on a

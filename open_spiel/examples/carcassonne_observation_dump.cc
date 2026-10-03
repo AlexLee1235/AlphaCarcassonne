@@ -117,10 +117,14 @@ std::vector<std::string> PlaneNames() {
     names[kFieldOpponentFarmersPlane + half_edge] =
         "field_opponent_farmers" + suffix;
     names[kFieldScorePlane + half_edge] = "field_score" + suffix;
+    names[kFieldSizePlane + half_edge] = "field_size" + suffix;
+    names[kFieldOpenCitiesPlane + half_edge] = "field_open_cities" + suffix;
   }
   names[kInnerFieldMyFarmersPlane] = "inner_field_my_farmers";
   names[kInnerFieldOpponentFarmersPlane] = "inner_field_opponent_farmers";
   names[kInnerFieldScorePlane] = "inner_field_score";
+  names[kInnerFieldSizePlane] = "inner_field_size";
+  names[kInnerFieldOpenCitiesPlane] = "inner_field_open_cities";
   names[kGlobalFeaturePlane] = "global_vector";
   return names;
 }

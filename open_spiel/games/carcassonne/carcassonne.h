@@ -69,15 +69,19 @@ inline constexpr int kMonasteryOwnerPlane = kMonasteryCoveragePlane + 1;
 inline constexpr int kFieldMyFarmersPlane = kMonasteryOwnerPlane + 1;                 // count / 7
 inline constexpr int kFieldOpponentFarmersPlane = kFieldMyFarmersPlane + HALF_EDGE_COUNT;
 inline constexpr int kFieldScorePlane = kFieldOpponentFarmersPlane + HALF_EDGE_COUNT; // 3 * completed cities / 30
+inline constexpr int kFieldSizePlane = kFieldScorePlane + HALF_EDGE_COUNT;            // tiles / 30
+inline constexpr int kFieldOpenCitiesPlane = kFieldSizePlane + HALF_EDGE_COUNT;       // open cities next to it / 10
 // The same for a tile's inner field, which touches no half-edge.
-inline constexpr int kInnerFieldMyFarmersPlane = kFieldScorePlane + HALF_EDGE_COUNT;
+inline constexpr int kInnerFieldMyFarmersPlane = kFieldOpenCitiesPlane + HALF_EDGE_COUNT;
 inline constexpr int kInnerFieldOpponentFarmersPlane = kInnerFieldMyFarmersPlane + 1;
 inline constexpr int kInnerFieldScorePlane = kInnerFieldOpponentFarmersPlane + 1;
-inline constexpr int kSpatialPlanes = kInnerFieldScorePlane + 1;
+inline constexpr int kInnerFieldSizePlane = kInnerFieldScorePlane + 1;
+inline constexpr int kInnerFieldOpenCitiesPlane = kInnerFieldSizePlane + 1;
+inline constexpr int kSpatialPlanes = kInnerFieldOpenCitiesPlane + 1;
 inline constexpr int kGlobalFeaturePlane = kSpatialPlanes;
 inline constexpr int kObservationPlanes = kGlobalFeaturePlane + 1;
 static_assert(kLastPlacedPlane == 26);
-static_assert(kSpatialPlanes == 76);
+static_assert(kSpatialPlanes == 94);
 
 // Offsets in the global vector, all from the observing player's side.
 inline constexpr int kGlobalMyScore = 0;           // / 40

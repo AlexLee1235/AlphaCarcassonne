@@ -121,11 +121,19 @@ class Field {
     // For each piece of city the field borders, one of its edge slots
     // (FeatureModule::edgeIndex); featureMap finds the whole city from it.
     std::bitset<EDGE_SLOT_COUNT> city_edges;
+    std::bitset<73> tile_mask;
     uint8_t farmer_count[2] = {};
 
     Field operator+(const Field &other) const;
 
     bool hasFarmers() const;
+    int getTileCount() const;
+};
+
+// The cities a field borders, each counted once.
+struct CityCounts {
+    int completed = 0;
+    int open = 0;
 };
 
 // Farmers stay on their field for the whole game and score only at the end.
@@ -144,8 +152,7 @@ class FieldModule {
     // For each half-edge of the tile, the lowest half-edge of the tile in the
     // same field (-1 on city sides).
     void getHalfEdgeGroups(int tile_id, const Tile &tile, int8_t groups[HALF_EDGE_COUNT]) const;
-    // Completed cities the field borders, each counted once.
-    int completedCityCount(const Field &field, const FeatureModule &features) const;
+    CityCounts adjacentCities(const Field &field, const FeatureModule &features) const;
     // Adds each field that holds farmers to its majority holders, as the
     // end-game scoring would.
     void accumulateScore(int *scores, const FeatureModule &features) const;
@@ -263,7 +270,7 @@ class Carcassonne {
     // (the same for every part of one field), and that field.
     int fieldRoot(int tile_id, int local) const { return fields.fieldMap.find(fields.fieldIndex(tile_id, local)); }
     const Field &fieldAtRoot(int root) const { return fields.fieldMap.getSetData(root); }
-    int completedCitiesNextTo(const Field &field) const { return fields.completedCityCount(field, features); }
+    CityCounts citiesNextTo(const Field &field) const { return fields.adjacentCities(field, features); }
     bool isFrontier(int x, int y) const { return frontier.frontier[y][x]; }
     int coverage3x3(int x, int y) const { return board.count3x3(x, y); }
     int monasteryOwner(int x, int y) const { return monasteries.ownerAt(x, y); }

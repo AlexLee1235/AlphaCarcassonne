@@ -31,6 +31,19 @@ constexpr int kMaxOpens = 6;
 constexpr float kFeatureScoreNormalization = 12.0f;
 constexpr float kMonasteryCoverageNormalization = 9.0f;
 constexpr float kFieldScoreNormalization = 30.0f;
+// Per half-edge in random games: size p99 28 tiles (32 at the last move, max
+// 41), open cities next to it p99 9-10 (max 16). Both clipped.
+constexpr float kFieldSizeNormalization = 30.0f;
+constexpr float kFieldOpenCitiesNormalization = 10.0f;
+
+// The planes one field is written to: a half-edge's or an inner field's.
+struct FieldPlanes {
+    int my_farmers;
+    int opponent_farmers;
+    int score;
+    int size;
+    int open_cities;
+};
 
 // The side pairs of the side-link planes, in plane order.
 constexpr std::array<std::array<int, 2>, kNumSidePairs> kSidePairs = {{{0, 1}, {0, 2}, {0, 3}, {1, 2}, {1, 3}, {2, 3}}};
@@ -195,7 +208,8 @@ int RotatePlane(int plane, int k) {
         }
     }
     // A quarter turn moves each half-edge two places on.
-    for (int first : {kFieldMyFarmersPlane, kFieldOpponentFarmersPlane, kFieldScorePlane}) {
+    for (int first : {kFieldMyFarmersPlane, kFieldOpponentFarmersPlane, kFieldScorePlane, kFieldSizePlane,
+                      kFieldOpenCitiesPlane}) {
         if (plane >= first && plane < first + HALF_EDGE_COUNT) {
             return first + (plane - first + 2 * k) % HALF_EDGE_COUNT;
         }
@@ -357,19 +371,23 @@ void CarcassonneState::ObservationTensor(Player player, absl::Span<float> values
     std::fill(values.begin(), values.end(), 0.0f);
     const int opponent = 1 - player;
 
-    // Completed cities next to each field, by root slot; computed once per
-    // field rather than once per half-edge.
-    std::array<int8_t, FIELD_SLOT_COUNT> field_cities;
-    field_cities.fill(-1);
-    auto set_field_planes = [&](int root, int my_plane, int opponent_plane, int score_plane, int x, int y) {
+    // Cities next to each field, by root slot; counted once per field rather
+    // than once per half-edge.
+    std::array<CityCounts, FIELD_SLOT_COUNT> field_cities;
+    std::array<bool, FIELD_SLOT_COUNT> field_counted{};
+    auto set_field_planes = [&](int root, const FieldPlanes &planes, int x, int y) {
         const Field &field = game_state_.fieldAtRoot(root);
-        if (field_cities[root] < 0) {
-            field_cities[root] = static_cast<int8_t>(game_state_.completedCitiesNextTo(field));
+        if (!field_counted[root]) {
+            field_cities[root] = game_state_.citiesNextTo(field);
+            field_counted[root] = true;
         }
-        SetPlaneValue(values, my_plane, x, y, field.farmer_count[player] / kMeepleNormalization);
-        SetPlaneValue(values, opponent_plane, x, y, field.farmer_count[opponent] / kMeepleNormalization);
-        SetPlaneValue(values, score_plane, x, y,
-                      std::min(FIELD_POINTS_PER_CITY * field_cities[root] / kFieldScoreNormalization, 1.0f));
+        const CityCounts &cities = field_cities[root];
+        SetPlaneValue(values, planes.my_farmers, x, y, field.farmer_count[player] / kMeepleNormalization);
+        SetPlaneValue(values, planes.opponent_farmers, x, y, field.farmer_count[opponent] / kMeepleNormalization);
+        SetPlaneValue(values, planes.score, x, y,
+                      std::min(FIELD_POINTS_PER_CITY * cities.completed / kFieldScoreNormalization, 1.0f));
+        SetPlaneValue(values, planes.size, x, y, std::min(field.getTileCount() / kFieldSizeNormalization, 1.0f));
+        SetPlaneValue(values, planes.open_cities, x, y, std::min(cities.open / kFieldOpenCitiesNormalization, 1.0f));
     };
 
     for (int y = 0; y < BOARD_SIZE; ++y) {
@@ -429,13 +447,17 @@ void CarcassonneState::ObservationTensor(Player player, absl::Span<float> values
                     continue;
                 }
                 set_field_planes(game_state_.fieldRoot(placement.id, tile.field[half_edge]),
-                                 kFieldMyFarmersPlane + half_edge, kFieldOpponentFarmersPlane + half_edge,
-                                 kFieldScorePlane + half_edge, x, y);
+                                 {kFieldMyFarmersPlane + half_edge, kFieldOpponentFarmersPlane + half_edge,
+                                  kFieldScorePlane + half_edge, kFieldSizePlane + half_edge,
+                                  kFieldOpenCitiesPlane + half_edge},
+                                 x, y);
             }
             const int inner_field = tile.innerField();
             if (inner_field != -1) {
-                set_field_planes(game_state_.fieldRoot(placement.id, inner_field), kInnerFieldMyFarmersPlane,
-                                 kInnerFieldOpponentFarmersPlane, kInnerFieldScorePlane, x, y);
+                set_field_planes(game_state_.fieldRoot(placement.id, inner_field),
+                                 {kInnerFieldMyFarmersPlane, kInnerFieldOpponentFarmersPlane, kInnerFieldScorePlane,
+                                  kInnerFieldSizePlane, kInnerFieldOpenCitiesPlane},
+                                 x, y);
             }
         }
     }

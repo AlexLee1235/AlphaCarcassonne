@@ -389,6 +389,98 @@ constexpr TileBlueprint all_tiles[] = {
     {Tile(ROAD, ROAD, ROAD, ROAD, 0, 1, 0, 1, {{0, 1, 1, 2, 2, 3, 3, 0}, 4, {}}), 1, 75, EXP_TRADERS_BUILDERS},
 
     // ---- The Princess & the Dragon: 30 tiles, types 76-104, rows end with EXP_PRINCESS_DRAGON. ----
+    // One city east to west; roads from the north and from the south end in
+    // the grass before they reach it, so the grass runs round each: two fields.
+    {Tile(ROAD, CITY, ROAD, CITY, 0, 1, 2, 1, {{0, 0, -1, -1, 1, 1, -1, -1}, 2, {SIDE_E | SIDE_W, SIDE_E | SIDE_W}}, {},
+          TILE_DRAGON), 1, 76, EXP_PRINCESS_DRAGON},
+    // Type 13 (city east to west with the shield).
+    {Tile(GRASS, CITY, GRASS, CITY, 0, 1, 2, 1, {{0, 0, -1, -1, 1, 1, -1, -1}, 2, {SIDE_E | SIDE_W, SIDE_E | SIDE_W}},
+          {0, MARK_SHIELD, 0, 0}, TILE_DRAGON), 1, 77, EXP_PRINCESS_DRAGON},
+    // Type 4 (city north, east and west) with a monastery inside the city.
+    {Tile(CITY, CITY, GRASS, CITY, 0, 0, 1, 0, {{-1, -1, -1, -1, 0, 0, -1, -1}, 1, {SIDE_N | SIDE_E | SIDE_W}}, {},
+          TILE_MONASTERY | TILE_DRAGON), 1, 78, EXP_PRINCESS_DRAGON},
+    // Type 8 (north-west corner city).
+    {Tile(CITY, GRASS, GRASS, CITY, 0, 1, 2, 0, {{-1, -1, 0, 0, 0, 0, -1, -1}, 1, {SIDE_N | SIDE_W}}, {}, TILE_DRAGON),
+     1, 79, EXP_PRINCESS_DRAGON},
+    // Type 17 (cap north, road bend south to west).
+    {Tile(CITY, GRASS, ROAD, ROAD, 0, 1, 2, 2, {{-1, -1, 0, 0, 0, 1, 1, 0}, 2, {SIDE_N}}, {}, TILE_DRAGON), 1, 80,
+     EXP_PRINCESS_DRAGON},
+    // Type 18 (cap north, road bend east to south).
+    {Tile(CITY, ROAD, ROAD, GRASS, 0, 1, 1, 2, {{-1, -1, 0, 1, 1, 0, 0, 0}, 2, {SIDE_N}}, {}, TILE_DRAGON), 1, 81,
+     EXP_PRINCESS_DRAGON},
+    // Type 16 (cap north); the garden changes nothing.
+    {Tile(CITY, GRASS, GRASS, GRASS, 0, 1, 2, 3, {{-1, -1, 0, 0, 0, 0, 0, 0}, 1, {SIDE_N}}, {}, TILE_DRAGON), 1, 82,
+     EXP_PRINCESS_DRAGON},
+    // Type 23 (roads east, south and west end at a village).
+    {Tile(GRASS, ROAD, ROAD, ROAD, 0, 1, 2, 3, {{0, 0, 0, 1, 1, 2, 2, 0}, 3, {}}, {}, TILE_DRAGON), 1, 83,
+     EXP_PRINCESS_DRAGON},
+    // Roads east, south and west end at a monastery; like type 74.
+    {Tile(GRASS, ROAD, ROAD, ROAD, 0, 1, 2, 3, {{0, 0, 0, 1, 1, 2, 2, 0}, 3, {}}, {}, TILE_MONASTERY | TILE_DRAGON), 1,
+     84, EXP_PRINCESS_DRAGON},
+    // Type 22 (road bend south to west). Two: second edition r8_c08 is the other one.
+    {Tile(GRASS, GRASS, ROAD, ROAD, 0, 1, 2, 2, {{0, 0, 0, 0, 0, 1, 1, 0}, 2, {}}, {}, TILE_DRAGON), 2, 85,
+     EXP_PRINCESS_DRAGON},
+    // Type 21 (straight road north to south).
+    {Tile(ROAD, GRASS, ROAD, GRASS, 0, 1, 0, 2, {{0, 1, 1, 1, 1, 0, 0, 0}, 2, {}}, {}, TILE_DRAGON), 1, 86,
+     EXP_PRINCESS_DRAGON},
+    // Volcano; type 22 (road bend south to west).
+    {Tile(GRASS, GRASS, ROAD, ROAD, 0, 1, 2, 2, {{0, 0, 0, 0, 0, 1, 1, 0}, 2, {}}, {}, TILE_VOLCANO), 1, 87,
+     EXP_PRINCESS_DRAGON},
+    // Volcano; type 21 (straight road north to south).
+    {Tile(ROAD, GRASS, ROAD, GRASS, 0, 1, 0, 2, {{0, 1, 1, 1, 1, 0, 0, 0}, 2, {}}, {}, TILE_VOLCANO), 1, 88,
+     EXP_PRINCESS_DRAGON},
+    // Volcano; a road from the south ends at it, so the grass runs round.
+    {Tile(GRASS, GRASS, ROAD, GRASS, 0, 1, 2, 3, {{0, 0, 0, 0, 0, 0, 0, 0}, 1, {}}, {}, TILE_VOLCANO), 1, 89,
+     EXP_PRINCESS_DRAGON},
+    // Volcano alone.
+    {Tile(GRASS, GRASS, GRASS, GRASS, 0, 1, 2, 3, {{0, 0, 0, 0, 0, 0, 0, 0}, 1, {}}, {}, TILE_VOLCANO), 1, 90,
+     EXP_PRINCESS_DRAGON},
+    // Volcano; type 16 (cap north).
+    {Tile(CITY, GRASS, GRASS, GRASS, 0, 1, 2, 3, {{-1, -1, 0, 0, 0, 0, 0, 0}, 1, {SIDE_N}}, {}, TILE_VOLCANO), 1, 91,
+     EXP_PRINCESS_DRAGON},
+    // Volcano; type 14 (separate caps north and west).
+    {Tile(CITY, GRASS, GRASS, CITY, 0, 1, 2, 3, {{-1, -1, 0, 0, 0, 0, -1, -1}, 1, {SIDE_N | SIDE_W}}, {},
+          TILE_VOLCANO), 1, 92, EXP_PRINCESS_DRAGON},
+    // Type 4 (city north, east and west) with the princess.
+    {Tile(CITY, CITY, GRASS, CITY, 0, 0, 1, 0, {{-1, -1, -1, -1, 0, 0, -1, -1}, 1, {SIDE_N | SIDE_E | SIDE_W}},
+          {MARK_PRINCESS, 0, 0, 0}), 1, 93, EXP_PRINCESS_DRAGON},
+    // A north-west corner city (princess) whose wall reaches the south-east
+    // corner, so the grass east and the grass south are two fields.
+    {Tile(CITY, GRASS, GRASS, CITY, 0, 1, 2, 0, {{-1, -1, 0, 0, 1, 1, -1, -1}, 2, {SIDE_N | SIDE_W, SIDE_N | SIDE_W}},
+          {MARK_PRINCESS, 0, 0, 0}), 1, 94, EXP_PRINCESS_DRAGON},
+    // A city east (princess) and a separate south-west corner city (shield);
+    // grass north, and between the two cities a diagonal strip of grass that
+    // touches no side: an inner field.
+    {Tile(GRASS, CITY, CITY, CITY, 0, 1, 2, 2,
+          {{0, 0, -1, -1, -1, -1, -1, -1}, 2, {SIDE_E, SIDE_E | SIDE_S | SIDE_W}}, {0, MARK_PRINCESS, MARK_SHIELD, 0}),
+     1, 95, EXP_PRINCESS_DRAGON},
+    // Type 8 (north-west corner city) with the princess; the garden changes nothing.
+    {Tile(CITY, GRASS, GRASS, CITY, 0, 1, 2, 0, {{-1, -1, 0, 0, 0, 0, -1, -1}, 1, {SIDE_N | SIDE_W}},
+          {MARK_PRINCESS, 0, 0, 0}), 1, 96, EXP_PRINCESS_DRAGON},
+    // Type 10 (corner city, road bend east to south) with the princess.
+    {Tile(CITY, ROAD, ROAD, CITY, 0, 1, 1, 0, {{-1, -1, 0, 1, 1, 0, -1, -1}, 2, {SIDE_N | SIDE_W}},
+          {MARK_PRINCESS, 0, 0, 0}), 1, 97, EXP_PRINCESS_DRAGON},
+    // Type 19 (cap north, roads east, south and west meet) with the princess.
+    {Tile(CITY, ROAD, ROAD, ROAD, 0, 1, 2, 3, {{-1, -1, 0, 1, 1, 2, 2, 0}, 3, {SIDE_N}}, {MARK_PRINCESS, 0, 0, 0}), 1,
+     98, EXP_PRINCESS_DRAGON},
+    // Magic portal; type 4 (city north, east and west).
+    {Tile(CITY, CITY, GRASS, CITY, 0, 0, 1, 0, {{-1, -1, -1, -1, 0, 0, -1, -1}, 1, {SIDE_N | SIDE_E | SIDE_W}}, {},
+          TILE_PORTAL), 1, 99, EXP_PRINCESS_DRAGON},
+    // Magic portal; type 10 (corner city, road bend east to south).
+    {Tile(CITY, ROAD, ROAD, CITY, 0, 1, 1, 0, {{-1, -1, 0, 1, 1, 0, -1, -1}, 2, {SIDE_N | SIDE_W}}, {}, TILE_PORTAL),
+     1, 100, EXP_PRINCESS_DRAGON},
+    // Magic portal; type 17 (cap north, road bend south to west).
+    {Tile(CITY, GRASS, ROAD, ROAD, 0, 1, 2, 2, {{-1, -1, 0, 0, 0, 1, 1, 0}, 2, {SIDE_N}}, {}, TILE_PORTAL), 1, 101,
+     EXP_PRINCESS_DRAGON},
+    // Magic portal; type 18 (cap north, road bend east to south).
+    {Tile(CITY, ROAD, ROAD, GRASS, 0, 1, 1, 2, {{-1, -1, 0, 1, 1, 0, 0, 0}, 2, {SIDE_N}}, {}, TILE_PORTAL), 1, 102,
+     EXP_PRINCESS_DRAGON},
+    // Magic portal; two road bends, north to west and east to south (like type 50).
+    {Tile(ROAD, ROAD, ROAD, ROAD, 0, 1, 1, 0, {{0, 1, 1, 2, 2, 1, 1, 0}, 3, {}}, {}, TILE_PORTAL), 1, 103,
+     EXP_PRINCESS_DRAGON},
+    // Magic portal; type 23 (roads east, south and west meet).
+    {Tile(GRASS, ROAD, ROAD, ROAD, 0, 1, 2, 3, {{0, 0, 0, 1, 1, 2, 2, 0}, 3, {}}, {}, TILE_PORTAL), 1, 104,
+     EXP_PRINCESS_DRAGON},
 };
 
 constexpr int CANONICAL_TILE_TYPE_COUNT = static_cast<int>(sizeof(all_tiles) / sizeof(all_tiles[0]));

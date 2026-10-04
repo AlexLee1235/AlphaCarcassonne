@@ -53,7 +53,7 @@
 `carcassonne_test.cc` 的 `TileTableTest` 把這件事釘成測試：
 `TileLook`（地形 + side-link）相同的兩種「磚型 × 旋轉」，`CanonicalFieldLayout` 必須相同。
 它對整張牌表（`tile.hpp` 的 `all_tiles`，含已填的擴充）逐一檢查（`game/tile_check.hpp` 的 `TileLookConflicts`），
-例外要明列在 `kAcceptedTileLookConflicts`。`tools/dump_tiles` 也會列出這些牌對（見 `docs/adding_tiles.md` §7）。
+例外要明列在 `kHiddenFieldTypes`（牌對中有一種在清單上就接受）。`tools/dump_tiles` 也會列出這些牌對（見 `docs/adding_tiles.md` §7）。
 
 ### 2.2 擴充牌組：有反例
 
@@ -61,9 +61,12 @@
 
 - 反例磚：旅館與大教堂的 **type 42** 對上基本版 **type 16**。兩者都是一邊城、三邊草地，地形和 side-link 完全相同。
   type 16 的城只是一個城帽，三邊草地是同一塊田；type 42 的城牆從一個角延伸到對角，把草地切成兩塊
-  （另外兩邊各一塊，兩塊都貼著城）。這一對已列入 `carcassonne_test.cc` 的 `kAcceptedTileLookConflicts`。
-- 商人與建築師又多了 5 對，都是同一種情況：城牆一路延伸到牌角，把那個角兩側的草地切開，而另一張牌那個角是通的：
-  62 對 39、63；65 對 40、64；67 對 66。全部列在同一個清單裡。
+  （另外兩邊各一塊，兩塊都貼著城）。
+- 四個擴充填完後共 17 對，造成差異的牌有 7 種，列在 `carcassonne_test.cc` 的 `kHiddenFieldTypes`。
+  - 6 種是城牆延伸到牌角，把那個角兩側的草地切開，而另一張牌那個角是通的：
+    42（對 16、82、91）、62（對 39、63）、65（對 40、64）、67（對 66）、
+    94（對所有普通的轉角城 8、9、60、61、79、96）、95（對 38）。
+  - 1 種是路的終點不同：76 的路在草地中間就結束，沒有切開草地；長得一樣的 45、72 的路接到城門，把草地切成兩塊。
 
 後果：
 - 換到那個牌組時，`TileTableTest` 的 `TileLook` 檢查會失敗。這是它設計要抓的情況，不會靜默算錯。

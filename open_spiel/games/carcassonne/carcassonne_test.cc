@@ -495,29 +495,26 @@ void TiedFeatureTest() {
   SPIEL_CHECK_GT(tied_sides, 0);
 }
 
-// Pairs of types (lower first) that look the same to the observation but have
-// different field layouts (tile_check::TileLookConflicts). The observation has
-// no planes for a tile's own field layout, so a network cannot tell them apart
-// (docs/carcassonne_field_observation.md §2.2). List a pair here only once it
+// Pairs of types that look the same to the observation but have different
+// field layouts (tile_check::TileLookConflicts). The observation has no planes
+// for a tile's own field layout, so a network cannot tell them apart
+// (docs/carcassonne_field_observation.md §2.2). A type goes here only once it
 // has been looked at, with the reason it is accepted.
-// All of them are the same case: one of the two has a city wall running into
-// a corner of the tile, which cuts off the grass on either side of that corner,
-// where the other tile's grass goes round it. Telling them apart needs
+// A conflict is accepted when one of its types is listed here: the tile whose
+// fields differ from tiles that look the same. Telling them apart needs
 // candidate A of that doc.
-const std::vector<std::pair<int, int>> kAcceptedTileLookConflicts = {
-    // A city on one side, grass on three: type 16 a cap, one field; type 42
-    // walls corner to corner, two fields.
-    {16, 42},
-    // A corner city with a road from its gate: type 62's wall reaches the
-    // corner beside the road, 39 and 63 leave it open.
-    {39, 62},
-    {62, 63},
-    // The same with type 65 against 40 and 64.
-    {40, 65},
-    {64, 65},
-    // A corner city with roads from its gate on both free sides: type 67's
-    // wall reaches the corner between them, 66 leaves it open.
-    {66, 67},
+const std::vector<int> kHiddenFieldTypes = {
+    // A city wall runs into a corner of the tile and cuts off the grass on
+    // either side of it, where the lookalikes' grass goes round the corner.
+    42,  // a city on one side only, walls corner to corner (vs caps: 16, 82, 91)
+    62,  // corner city, road from its gate; wall into the corner beside the road
+    65,  // the same, the other way round
+    67,  // corner city, roads from its gate on both free sides; wall between them
+    94,  // corner city, wall into the opposite corner (vs plain corner cities)
+    95,  // two cities, a diagonal strip of grass between them (vs type 38)
+    // The roads end in the grass short of the city, so they do not cut the
+    // grass, where in 45 and 72 they reach the city gates.
+    76,
 };
 
 void PrintAll(const char* what, const std::vector<std::string>& messages) {
@@ -567,17 +564,18 @@ void TileTableTest() {
   SPIEL_CHECK_EQ(first_of_type(2).field[4], first_of_type(2).field[5]);
 
   // The observation has no field planes for a tile's own layout, so the
-  // layout must follow from what it does show, but for the accepted pairs.
+  // layout must follow from what it does show, but for the listed tiles.
+  const auto hidden = [](int type) {
+    return std::find(kHiddenFieldTypes.begin(), kHiddenFieldTypes.end(), type) !=
+           kHiddenFieldTypes.end();
+  };
   for (const std::pair<int, int>& conflict : tile_check::TileLookConflicts()) {
-    const bool accepted =
-        std::find(kAcceptedTileLookConflicts.begin(),
-                  kAcceptedTileLookConflicts.end(),
-                  conflict) != kAcceptedTileLookConflicts.end();
+    const bool accepted = hidden(conflict.first) || hidden(conflict.second);
     if (!accepted) {
       std::cerr << "tile table: types " << conflict.first << " and "
                 << conflict.second
                 << " look the same to the observation but have different "
-                   "fields; see kAcceptedTileLookConflicts"
+                   "fields; see kHiddenFieldTypes"
                 << std::endl;
     }
     SPIEL_CHECK_TRUE(accepted);

@@ -93,7 +93,7 @@ int main(int argc, char **argv) {
     const auto conflicts = tile_check::TileLookConflicts();
     std::printf("\n觀測分不出農田的牌對: %d\n", static_cast<int>(conflicts.size()));
     for (const auto &conflict : conflicts) {
-        std::printf("  type %d 與 type %d (要列進 carcassonne_test.cc 的 kAcceptedTileLookConflicts)\n",
+        std::printf("  type %d 與 type %d (其中一種要在 carcassonne_test.cc 的 kHiddenFieldTypes 裡)\n",
                     conflict.first, conflict.second);
     }
 

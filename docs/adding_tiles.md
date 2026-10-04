@@ -244,7 +244,10 @@ cd /mnt/c/achieve/Carcassonne/AlphaCarcassonne/build && make carcassonne_test -j
 `dump_tiles` 會列出這種牌對，`carcassonne_test` 也會擋下來。處理方式：
 
 - 先確認不是填錯了。
-- 確認沒填錯，就把那一對加進 `carcassonne_test.cc` 的 `kAcceptedTileLookConflicts`，並在旁邊寫明原因。
+- 確認沒填錯，就把造成差異的那一種牌加進 `carcassonne_test.cc` 的 `kHiddenFieldTypes`，並在旁邊寫明原因。
+  只要一對裡有一種在這個清單上，測試就接受。目前清單上有兩種情況：
+  - 42、62、65、67、94、95：城牆延伸到牌角，把那個角兩側的草地切開。
+  - 76：路在草地中間就結束，沒接到城，所以沒有把草地切開（對手 45、72 的路接到城門）。
   這等於接受觀測的這個限制；要真正解決，得做 §2.2 的候選 A（每張牌自己的農田平面）。
 
 ---

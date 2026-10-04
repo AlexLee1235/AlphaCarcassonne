@@ -27,7 +27,7 @@ import sys
 from PIL import Image, ImageDraw, ImageFont
 
 CELL = 240        # picture size on the sheet
-CAPTION = 72      # text under each picture
+CAPTION = 92      # text under each picture
 GAP = 12
 COLUMNS = 6
 BAR = 12          # side bar thickness
@@ -126,16 +126,16 @@ def draw_tile(tile, tiles_dir, fonts):
         text_centered(draw, (x, y), str(tile["inner_field"]), big, "white")
 
     # Caption.
-    marks = "".join(f"  {name}" for name, bit in TILE_MARK_BITS.items() if tile["tile_marks"] & bit)
-    title = f"type {tile['type']}  x{tile['count']}{marks}"
-    draw.text((4, CELL + 4), title, font=big, fill="black")
+    draw.text((4, CELL + 4), f"type {tile['type']}  x{tile['count']}", font=big, fill="black")
+    marks = "  ".join(name for name, bit in TILE_MARK_BITS.items() if tile["tile_marks"] & bit)
+    draw.text((4, CELL + 30), marks, font=small, fill=(0, 0, 160))
     borders = []
     for field in range(tile["field_count"]):
         sides = "".join(SIDE_NAMES[s] for s in range(4) if tile["field_city_sides"][field] & (1 << s))
         borders.append(f"f{field}:{sides or '-'}")
-    draw.text((4, CELL + 30), "  ".join(borders) if borders else "no fields", font=small, fill=(60, 60, 60))
+    draw.text((4, CELL + 50), "  ".join(borders) if borders else "no fields", font=small, fill=(60, 60, 60))
     if tile["errors"]:
-        draw.text((4, CELL + 50), f"{tile['errors']} errors, see dump_tiles", font=small, fill=(220, 0, 0))
+        draw.text((4, CELL + 70), f"{tile['errors']} errors, see dump_tiles", font=small, fill=(220, 0, 0))
     return canvas
 
 

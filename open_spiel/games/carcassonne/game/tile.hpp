@@ -172,13 +172,29 @@ constexpr TileBlueprint all_tiles[] = {
     {Tile(GRASS, ROAD, ROAD, ROAD, 0, 1, 2, 3, {{0, 0, 0, 1, 1, 2, 2, 0}, 3, {}}), 4, 23},
     {Tile(ROAD, ROAD, ROAD, ROAD, 0, 1, 2, 3, {{0, 1, 1, 2, 2, 3, 3, 0}, 4, {}}), 1, 24},
 
-    // ---- Inns & Cathedrals: 18 tiles, rows end with EXP_INNS_CATHEDRALS. ----
+    // The expansion sections follow the images in tiles/: type N is tiles/N.png.
 
-    // ---- Traders & Builders: 24 tiles, rows end with EXP_TRADERS_BUILDERS. ----
+    // ---- River: 12 tiles, types 25-34 (25 is the spring), rows end with EXP_RIVER. ----
+    {Tile(GRASS, GRASS, RIVER, GRASS, 0, 1, 2, 3, {{0, 0, 0, 0, 0, 0, 0, 0}, 1, {}}), 1, 25, EXP_RIVER}, //source
+    {Tile(RIVER, GRASS, GRASS, GRASS, 0, 1, 2, 3, {{0, 0, 0, 0, 0, 0, 0, 0}, 1, {}}), 1, 26, EXP_RIVER}, //end
+    {Tile(RIVER, CITY, CITY, RIVER, 0, 1, 1, 0, {{0, 1, -1, -1, -1, -1, 1, 0}, 2, {0, SIDE_E | SIDE_S}}), 1, 27, EXP_RIVER},
+    {Tile(RIVER, CITY, RIVER, ROAD, 0, 1, 0, 2, {{0, 1, -1, -1, 2, 3, 3, 0}, 4, {0, SIDE_E,SIDE_E,0}}), 1, 28, EXP_RIVER},
+    {Tile(CITY, RIVER, CITY, RIVER, 0, 1, 2, 1, {{-1, -1, 0, 1, -1, -1, 1, 0}, 2, {SIDE_N, SIDE_S}}), 1, 29, EXP_RIVER},
+    // Two of these: full_imgs/first/r3_c03 is the other one.
+    {Tile(GRASS, RIVER, RIVER, GRASS, 0, 1, 1, 2, {{0, 0, 0, 1, 1, 0, 0, 0}, 2, {}}), 2, 30, EXP_RIVER},
+    {Tile(GRASS, RIVER, ROAD, RIVER, 0, 1, 2, 1, {{0, 0, 0, 1, 1, 2, 2, 0}, 3, {}}, false, true), 1, 31, EXP_RIVER},
+    // A road bend in the north-east corner, a river bend in the south-west one.
+    {Tile(ROAD, ROAD, RIVER, RIVER, 0, 0, 1, 1, {{0, 1, 1, 0, 0, 2, 2, 0}, 3, {}}), 1, 32, EXP_RIVER},
+    // The road crosses the river on a bridge: four corner fields.
+    {Tile(ROAD, RIVER, ROAD, RIVER, 0, 1, 0, 1, {{0, 1, 1, 2, 2, 3, 3, 0}, 4, {}}), 1, 33, EXP_RIVER},
+    // Two of these: full_imgs/first/r3_c07 is the other one. The island changes nothing.
+    {Tile(RIVER, GRASS, RIVER, GRASS, 0, 1, 0, 2, {{0, 1, 1, 1, 1, 0, 0, 0}, 2, {}}), 2, 34, EXP_RIVER},
 
-    // ---- River: 12 tiles, rows end with EXP_RIVER. ----
+    // ---- Inns & Cathedrals: 18 tiles, types 35-51, rows end with EXP_INNS_CATHEDRALS. ----
 
-    // ---- The Princess & the Dragon: 30 tiles, rows end with EXP_PRINCESS_DRAGON. ----
+    // ---- Traders & Builders: 24 tiles, types 52-75, rows end with EXP_TRADERS_BUILDERS. ----
+
+    // ---- The Princess & the Dragon: 30 tiles, types 76-104, rows end with EXP_PRINCESS_DRAGON. ----
 };
 
 constexpr int CANONICAL_TILE_TYPE_COUNT = static_cast<int>(sizeof(all_tiles) / sizeof(all_tiles[0]));

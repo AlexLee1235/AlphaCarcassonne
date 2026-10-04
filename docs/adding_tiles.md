@@ -3,12 +3,14 @@
 牌表在 `open_spiel/games/carcassonne/game/tile.hpp` 的 `all_tiles[]`。一列是一種牌，也就是一張圖。
 基本版的 24 種（type 1–24）已經填好，四個擴充各留了一段空位：
 
-| 擴充 | 標記 | 遊戲參數 | 整盒張數 |
-|---|---|---|---|
-| 旅館與大教堂 | `EXP_INNS_CATHEDRALS` | `inns_cathedrals` | 18 |
-| 商人與建築師 | `EXP_TRADERS_BUILDERS` | `traders_builders` | 24 |
-| 河流 | `EXP_RIVER` | `river` | 12 |
-| 公主與龍 | `EXP_PRINCESS_DRAGON` | `princess_dragon` | 30 |
+| 擴充 | type（= `tiles/<type>.png`） | 標記 | 遊戲參數 | 整盒張數 |
+|---|---|---|---|---|
+| 河流 | 25–34 | `EXP_RIVER` | `river` | 12 |
+| 旅館與大教堂 | 35–51 | `EXP_INNS_CATHEDRALS` | `inns_cathedrals` | 18 |
+| 商人與建築師 | 52–75 | `EXP_TRADERS_BUILDERS` | `traders_builders` | 24 |
+| 公主與龍 | 76–104 | `EXP_PRINCESS_DRAGON` | `princess_dragon` | 30 |
+
+`tiles/` 裡的圖已經照這個順序編好號，填表時照著 type 順序一列一列往下填即可。
 
 目前**只做牌的形狀**，擴充的規則一律不算：旅館、大教堂、貨物、龍、公主、魔法門、火山都還沒有效果。
 
@@ -16,11 +18,9 @@
 
 ## 1. 流程
 
-1. 挑一張圖（`full_imgs/first`、`full_imgs/second`），複製成 `tiles/<type>.png`，**不要轉向**：
-   ```powershell
-   Copy-Item C:\achieve\Carcassonne\full_imgs\first\r1_c05.png C:\achieve\Carcassonne\AlphaCarcassonne\tiles\25.png
-   ```
-2. 照著那張圖，在 `all_tiles[]` 對應的擴充區段加一列（格式見下）。type 從 25 開始，接著上一列連續編號。
+1. 打開 `tiles/<type>.png`（1–104 都已經有圖）。圖片原樣就是 rot 0，**不要轉向**。
+2. 照著那張圖，在 `all_tiles[]` 對應的擴充區段加一列（格式見下）。type 就是圖的編號，必須連續：
+   type 25 是第 25 列，所以要從河流開始，照編號順序填。
 3. 跑檢查並畫出總覽圖（見 §6），逐張對照圖片看有沒有填錯。
 4. 一個擴充整段填完（張數等於整盒）之後，跑 `carcassonne_test`。
 

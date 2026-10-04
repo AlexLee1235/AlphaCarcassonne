@@ -210,7 +210,7 @@ int RotatePlane(int plane, int k) {
         const std::array<int, 2> &pair = kSidePairs[plane - kSideLinkPlane];
         return kSideLinkPlane + SidePairIndex((pair[0] + k) % 4, (pair[1] + k) % 4);
     }
-    for (int first : {kLegalPlacementPlane, kFeatureOpensPlane, kFeatureScorePlane, kFeatureMyMeeplesPlane,
+    for (int first : {kShieldPlane, kLegalPlacementPlane, kFeatureOpensPlane, kFeatureScorePlane, kFeatureMyMeeplesPlane,
                       kFeatureOpponentMeeplesPlane, kFeatureSignedScorePlane}) {
         if (plane >= first && plane < first + 4) {
             return first + (plane - first + k) % 4;
@@ -411,8 +411,10 @@ void CarcassonneState::ObservationTensor(Player player, absl::Span<float> values
             const Tile &tile = full_deck[placement.id][placement.rotation];
             SetPlaneValue(values, kOccupiedPlane, x, y, 1.0f);
             SetTileTerrainPlanes(values, tile, x, y);
-            if (tile.shield) {
-                SetPlaneValue(values, kShieldPlane, x, y, 1.0f);
+            for (int side = 0; side < 4; ++side) {
+                if (tile.edge[side] == CITY && (tile.featureMarks(side) & MARK_SHIELD)) {
+                    SetPlaneValue(values, kShieldPlane + side, x, y, 1.0f);
+                }
             }
             if (tile.monastery) {
                 SetPlaneValue(values, kMonasteryPlane, x, y, 1.0f);

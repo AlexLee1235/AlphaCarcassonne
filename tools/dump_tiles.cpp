@@ -30,12 +30,18 @@ void WriteJson(const char *path) {
         std::fprintf(stderr, "cannot write %s\n", path);
         return;
     }
-    std::fprintf(out, "{\n  \"tile_types\": [\n");
+    // The bit values, so render_tile_table.py need not copy them.
+    std::fprintf(out, "{\n  \"mark_bits\": {\"SH\": %d, \"PR\": %d, \"WI\": %d, \"CL\": %d, \"WH\": %d, \"INN\": %d},\n",
+                 MARK_SHIELD, MARK_PRINCESS, MARK_WINE, MARK_CLOTH, MARK_WHEAT, MARK_INN);
+    std::fprintf(out, "  \"tile_mark_bits\": {\"monastery\": %d, \"dragon\": %d, \"volcano\": %d, \"portal\": %d},\n",
+                 TILE_MONASTERY, TILE_DRAGON, TILE_VOLCANO, TILE_PORTAL);
+    std::fprintf(out, "  \"tile_types\": [\n");
     for (int row = 0; row < CANONICAL_TILE_TYPE_COUNT; ++row) {
         const TileBlueprint &bp = all_tiles[row];
         const Tile &tile = bp.tile;
-        int links[4], fields[HALF_EDGE_COUNT], city_sides[MAX_TILE_FIELDS];
+        int links[4], marks[4], fields[HALF_EDGE_COUNT], city_sides[MAX_TILE_FIELDS];
         for (int side = 0; side < 4; ++side) links[side] = tile.link[side];
+        for (int side = 0; side < 4; ++side) marks[side] = tile.marks[side];
         for (int e = 0; e < HALF_EDGE_COUNT; ++e) fields[e] = tile.field[e];
         for (int f = 0; f < MAX_TILE_FIELDS; ++f) city_sides[f] = tile.field_city_sides[f];
         std::vector<std::string> errors = tile_check::CheckTile(tile);
@@ -52,8 +58,9 @@ void WriteJson(const char *path) {
         std::fprintf(out, ", \"field_count\": %d, \"inner_field\": %d, \"field_city_sides\": ", tile.field_count,
                      tile.innerField());
         WriteIntArray(out, city_sides, MAX_TILE_FIELDS);
-        std::fprintf(out, ", \"shield\": %s, \"monastery\": %s, \"errors\": %d}%s\n", tile.shield ? "true" : "false",
-                     tile.monastery ? "true" : "false", static_cast<int>(errors.size()),
+        std::fprintf(out, ", \"marks\": ");
+        WriteIntArray(out, marks, 4);
+        std::fprintf(out, ", \"tile_marks\": %d, \"errors\": %d}%s\n", tile.tile_marks, static_cast<int>(errors.size()),
                      row + 1 < CANONICAL_TILE_TYPE_COUNT ? "," : "");
     }
     std::fprintf(out, "  ]\n}\n");

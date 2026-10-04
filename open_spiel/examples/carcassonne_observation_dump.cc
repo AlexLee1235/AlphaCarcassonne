@@ -87,7 +87,9 @@ std::vector<std::string> PlaneNames() {
   AddTerrainNames(&names, kEastTerrainPlane, "board_east");
   AddTerrainNames(&names, kSouthTerrainPlane, "board_south");
   AddTerrainNames(&names, kWestTerrainPlane, "board_west");
-  names[kShieldPlane] = "board_shield";
+  for (int side = 0; side < 4; ++side) {
+    names[kShieldPlane + side] = "board_shield_side_" + std::to_string(side);
+  }
   names[kMonasteryPlane] = "board_monastery";
   const char* side_pairs[kNumSidePairs] = {"N-E", "N-S", "N-W",
                                            "E-S", "E-W", "S-W"};

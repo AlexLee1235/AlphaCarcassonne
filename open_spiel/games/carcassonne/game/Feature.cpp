@@ -35,6 +35,7 @@ Feature Feature::operator+(const Feature &other) const {
     res.meeple_count[0] = meeple_count[0] + other.meeple_count[0];
     res.meeple_count[1] = meeple_count[1] + other.meeple_count[1];
     res.opens = opens + other.opens;
+    res.shields = shields + other.shields;
     return res;
 }
 
@@ -46,11 +47,10 @@ int Feature::getTileCount() const { return static_cast<int>(tile_mask.count()); 
 int Feature::getScore() const {
     int tile_count = getTileCount();
     if (type == CITY) {
-        int shield_count = static_cast<int>((tile_mask & SHIELD_MASK).count());
         if (opens == 0) {
-            return (tile_count + shield_count) * 2;
+            return (tile_count + shields) * 2;
         }
-        return tile_count + shield_count;
+        return tile_count + shields;
     }
     return tile_count;
 }

@@ -44,8 +44,9 @@ inline constexpr int kNorthTerrainPlane = 1; // 4 terrains per side, then the ne
 inline constexpr int kEastTerrainPlane = kNorthTerrainPlane + kTerrainTypes;
 inline constexpr int kSouthTerrainPlane = kEastTerrainPlane + kTerrainTypes;
 inline constexpr int kWestTerrainPlane = kSouthTerrainPlane + kTerrainTypes;
+// One per side: the city on that side carries a shield on this tile.
 inline constexpr int kShieldPlane = kWestTerrainPlane + kTerrainTypes;
-inline constexpr int kMonasteryPlane = kShieldPlane + 1;
+inline constexpr int kMonasteryPlane = kShieldPlane + 4;
 // Pairs of non-grass sides (river included) a tile joins by itself, in the
 // order N-E, N-S, N-W, E-S, E-W, S-W. This tells CGGC tiles with one city from
 // those with two.
@@ -81,8 +82,8 @@ inline constexpr int kInnerFieldOpenCitiesPlane = kInnerFieldSizePlane + 1;
 inline constexpr int kSpatialPlanes = kInnerFieldOpenCitiesPlane + 1;
 inline constexpr int kGlobalFeaturePlane = kSpatialPlanes;
 inline constexpr int kObservationPlanes = kGlobalFeaturePlane + 1;
-static_assert(kLastPlacedPlane == 30);
-static_assert(kSpatialPlanes == 98);
+static_assert(kLastPlacedPlane == 33);
+static_assert(kSpatialPlanes == 101);
 
 // Offsets in the global vector, all from the observing player's side.
 inline constexpr int kGlobalMyScore = 0;           // / 40

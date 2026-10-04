@@ -92,7 +92,17 @@ void FeatureModule::resolveEndGameScore(int *player_scores) {
 
 void FeatureModule::placeTileOnBoard(int tile_id, int x, int y, int rot, const Tile &tile, const BoardModule &board) {
     for (int i = 0; i < 4; ++i) {
-        featureMap.getSetData(edgeIndex(tile_id, i)) = Feature(tile.edge[i], tile_id);
+        Feature feature(tile.edge[i], tile_id);
+        // A shield belongs to one city piece: count it on that piece's lowest
+        // side only, so joining the piece's sides below adds it once.
+        bool lowest_side = true;
+        for (int j = 0; j < i; ++j) {
+            lowest_side = lowest_side && tile.link[j] != tile.link[i];
+        }
+        if (tile.edge[i] == CITY && lowest_side && (tile.featureMarks(i) & MARK_SHIELD)) {
+            feature.shields = 1;
+        }
+        featureMap.getSetData(edgeIndex(tile_id, i)) = feature;
     }
 
     for (int i = 0; i < 4; ++i) {

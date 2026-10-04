@@ -8,8 +8,10 @@ tiles/<type>.png (the picture in rotation 0, north up):
     feature on this tile;
   - the field number of each of the 8 half-edges in a coloured dot, near that
     half of its side; the inner field, if any, in the centre;
-  - under the picture: the copies, shield / monastery, and the city sides each
-    field borders.
+  - in yellow, next to the side they are written on, the marks of a city or
+    road: SH shield, PR princess, WI / CL / WH goods, INN inn;
+  - under the picture: the copies, the tile marks (monastery, dragon, volcano,
+    portal), and the city sides each field borders.
 
 One sheet per expansion, results/tile_sheet_<expansion>.png. See
 docs/adding_tiles.md.
@@ -40,6 +42,9 @@ EDGE_COLOURS = {
 EDGE_LETTERS = {"GRASS": "G", "CITY": "C", "ROAD": "R", "RIVER": "W", "NONE": "?"}
 FIELD_COLOURS = [(220, 40, 40), (40, 90, 220), (200, 160, 0), (150, 40, 190)]
 SIDE_NAMES = "NESW"
+# Short name -> bit, read from the JSON (dump_tiles writes them from tile.hpp).
+MARK_BITS = {}
+TILE_MARK_BITS = {}
 
 
 def load_font(size):
@@ -98,6 +103,14 @@ def draw_tile(tile, tiles_dir, fonts):
         text_centered(draw, label_points[side], f"{EDGE_LETTERS[edge]}{tile['links'][side]}", big,
                       EDGE_COLOURS[edge])
 
+    # Marks, as written, next to the side they are written on.
+    mark_points = [(CELL / 2, BAR + 40), (CELL - BAR - 46, CELL / 2), (CELL / 2, CELL - BAR - 40),
+                   (BAR + 46, CELL / 2)]
+    for side, marks in enumerate(tile["marks"]):
+        names = [name for name, bit in MARK_BITS.items() if marks & bit]
+        if names:
+            text_centered(draw, mark_points[side], " ".join(names), small, (255, 230, 0))
+
     # Fields on half-edges, and the inner one.
     for e, field in enumerate(tile["fields"]):
         if field < 0:
@@ -113,7 +126,7 @@ def draw_tile(tile, tiles_dir, fonts):
         text_centered(draw, (x, y), str(tile["inner_field"]), big, "white")
 
     # Caption.
-    marks = ("  shield" if tile["shield"] else "") + ("  monastery" if tile["monastery"] else "")
+    marks = "".join(f"  {name}" for name, bit in TILE_MARK_BITS.items() if tile["tile_marks"] & bit)
     title = f"type {tile['type']}  x{tile['count']}{marks}"
     draw.text((4, CELL + 4), title, font=big, fill="black")
     borders = []
@@ -148,7 +161,10 @@ def main():
     args = parser.parse_args()
 
     with open(args.table, encoding="utf-8") as f:
-        table = json.load(f)["tile_types"]
+        data = json.load(f)
+    table = data["tile_types"]
+    MARK_BITS.update(data["mark_bits"])
+    TILE_MARK_BITS.update(data["tile_mark_bits"])
     os.makedirs(args.out, exist_ok=True)
     fonts = (load_font(20), load_font(15))
 
@@ -161,7 +177,7 @@ def main():
         count = sum(t["count"] for t in tiles)
         title = (f"{expansion}: {len(tiles)} types, {count} tiles   "
                  "bars: G grass, C city, R road, W river + link   dots: field per half-edge   "
-                 "fN: city sides field N borders")
+                 "yellow: marks   fN: city sides field N borders")
         out = os.path.join(args.out, f"tile_sheet_{expansion}.png")
         draw_sheet(tiles, args.tiles, fonts, title).save(out)
         print(f"wrote {out} ({len(tiles)} types)")

@@ -143,22 +143,27 @@ inline std::vector<std::string> CheckTile(const Tile &tile) {
         }
     }
 
-    // A shield counts for every city on its tile, so it may only be on a tile
-    // with one city.
-    if (tile.shield) {
-        int cities = 0;
-        for (int side = 0; side < 4; ++side) {
-            bool first_side_of_its_city = tile.edge[side] == CITY;
-            for (int lower = 0; lower < side && first_side_of_its_city; ++lower) {
-                first_side_of_its_city = !(tile.edge[lower] == CITY && tile.link[lower] == tile.link[side]);
-            }
-            cities += first_side_of_its_city ? 1 : 0;
+    // Marks sit on the city or road they belong to.
+    for (int side = 0; side < 4; ++side) {
+        const uint8_t marks = tile.marks[side];
+        const std::string where = std::string("side ") + side_names[side] + " (" + EdgeName(tile.edge[side]) + ")";
+        if (marks & ~(CITY_MARKS | ROAD_MARKS)) {
+            error(where + " has an unknown mark bit");
         }
-        if (cities != 1) {
-            error("a shield on a tile with " + std::to_string(cities) +
-                  " cities: the engine credits it to every city on the tile; this tile needs "
-                  "a shield per city first");
+        if (tile.edge[side] == CITY && (marks & ~CITY_MARKS)) {
+            error(where + ": MARK_INN goes on a road side");
+        } else if (tile.edge[side] == ROAD && (marks & ~ROAD_MARKS)) {
+            error(where + ": shield, princess and goods go on a city side");
+        } else if ((tile.edge[side] == GRASS || tile.edge[side] == RIVER) && marks) {
+            error(where + " has a mark; marks go on a side of the city or road they belong to");
         }
+        const uint8_t goods = tile.featureMarks(side) & GOODS_MARKS;
+        if (goods & (goods - 1)) {
+            error(where + ": one city with more than one kind of goods");
+        }
+    }
+    if (tile.tile_marks & ~ALL_TILE_MARKS) {
+        error("unknown tile mark bit");
     }
     return errors;
 }

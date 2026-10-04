@@ -58,12 +58,37 @@ struct FieldLayout {
     uint8_t city_sides[MAX_TILE_FIELDS] = {};  // the sides of every city each field borders
 };
 
+// Marks on one city or road of a tile. Written on any side of that city or
+// road (Tile::featureMarks() joins its sides); only the shield has a rule yet.
+constexpr uint8_t MARK_SHIELD = 1 << 0;    // city: one more point, two once closed
+constexpr uint8_t MARK_PRINCESS = 1 << 1;  // city (The Princess & the Dragon)
+constexpr uint8_t MARK_WINE = 1 << 2;      // city goods (Traders & Builders)
+constexpr uint8_t MARK_CLOTH = 1 << 3;
+constexpr uint8_t MARK_WHEAT = 1 << 4;
+constexpr uint8_t MARK_INN = 1 << 5;       // road (Inns & Cathedrals)
+constexpr uint8_t GOODS_MARKS = MARK_WINE | MARK_CLOTH | MARK_WHEAT;
+constexpr uint8_t CITY_MARKS = MARK_SHIELD | MARK_PRINCESS | GOODS_MARKS;
+constexpr uint8_t ROAD_MARKS = MARK_INN;
+
+// Marks on the whole tile. The cathedral needs none: it is one tile type.
+constexpr uint8_t TILE_MONASTERY = 1 << 0;
+constexpr uint8_t TILE_DRAGON = 1 << 1;   // The Princess & the Dragon; no rule yet
+constexpr uint8_t TILE_VOLCANO = 1 << 2;
+constexpr uint8_t TILE_PORTAL = 1 << 3;   // magic portal
+constexpr uint8_t ALL_TILE_MARKS = TILE_MONASTERY | TILE_DRAGON | TILE_VOLCANO | TILE_PORTAL;
+
+// MARK_* bits per side, in the order N, E, S, W.
+struct SideMarks {
+    uint8_t side[4] = {};
+};
+
 class Tile {
   public:
     EdgeType edge[4] = {NONE, NONE, NONE, NONE};
     int link[4] = {};
-    bool shield = false;
-    bool monastery = false;
+    uint8_t marks[4] = {};   // MARK_* bits as written on each side; see featureMarks()
+    uint8_t tile_marks = 0;  // TILE_* bits
+    bool monastery = false;  // TILE_MONASTERY
     int8_t field[HALF_EDGE_COUNT] = {};
     uint8_t field_count = 0;
     uint8_t field_city_sides[MAX_TILE_FIELDS] = {};
@@ -71,7 +96,7 @@ class Tile {
     constexpr Tile() = default;
 
     constexpr Tile(EdgeType e1, EdgeType e2, EdgeType e3, EdgeType e4, int l1, int l2, int l3, int l4,
-                   const FieldLayout &fields, bool sh = false, bool mo = false) {
+                   const FieldLayout &fields, const SideMarks &side_marks = {}, uint8_t flags = 0) {
         edge[0] = e1;
         edge[1] = e2;
         edge[2] = e3;
@@ -80,8 +105,11 @@ class Tile {
         link[1] = l2;
         link[2] = l3;
         link[3] = l4;
-        shield = sh;
-        monastery = mo;
+        for (int side = 0; side < 4; ++side) {
+            marks[side] = side_marks.side[side];
+        }
+        tile_marks = flags;
+        monastery = (flags & TILE_MONASTERY) != 0;
         for (int e = 0; e < HALF_EDGE_COUNT; ++e) {
             field[e] = fields.half_edge[e];
         }
@@ -89,6 +117,18 @@ class Tile {
         for (int f = 0; f < MAX_TILE_FIELDS; ++f) {
             field_city_sides[f] = fields.city_sides[f];
         }
+    }
+
+    // The marks of the city or road on side `side`: those written on any of
+    // its sides on this tile.
+    constexpr uint8_t featureMarks(int side) const {
+        uint8_t result = 0;
+        for (int s = 0; s < 4; ++s) {
+            if (link[s] == link[side]) {
+                result |= marks[s];
+            }
+        }
+        return result;
     }
 
     // The local field that touches no half-edge (always the last one), or -1.
@@ -110,7 +150,10 @@ class Tile {
         res.link[1] = link[0];
         res.link[2] = link[1];
         res.link[3] = link[2];
-        res.shield = shield;
+        for (int side = 0; side < 4; ++side) {
+            res.marks[(side + 1) % 4] = marks[side];
+        }
+        res.tile_marks = tile_marks;
         res.monastery = monastery;
         for (int e = 0; e < HALF_EDGE_COUNT; ++e) {
             res.field[(e + 2) % HALF_EDGE_COUNT] = field[e];
@@ -136,29 +179,31 @@ struct TileBlueprint {
 // tools/dump_tiles (game/tile_check.hpp) and look at it drawn over the tile
 // images with tools/render_tile_table.py.
 //
-// Fields of each tile: the local field of half-edges 0..7, the number of
-// fields, and the city sides each field borders.
+// Each row: Tile(edges N E S W, links, fields, side marks, tile marks), count,
+// type, expansion. Fields: the local field of half-edges 0..7, the number of
+// fields, and the city sides each field borders. Side marks: MARK_* on a side
+// of the city or road they belong to. Tile marks: TILE_*.
 constexpr TileBlueprint all_tiles[] = {
     // ---- Base game: 72 tiles, types 1-24. ----
-    {Tile(GRASS, GRASS, GRASS, GRASS, 0, 1, 2, 3, {{0, 0, 0, 0, 0, 0, 0, 0}, 1, {}}, false, true), 4, 1},
+    {Tile(GRASS, GRASS, GRASS, GRASS, 0, 1, 2, 3, {{0, 0, 0, 0, 0, 0, 0, 0}, 1, {}}, {}, TILE_MONASTERY), 4, 1},
     // The road ends at the monastery, so the field runs round it.
-    {Tile(GRASS, GRASS, ROAD, GRASS, 0, 1, 2, 3, {{0, 0, 0, 0, 0, 0, 0, 0}, 1, {}}, false, true), 2, 2},
-    {Tile(CITY, CITY, CITY, CITY, 0, 0, 0, 0, {{-1, -1, -1, -1, -1, -1, -1, -1}, 0, {}}, true), 1, 3},
+    {Tile(GRASS, GRASS, ROAD, GRASS, 0, 1, 2, 3, {{0, 0, 0, 0, 0, 0, 0, 0}, 1, {}}, {}, TILE_MONASTERY), 2, 2},
+    {Tile(CITY, CITY, CITY, CITY, 0, 0, 0, 0, {{-1, -1, -1, -1, -1, -1, -1, -1}, 0, {}}, {MARK_SHIELD, 0, 0, 0}), 1, 3},
     {Tile(CITY, CITY, GRASS, CITY, 0, 0, 1, 0, {{-1, -1, -1, -1, 0, 0, -1, -1}, 1, {SIDE_N | SIDE_E | SIDE_W}}), 3, 4},
-    {Tile(CITY, CITY, GRASS, CITY, 0, 0, 1, 0, {{-1, -1, -1, -1, 0, 0, -1, -1}, 1, {SIDE_N | SIDE_E | SIDE_W}}, true), 1, 5},
+    {Tile(CITY, CITY, GRASS, CITY, 0, 0, 1, 0, {{-1, -1, -1, -1, 0, 0, -1, -1}, 1, {SIDE_N | SIDE_E | SIDE_W}}, {MARK_SHIELD, 0, 0, 0}), 1, 5},
     // The road ends at the city gate, with a field on each side of it.
     {Tile(CITY, CITY, ROAD, CITY, 0, 0, 1, 0,
           {{-1, -1, -1, -1, 0, 1, -1, -1}, 2, {SIDE_N | SIDE_E | SIDE_W, SIDE_N | SIDE_E | SIDE_W}}), 1, 6},
     {Tile(CITY, CITY, ROAD, CITY, 0, 0, 1, 0,
-          {{-1, -1, -1, -1, 0, 1, -1, -1}, 2, {SIDE_N | SIDE_E | SIDE_W, SIDE_N | SIDE_E | SIDE_W}}, true), 2, 7},
+          {{-1, -1, -1, -1, 0, 1, -1, -1}, 2, {SIDE_N | SIDE_E | SIDE_W, SIDE_N | SIDE_E | SIDE_W}}, {MARK_SHIELD, 0, 0, 0}), 2, 7},
     {Tile(CITY, GRASS, GRASS, CITY, 0, 1, 2, 0, {{-1, -1, 0, 0, 0, 0, -1, -1}, 1, {SIDE_N | SIDE_W}}), 3, 8},
-    {Tile(CITY, GRASS, GRASS, CITY, 0, 1, 2, 0, {{-1, -1, 0, 0, 0, 0, -1, -1}, 1, {SIDE_N | SIDE_W}}, true), 2, 9},
+    {Tile(CITY, GRASS, GRASS, CITY, 0, 1, 2, 0, {{-1, -1, 0, 0, 0, 0, -1, -1}, 1, {SIDE_N | SIDE_W}}, {MARK_SHIELD, 0, 0, 0}), 2, 9},
     // The inner corner of the bend touches no city.
     {Tile(CITY, ROAD, ROAD, CITY, 0, 1, 1, 0, {{-1, -1, 0, 1, 1, 0, -1, -1}, 2, {SIDE_N | SIDE_W}}), 3, 10},
-    {Tile(CITY, ROAD, ROAD, CITY, 0, 1, 1, 0, {{-1, -1, 0, 1, 1, 0, -1, -1}, 2, {SIDE_N | SIDE_W}}, true), 2, 11},
+    {Tile(CITY, ROAD, ROAD, CITY, 0, 1, 1, 0, {{-1, -1, 0, 1, 1, 0, -1, -1}, 2, {SIDE_N | SIDE_W}}, {MARK_SHIELD, 0, 0, 0}), 2, 11},
     {Tile(GRASS, CITY, GRASS, CITY, 0, 1, 2, 1, {{0, 0, -1, -1, 1, 1, -1, -1}, 2, {SIDE_E | SIDE_W, SIDE_E | SIDE_W}}), 1, 12},
-    {Tile(GRASS, CITY, GRASS, CITY, 0, 1, 2, 1, {{0, 0, -1, -1, 1, 1, -1, -1}, 2, {SIDE_E | SIDE_W, SIDE_E | SIDE_W}}, true),
-     2, 13},
+    {Tile(GRASS, CITY, GRASS, CITY, 0, 1, 2, 1, {{0, 0, -1, -1, 1, 1, -1, -1}, 2, {SIDE_E | SIDE_W, SIDE_E | SIDE_W}},
+          {0, MARK_SHIELD, 0, 0}), 2, 13},
     // Two separate cities, both next to the one field.
     {Tile(CITY, GRASS, GRASS, CITY, 0, 1, 2, 3, {{-1, -1, 0, 0, 0, 0, -1, -1}, 1, {SIDE_N | SIDE_W}}), 2, 14},
     {Tile(CITY, GRASS, CITY, GRASS, 0, 1, 2, 3, {{-1, -1, 0, 0, -1, -1, 0, 0}, 1, {SIDE_N | SIDE_S}}), 3, 15},
@@ -182,7 +227,7 @@ constexpr TileBlueprint all_tiles[] = {
     {Tile(CITY, RIVER, CITY, RIVER, 0, 1, 2, 1, {{-1, -1, 0, 1, -1, -1, 1, 0}, 2, {SIDE_N, SIDE_S}}), 1, 29, EXP_RIVER},
     // Two of these: full_imgs/first/r3_c03 is the other one.
     {Tile(GRASS, RIVER, RIVER, GRASS, 0, 1, 1, 2, {{0, 0, 0, 1, 1, 0, 0, 0}, 2, {}}), 2, 30, EXP_RIVER},
-    {Tile(GRASS, RIVER, ROAD, RIVER, 0, 1, 2, 1, {{0, 0, 0, 1, 1, 2, 2, 0}, 3, {}}, false, true), 1, 31, EXP_RIVER},
+    {Tile(GRASS, RIVER, ROAD, RIVER, 0, 1, 2, 1, {{0, 0, 0, 1, 1, 2, 2, 0}, 3, {}}, {}, TILE_MONASTERY), 1, 31, EXP_RIVER},
     // A road bend in the north-east corner, a river bend in the south-west one.
     {Tile(ROAD, ROAD, RIVER, RIVER, 0, 0, 1, 1, {{0, 1, 1, 0, 0, 2, 2, 0}, 3, {}}), 1, 32, EXP_RIVER},
     // The road crosses the river on a bridge: four corner fields.
@@ -298,13 +343,4 @@ const static auto tile_type_tables = []() {
     }
 
     return tables;
-}();
-
-const static TileMask SHIELD_MASK = []() {
-    TileMask mask;
-    for (int i = 1; i <= PHYSICAL_TILE_COUNT; ++i) {
-        if (full_deck[i][0].shield)
-            mask.set(i);
-    }
-    return mask;
 }();

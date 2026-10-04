@@ -25,7 +25,7 @@ static int LocalEstimateDiff(const Carcassonne &g, int player) {
             const Tile &t = full_deck[p.id][p.rotation];
             int seenLink[4], nSeen = 0;
             for (int i = 0; i < 4; ++i) {
-                if (t.edge[i] == GRASS) continue;
+                if (!isFeatureEdge(t.edge[i])) continue;
                 bool dup = false;
                 for (int k = 0; k < nSeen; ++k) if (seenLink[k] == t.link[i]) dup = true;
                 if (dup) continue;              // 只靠磚內 link 去重 —— 網路能做到的極限
@@ -34,7 +34,7 @@ static int LocalEstimateDiff(const Carcassonne &g, int player) {
                 const int mm = f.meeple_count[player], mo = f.meeple_count[opp];
                 const int sgn = (mm > mo) ? 1 : ((mo > mm) ? -1 : 0);
                 if (!sgn) continue;
-                total += sgn * (1 + ((t.edge[i] == CITY && t.shield) ? 1 : 0));
+                total += sgn * (1 + ((t.edge[i] == CITY && (t.featureMarks(i) & MARK_SHIELD)) ? 1 : 0));
             }
         }
     }

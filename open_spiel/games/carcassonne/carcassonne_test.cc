@@ -162,7 +162,7 @@ void ObservationTensorSmokeTest() {
   const std::vector<int> shape = game->ObservationTensorShape();
 
   SPIEL_CHECK_EQ(shape.size(), 3);
-  SPIEL_CHECK_EQ(shape[0], 99);
+  SPIEL_CHECK_EQ(shape[0], 102);
   SPIEL_CHECK_EQ(shape[0], kObservationPlanes);
   SPIEL_CHECK_EQ(shape[1], BOARD_SIZE);
   SPIEL_CHECK_EQ(shape[2], BOARD_SIZE);
@@ -183,6 +183,7 @@ void ObservationTensorSmokeTest() {
   SPIEL_CHECK_EQ(PlaneValue(initial_obs, kEastTerrainPlane + 2, c, c), 1.0f);
   SPIEL_CHECK_EQ(PlaneValue(initial_obs, kSouthTerrainPlane + 0, c, c), 1.0f);
   SPIEL_CHECK_EQ(PlaneValue(initial_obs, kWestTerrainPlane + 2, c, c), 1.0f);
+  CheckZeroPlanes(initial_obs, kShieldPlane, 4);
   // Side pairs N-E, N-S, N-W, E-S, E-W, S-W: only the road joins E and W.
   for (int pair = 0; pair < kNumSidePairs; ++pair) {
     SPIEL_CHECK_EQ(PlaneValue(initial_obs, kSideLinkPlane + pair, c, c),
@@ -585,7 +586,8 @@ void TileCheckTest() {
                               {{-1, -1, 0, 1, 1, 1, 1, 0}, 2, {SIDE_N}})));
   // Two grass sides sharing a link.
   SPIEL_CHECK_TRUE(fails(Tile(GRASS, GRASS, GRASS, GRASS, 0, 0, 2, 3,
-                              {{0, 0, 0, 0, 0, 0, 0, 0}, 1, {}}, false, true)));
+                              {{0, 0, 0, 0, 0, 0, 0, 0}, 1, {}}, {},
+                              TILE_MONASTERY)));
   // A city half-edge with a field.
   SPIEL_CHECK_TRUE(fails(Tile(CITY, GRASS, GRASS, GRASS, 0, 1, 2, 3,
                               {{0, -1, 0, 0, 0, 0, 0, 0}, 1, {SIDE_N}})));
@@ -595,13 +597,85 @@ void TileCheckTest() {
   // A field listing only one side of the city it borders.
   SPIEL_CHECK_TRUE(fails(Tile(CITY, CITY, GRASS, CITY, 0, 0, 1, 0,
                               {{-1, -1, -1, -1, 0, 0, -1, -1}, 1, {SIDE_N}})));
-  // A shield on a tile with two cities.
-  SPIEL_CHECK_TRUE(fails(Tile(CITY, GRASS, CITY, GRASS, 0, 1, 2, 3,
-                              {{-1, -1, 0, 0, -1, -1, 0, 0}, 1, {SIDE_N | SIDE_S}},
-                              true)));
   // Two inner fields.
   SPIEL_CHECK_TRUE(fails(Tile(CITY, CITY, CITY, CITY, 0, 1, 2, 3,
                               {{-1, -1, -1, -1, -1, -1, -1, -1}, 2, {0xF, 0xF}})));
+
+  // Marks. Fine: a shield on one of two cities, goods on the other, an inn
+  // on a road, and marks for the whole tile.
+  const FieldLayout two_cities = {{-1, -1, 0, 0, -1, -1, 0, 0}, 1, {SIDE_N | SIDE_S}};
+  SPIEL_CHECK_TRUE(tile_check::CheckTile(
+                       Tile(CITY, GRASS, CITY, GRASS, 0, 1, 2, 3, two_cities,
+                            {MARK_SHIELD, 0, MARK_WINE, 0}, TILE_DRAGON))
+                       .empty());
+  SPIEL_CHECK_TRUE(tile_check::CheckTile(
+                       Tile(ROAD, GRASS, ROAD, GRASS, 0, 1, 0, 2,
+                            {{0, 1, 1, 1, 1, 0, 0, 0}, 2, {}}, {MARK_INN, 0, 0, 0},
+                            TILE_VOLCANO | TILE_PORTAL))
+                       .empty());
+  // A shield on a road.
+  SPIEL_CHECK_TRUE(fails(Tile(ROAD, GRASS, ROAD, GRASS, 0, 1, 0, 2,
+                              {{0, 1, 1, 1, 1, 0, 0, 0}, 2, {}}, {MARK_SHIELD, 0, 0, 0})));
+  // An inn on a city.
+  SPIEL_CHECK_TRUE(fails(Tile(CITY, GRASS, CITY, GRASS, 0, 1, 2, 3, two_cities,
+                              {MARK_INN, 0, 0, 0})));
+  // A mark on grass.
+  SPIEL_CHECK_TRUE(fails(Tile(CITY, GRASS, CITY, GRASS, 0, 1, 2, 3, two_cities,
+                              {0, MARK_SHIELD, 0, 0})));
+  // Two kinds of goods in one city, written on two of its sides.
+  SPIEL_CHECK_TRUE(fails(Tile(CITY, CITY, GRASS, CITY, 0, 0, 1, 0,
+                              {{-1, -1, -1, -1, 0, 0, -1, -1}, 1, {SIDE_N | SIDE_E | SIDE_W}},
+                              {MARK_WINE, MARK_CLOTH, 0, 0})));
+  // An unknown tile mark.
+  SPIEL_CHECK_TRUE(fails(Tile(GRASS, GRASS, GRASS, GRASS, 0, 1, 2, 3,
+                              {{0, 0, 0, 0, 0, 0, 0, 0}, 1, {}}, {}, 1 << 7)));
+}
+
+// A shield belongs to one city of its tile: on a tile with two cities only
+// the city with the shield scores it, whichever way the tile is turned.
+void ShieldPerCityTest() {
+  // A city north and a separate one south, the shield on the north one.
+  const Tile two_cities(CITY, GRASS, CITY, GRASS, 0, 1, 2, 3,
+                        {{-1, -1, 0, 0, -1, -1, 0, 0}, 1, {SIDE_N | SIDE_S}},
+                        {MARK_SHIELD, 0, 0, 0});
+  SPIEL_CHECK_TRUE(tile_check::CheckTile(two_cities).empty());
+  const int c = BOARD_SIZE / 2;
+  const auto& caps = tile_type_tables.draw_physical_ids_by_type[16];  // CGGG
+  for (int k = 0; k < kNumBoardRotations; ++k) {
+    Tile turned = two_cities;
+    for (int i = 0; i < k; ++i) turned = turned.rotate();
+    const int shield_side = k % 4;          // where north went
+    const int plain_side = (k + 2) % 4;     // where south went
+    SPIEL_CHECK_TRUE(turned.featureMarks(shield_side) & MARK_SHIELD);
+    SPIEL_CHECK_FALSE(turned.featureMarks(plain_side) & MARK_SHIELD);
+
+    // Borrowed id of a tile this test does not otherwise place. FeatureModule
+    // never looks it up in full_deck; FieldModule is not used.
+    const int id = tile_type_tables.draw_physical_ids_by_type[1][0];
+    auto board = std::make_unique<BoardModule>();
+    auto features = std::make_unique<FeatureModule>();
+    board->placeTileOnBoard(id, c, c, k, turned);
+    features->placeTileOnBoard(id, c, c, k, turned, *board);
+    auto score = [&](int tile_id, int side) {
+      return features->featureMap.getSetData(features->edgeIndex(tile_id, side))
+          .getScore();
+    };
+    SPIEL_CHECK_EQ(score(id, shield_side), 2);  // one tile, one shield
+    SPIEL_CHECK_EQ(score(id, plain_side), 1);
+
+    // Close the shielded city with a CGGG whose city faces it.
+    const int dx[4] = {0, 1, 0, -1};
+    const int dy[4] = {-1, 0, 1, 0};
+    const int cap_x = c + dx[shield_side];
+    const int cap_y = c + dy[shield_side];
+    const int cap_rot = (shield_side + 2) % 4;  // its city (north) turned to face back
+    const Tile& cap = full_deck[caps[0]][cap_rot];
+    SPIEL_CHECK_TRUE(board->canPlaceTileAt(cap_x, cap_y, cap));
+    board->placeTileOnBoard(caps[0], cap_x, cap_y, cap_rot, cap);
+    features->placeTileOnBoard(caps[0], cap_x, cap_y, cap_rot, cap, *board);
+    SPIEL_CHECK_EQ(score(id, shield_side), (2 + 1) * 2);
+    SPIEL_CHECK_EQ(score(id, plain_side), 1);
+  }
 }
 
 // Draws `type`, places it at (tile_x, tile_y) turned `rot` and plays meeple
@@ -741,11 +815,10 @@ void InnerFieldTest() {
     SPIEL_CHECK_EQ(rotated.field_city_sides[0], 0xF);
   }
 
-  // Borrow the id of a tile without a shield that this test does not place.
-  // FieldModule never looks the borrowed id up in full_deck: a neighbour only
-  // does that across a side that is not a city, and this tile has none.
+  // Borrow the id of a tile this test does not place. FieldModule never looks
+  // the borrowed id up in full_deck: a neighbour only does that across a side
+  // that is not a city, and this tile has none.
   const int id = tile_type_tables.draw_physical_ids_by_type[1][0];
-  SPIEL_CHECK_FALSE(SHIELD_MASK[id]);
   auto board = std::make_unique<BoardModule>();
   auto features = std::make_unique<FeatureModule>();
   auto fields = std::make_unique<FieldModule>();
@@ -1135,6 +1208,7 @@ void ExpansionGamesTest() {
   std::shared_ptr<const Game> game = LoadGame(kAllExpansionsGame);
   testing::RandomSimTest(*game, 10);
   int river_sides = 0;
+  int shield_sides = 0;
   for (int sim = 0; sim < 20; ++sim) {
     std::unique_ptr<State> state = game->NewInitialState();
     int tiles_drawn = 1;  // the start tile
@@ -1155,6 +1229,11 @@ void ExpansionGamesTest() {
               const int terrain = kNorthTerrainPlane + side * kTerrainTypes;
               SPIEL_CHECK_TRUE(PlaneValue(obs, terrain + 3, x, y) ==
                                (tile.edge[side] == RIVER ? 1.0f : 0.0f));
+              const bool shield = tile.edge[side] == CITY &&
+                                  (tile.featureMarks(side) & MARK_SHIELD);
+              shield_sides += shield ? 1 : 0;
+              SPIEL_CHECK_TRUE(PlaneValue(obs, kShieldPlane + side, x, y) ==
+                               (shield ? 1.0f : 0.0f));
               if (tile.edge[side] != RIVER) continue;
               ++river_sides;
               SPIEL_CHECK_TRUE(
@@ -1177,12 +1256,13 @@ void ExpansionGamesTest() {
     SPIEL_CHECK_LE(tiles_drawn, core.getDeckSize());
   }
   std::cout << "ExpansionGamesTest: " << tileCountIn(ALL_EXPANSIONS)
-            << " tiles in the deck, " << river_sides
-            << " river sides seen; opens underflows so far: "
+            << " tiles in the deck, " << river_sides << " river sides, "
+            << shield_sides << " shielded city sides seen; opens underflows so far: "
             << OpensUnderflowCount() << std::endl;
   if (tileCountIn(expansionBit(EXP_RIVER)) > 0) {
     SPIEL_CHECK_GT(river_sides, 0);
   }
+  SPIEL_CHECK_GT(shield_sides, 0);
   SPIEL_CHECK_EQ(OpensUnderflowCount(), 0);
 }
 
@@ -1199,6 +1279,7 @@ void BasicCarcassonneTests() {
   TiedFeatureTest();
   TileTableTest();
   TileCheckTest();
+  ShieldPerCityTest();
   ExpansionOptionsTest();
   RiverTileTest();
   ExpansionGamesTest();

@@ -74,6 +74,8 @@ class Feature {
     TileMask tile_mask;
     uint8_t opens = 0;
     uint8_t meeple_count[2] = {};
+    // Shields on the city, one per city piece that carries MARK_SHIELD.
+    uint8_t shields = 0;
 
     Feature() = default;
     Feature(EdgeType type, int id);

@@ -196,6 +196,13 @@ SideGroups RotateSideGroups(const SideGroups &groups, int k);
 void RotateObservation(absl::Span<const float> observation, int k, const SideGroups &groups,
                        absl::Span<float> rotated);
 
+// Every value of observation plane `plane` is n / ObservationPlaneDenominator(plane)
+// for an integer n in [-128, 127] (the denominator is 1 for the 0/1 planes), or
+// 0 for the global vector, whose values are not. Lets a replay buffer keep the
+// planes as int8 without losing anything (see alpha_zero_torch's
+// observation_codec.h).
+float ObservationPlaneDenominator(int plane);
+
 } // namespace carcassonne
 } // namespace open_spiel
 

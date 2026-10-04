@@ -12,23 +12,33 @@ import flet as ft
 
 try:
     from domain import Move, MoveRecord
-    from engine import BOARD_SIZE, CppCarcassonneAdapter, PlayerSpec
+    from engine import (
+        BOARD_SIZE,
+        HALF_EDGE_COUNT,
+        MEEPLE_POS_FIELD,
+        MEEPLE_POS_INNER_FIELD,
+        CppCarcassonneAdapter,
+        PlayerSpec,
+    )
 except ImportError:  # pragma: no cover - package import fallback
     from ..domain import Move, MoveRecord
-    from ..engine import BOARD_SIZE, CppCarcassonneAdapter, PlayerSpec
+    from ..engine import (
+        BOARD_SIZE,
+        HALF_EDGE_COUNT,
+        MEEPLE_POS_FIELD,
+        MEEPLE_POS_INNER_FIELD,
+        CppCarcassonneAdapter,
+        PlayerSpec,
+    )
 
 
 IMAGE_FIT = getattr(ft, "ImageFit", ft.BoxFit)
 # Flet 1.0 dropped ElevatedButton; older releases have both.
 BUTTON = getattr(ft, "Button", None) or ft.ElevatedButton
 ALIGN_CENTER = ft.alignment.Alignment(0, 0)
-ALIGN_TOP_CENTER = ft.alignment.Alignment(0, -1)
-ALIGN_CENTER_RIGHT = ft.alignment.Alignment(1, 0)
-ALIGN_BOTTOM_CENTER = ft.alignment.Alignment(0, 1)
-ALIGN_CENTER_LEFT = ft.alignment.Alignment(-1, 0)
 
 CELL_SIZE = 40
-MEEPLE_SIZE = 10
+MEEPLE_SIZE = 18
 MEEPLE_GLYPH = "■"  # ■
 MIN_BOARD_SCALE = 0.3
 MAX_BOARD_SCALE = 4.0
@@ -50,6 +60,51 @@ def _border(width: int, color: str) -> ft.Border:
 
 def _margin(value: float) -> ft.Margin:
     return ft.Margin(left=value, top=value, right=value, bottom=value)
+
+
+SIDE_NAMES = ("Up", "Right", "Down", "Left")
+# Half-edge e = 2 * side + h runs clockwise round the tile from north-west (tile.hpp).
+HALF_EDGE_NAMES = (
+    "Top-left",
+    "Top-right",
+    "Right-top",
+    "Right-bottom",
+    "Bottom-right",
+    "Bottom-left",
+    "Left-bottom",
+    "Left-top",
+)
+assert len(HALF_EDGE_NAMES) == HALF_EDGE_COUNT
+_SIDE_DIRECTIONS = ((0, -1), (1, 0), (0, 1), (-1, 0))
+_SIDE_TANGENTS = ((1, 0), (0, 1), (-1, 0), (0, -1))  # clockwise along each side
+
+
+def is_farmer(meeple_pos: int) -> bool:
+    return meeple_pos >= MEEPLE_POS_FIELD
+
+
+def meeple_button_labels() -> Dict[int, str]:
+    """A label for every meeple position the engine can offer, skip aside."""
+    labels = {side: f"Meeple: {name}" for side, name in enumerate(SIDE_NAMES)}
+    labels[4] = "Meeple: Center"
+    for half_edge, name in enumerate(HALF_EDGE_NAMES):
+        labels[MEEPLE_POS_FIELD + half_edge] = f"Farmer: {name}"
+    labels[MEEPLE_POS_INNER_FIELD] = "Farmer: Inner"
+    return labels
+
+
+def meeple_alignment(meeple_pos: int) -> Tuple[float, float]:
+    """Where a meeple sits in its cell, as an Alignment (-1..1 on each axis)."""
+    if 0 <= meeple_pos < 4:
+        dx, dy = _SIDE_DIRECTIONS[meeple_pos]
+        return 0.75 * dx, 0.75 * dy
+    if MEEPLE_POS_FIELD <= meeple_pos < MEEPLE_POS_FIELD + HALF_EDGE_COUNT:
+        # A farmer lies in its field, just inside that half of the side.
+        side, half = divmod(meeple_pos - MEEPLE_POS_FIELD, 2)
+        (dx, dy), (tx, ty) = _SIDE_DIRECTIONS[side], _SIDE_TANGENTS[side]
+        along = 0.5 if half else -0.5
+        return 0.7 * dx + along * tx, 0.7 * dy + along * ty
+    return 0.0, 0.0  # the monastery and the inner field
 
 
 def _positive_int(value: str) -> int:
@@ -195,7 +250,14 @@ class CarcassonneUI:
         self._build_game_panel()
 
         # Rows and cells sit edge to edge (spacing 0) so neighbouring tiles touch.
-        self.grid_column = ft.Column(spacing=0, tight=True)
+        # The rows are built once and refresh() swaps in only the cells that changed.
+        # Rebuilding all 441 cells (and their images) on every refresh made the client
+        # re-create hundreds of image widgets per turn; tiles flickered blank while
+        # they reloaded and the browser's render process could crash under the churn.
+        self.moves_by_cell: Dict[Tuple[int, int], List[int]] = {}
+        self._cell_keys: Dict[Tuple[int, int], tuple] = {}
+        self.grid_rows = [ft.Row([], spacing=0, tight=True) for _ in range(BOARD_SIZE)]
+        self.grid_column = ft.Column(self.grid_rows, spacing=0, tight=True)
         # Drag to pan, mouse wheel / pinch to zoom. It keeps its transform while
         # refresh() swaps the rows inside it.
         self.board_viewer = ft.InteractiveViewer(
@@ -363,11 +425,8 @@ class CarcassonneUI:
         self.confirm_btn = BUTTON("Confirm Tile", on_click=self.on_confirm_tile)
         self.skip_btn = ft.OutlinedButton("Skip Meeple", on_click=lambda _: self.on_apply_move(-1))
         self.meeple_buttons = {
-            0: BUTTON("Meeple: Up", on_click=lambda _: self.on_apply_move(0)),
-            1: BUTTON("Meeple: Right", on_click=lambda _: self.on_apply_move(1)),
-            2: BUTTON("Meeple: Down", on_click=lambda _: self.on_apply_move(2)),
-            3: BUTTON("Meeple: Left", on_click=lambda _: self.on_apply_move(3)),
-            4: BUTTON("Meeple: Center", on_click=lambda _: self.on_apply_move(4)),
+            pos: BUTTON(label, on_click=lambda _, pos=pos: self.on_apply_move(pos))
+            for pos, label in meeple_button_labels().items()
         }
 
         self.game_column = ft.Column(
@@ -443,7 +502,8 @@ class CarcassonneUI:
 
     def refresh(self) -> None:
         if self.engine is None:
-            self.grid_column.controls = [self._build_row(y, {}) for y in range(BOARD_SIZE)]
+            self.moves_by_cell = {}
+            self._render_grid()
             self.page.update()
             return
 
@@ -456,6 +516,7 @@ class CarcassonneUI:
             moves_by_cell.setdefault((move.x, move.y), []).append(move.rotation)
         for pos in moves_by_cell:
             moves_by_cell[pos].sort()
+        self.moves_by_cell = moves_by_cell
 
         human_turn = self._human_turn()
         self.confirm_btn.disabled = self.selected_move is None or self.awaiting_meeple or not human_turn
@@ -492,7 +553,7 @@ class CarcassonneUI:
         ]
         self.records_column.controls = record_controls or [ft.Text("No records.")]
 
-        self.grid_column.controls = [self._build_row(y, moves_by_cell) for y in range(BOARD_SIZE)]
+        self._render_grid()
 
         if self.state.game_over:
             self.status.value = f"Game over. {self._result_text()}"
@@ -524,16 +585,37 @@ class CarcassonneUI:
             return f"P{winner} wins."
         return "You win!" if winner == seat else "You lose."
 
-    def _build_row(self, y: int, moves_by_cell: Dict[Tuple[int, int], List[int]]) -> ft.Row:
-        row_controls = [self._build_cell(x, y, moves_by_cell) for x in range(BOARD_SIZE)]
-        return ft.Row(row_controls, spacing=0, tight=True)
+    def _render_grid(self) -> None:
+        for y, row in enumerate(self.grid_rows):
+            if not row.controls:
+                row.controls = [ft.Container() for _ in range(BOARD_SIZE)]
+            for x in range(BOARD_SIZE):
+                key = self._cell_key(x, y)
+                if self._cell_keys.get((x, y)) != key:
+                    row.controls[x] = self._build_cell(x, y)
+                    self._cell_keys[(x, y)] = key
 
-    def _build_cell(self, x: int, y: int, moves_by_cell: Dict[Tuple[int, int], List[int]]) -> ft.Container:
+    def _cell_tile(self, x: int, y: int):
+        if self.engine is None:
+            return None
+        return self.state.board.get(self.engine.to_engine_coords(x, y))
+
+    def _cell_key(self, x: int, y: int) -> tuple:
+        """Everything _build_cell draws from, so an unchanged cell can be kept."""
+        tile = self._cell_tile(x, y)
+        tile_key = None
+        if tile is not None:
+            tile_key = (tile.tile_id, tile.rotation, tile.tile_owner, tuple(tile.meeple_markers))
+        is_selected = self.selected_move is not None and (self.selected_move.x, self.selected_move.y) == (x, y)
+        preview = None
+        if is_selected and self.state is not None:
+            preview = (self.state.holding_tile_id, self.selected_move.rotation)
+        return tile_key, (x, y) in self.moves_by_cell, is_selected, preview
+
+    def _build_cell(self, x: int, y: int) -> ft.Container:
         pos = (x, y)
-        tile = None
-        if self.engine is not None:
-            tile = self.state.board.get(self.engine.to_engine_coords(x, y))
-        is_valid = pos in moves_by_cell
+        tile = self._cell_tile(x, y)
+        is_valid = pos in self.moves_by_cell
         is_selected = self.selected_move is not None and (self.selected_move.x, self.selected_move.y) == pos
 
         bg = "#ffffff"
@@ -565,7 +647,7 @@ class CarcassonneUI:
             )
             highlight = (2, border_color)
 
-        on_click = lambda _: self.on_cell_click(x, y, moves_by_cell)
+        on_click = lambda _: self.on_cell_click(x, y)
         if not layers:
             return ft.Container(
                 width=CELL_SIZE,
@@ -597,37 +679,21 @@ class CarcassonneUI:
         )
 
     def _player_color(self, owner: int) -> str:
-        if owner == 0:
-            return "#111111"
         return "#3b82f6" if owner == 1 else "#ef4444"
 
     def _build_meeple_marker(self, owner: int, meeple_pos: int) -> ft.Container:
-        color = self._player_color(owner)
-        position_align = {
-            0: ALIGN_TOP_CENTER,
-            1: ALIGN_CENTER_RIGHT,
-            2: ALIGN_BOTTOM_CENTER,
-            3: ALIGN_CENTER_LEFT,
-            4: ALIGN_CENTER,
-        }
-        padding_map = {
-            0: _padding(top=3),
-            1: _padding(right=3),
-            2: _padding(bottom=3),
-            3: _padding(left=3),
-            4: _padding(),
-        }
+        """A standing meeple on a road, city or monastery; a lying one for a farmer."""
+        kind = "farmer" if is_farmer(meeple_pos) else "standing"
+        align_x, align_y = meeple_alignment(meeple_pos)
         return ft.Container(
             width=CELL_SIZE,
             height=CELL_SIZE,
-            alignment=position_align.get(meeple_pos, ALIGN_CENTER),
-            padding=padding_map.get(meeple_pos, _padding()),
-            content=ft.Container(
+            alignment=ft.alignment.Alignment(align_x, align_y),
+            content=ft.Image(
+                src=f"meeples/{kind}_p{owner}.png",
                 width=MEEPLE_SIZE,
                 height=MEEPLE_SIZE,
-                bgcolor=color,
-                border=_border(1, "#ffffff"),
-                border_radius=2,
+                fit=IMAGE_FIT.CONTAIN,
             ),
         )
 
@@ -681,10 +747,10 @@ class CarcassonneUI:
         self.board_zoom = 1.0
         self.page.run_task(self._show_board, self.board_zoom)
 
-    def on_cell_click(self, x: int, y: int, moves_by_cell: Dict[Tuple[int, int], List[int]]) -> None:
+    def on_cell_click(self, x: int, y: int) -> None:
         if self.awaiting_meeple or not self._human_turn():
             return
-        rots = moves_by_cell.get((x, y))
+        rots = self.moves_by_cell.get((x, y))
         if not rots:
             return
 

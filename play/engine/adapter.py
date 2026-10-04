@@ -35,6 +35,11 @@ PHASE_TILE = int(_carcassonne_cpp.PHASE_TILE)
 PHASE_MEEPLE = int(_carcassonne_cpp.PHASE_MEEPLE)
 PHASE_TERMINAL = int(_carcassonne_cpp.PHASE_TERMINAL)
 PHYSICAL_TO_CANONICAL_TYPE = list(getattr(_carcassonne_cpp, "PHYSICAL_TO_CANONICAL_TYPE", []))
+# Meeple positions: 0..3 the feature on that side, 4 the monastery, then farmers:
+# MEEPLE_POS_FIELD + half-edge (0..7, clockwise from north-west) and the inner field.
+MEEPLE_POS_FIELD = int(_carcassonne_cpp.MEEPLE_POS_FIELD)
+MEEPLE_POS_INNER_FIELD = int(_carcassonne_cpp.MEEPLE_POS_INNER_FIELD)
+HALF_EDGE_COUNT = int(_carcassonne_cpp.HALF_EDGE_COUNT)
 OPPONENT_MODES = {"player", "random", "mcts", "alphazero", "az"}
 PLAYER_TYPES = {"human", "random", "mcts", "alphazero", "az"}
 BOT_TYPES = {"random", "mcts", "alphazero"}
@@ -531,11 +536,13 @@ class CppCarcassonneAdapter:
         # edge of a claimed road/city. Draw each meeple where it was actually placed (from
         # move_records) and use the tokens only to tell whether it is still on the board:
         # completing a feature or monastery clears its token and returns the meeple.
+        # Farmers have no token and are never returned, so they always stay.
         live_tokens = set(self._engine.get_meeple_tokens())
         for record in self.move_records:
             if record.meeple_pos == -1:
                 continue
-            if (record.player - 1, record.x, record.y, record.meeple_pos) not in live_tokens:
+            is_farmer = record.meeple_pos >= MEEPLE_POS_FIELD
+            if not is_farmer and (record.player - 1, record.x, record.y, record.meeple_pos) not in live_tokens:
                 continue
             tile = board.get((record.x, record.y))
             if tile is None:

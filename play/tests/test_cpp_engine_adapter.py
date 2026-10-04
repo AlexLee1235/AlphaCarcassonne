@@ -3,7 +3,17 @@ from __future__ import annotations
 import pytest
 
 from play import _carcassonne_cpp
-from play.cpp_engine import BOARD_SIZE, CppCarcassonneAdapter, ENGINE_BOARD_SIZE, PHASE_TILE, START_POS, PlayerSpec
+from play.cpp_engine import (
+    BOARD_SIZE,
+    ENGINE_BOARD_SIZE,
+    HALF_EDGE_COUNT,
+    MEEPLE_POS_FIELD,
+    MEEPLE_POS_INNER_FIELD,
+    PHASE_TILE,
+    START_POS,
+    CppCarcassonneAdapter,
+    PlayerSpec,
+)
 from play.engine import adapter as adapter_module
 from play.engine.adapter import BotCliClient
 from play.models import Move, MoveRecord
@@ -11,6 +21,9 @@ from play.ui.app import (
     build_player_specs,
     format_move_record,
     human_seat,
+    is_farmer,
+    meeple_alignment,
+    meeple_button_labels,
     parse_ui_config,
     should_show_start_game,
     summarize_ai_status,
@@ -98,9 +111,10 @@ def test_bot_cli_reports_latest_observation_shape() -> None:
     finally:
         cli.close()
 
-    assert response["observation_shape"] == [50, ENGINE_BOARD_SIZE, ENGINE_BOARD_SIZE]
-    assert response["observation_tensor_size"] == 50 * ENGINE_BOARD_SIZE * ENGINE_BOARD_SIZE
-    assert response["num_distinct_actions"] == ENGINE_BOARD_SIZE * ENGINE_BOARD_SIZE * 4 + 6
+    # 94 spatial planes (fields included) and one global plane; meeple positions -1..13.
+    assert response["observation_shape"] == [95, ENGINE_BOARD_SIZE, ENGINE_BOARD_SIZE]
+    assert response["observation_tensor_size"] == 95 * ENGINE_BOARD_SIZE * ENGINE_BOARD_SIZE
+    assert response["num_distinct_actions"] == ENGINE_BOARD_SIZE * ENGINE_BOARD_SIZE * 4 + 15
 
 
 def test_player_spec_builds_per_player_az_env_without_device() -> None:
@@ -368,6 +382,20 @@ def test_adapter_hides_meeple_returned_by_a_completed_feature() -> None:
     assert not any(tile.meeple_markers for tile in adapter._build_board().values())
 
 
+def test_adapter_keeps_farmers_although_they_have_no_token() -> None:
+    sx, sy = START_POS
+    adapter = CppCarcassonneAdapter(seed=42)
+    # get_meeple_tokens() only covers roads, cities and monasteries; farmers never leave.
+    adapter._engine = FakeMeepleEngine([(sx, sy), (sx + 1, sy)], [])
+    farmer = MEEPLE_POS_FIELD + 3
+    adapter.move_records = [_meeple_record(2, sx + 1, sy, farmer), _meeple_record(1, sx, sy, 2)]
+
+    board = adapter._build_board()
+
+    assert board[(sx + 1, sy)].meeple_markers == [(2, farmer)]
+    assert board[(sx, sy)].meeple_markers == []  # the road meeple was scored and returned
+
+
 def test_adapter_keeps_each_player_meeple_on_a_shared_feature() -> None:
     sx, sy = START_POS
     city = [(sx, sy), (sx + 1, sy)]
@@ -625,3 +653,25 @@ def test_summarize_ai_status_keeps_first_line_only() -> None:
     assert summarize_ai_status(trace) == "P2 az: open file failed, file path: /m/checkpoint--1.pt"
     assert summarize_ai_status("x" * 500).endswith("...")
     assert len(summarize_ai_status("x" * 500)) == 240
+
+
+def test_meeple_buttons_cover_every_engine_position() -> None:
+    labels = meeple_button_labels()
+
+    assert sorted(labels) == list(range(MEEPLE_POS_INNER_FIELD + 1))
+    assert [labels[MEEPLE_POS_FIELD + e] for e in (0, 3, 7)] == [
+        "Farmer: Top-left",
+        "Farmer: Right-bottom",
+        "Farmer: Left-top",
+    ]
+    assert not any(is_farmer(pos) for pos in range(5))
+    assert all(is_farmer(pos) for pos in range(MEEPLE_POS_FIELD, MEEPLE_POS_INNER_FIELD + 1))
+
+
+def test_meeple_alignment_follows_sides_and_half_edges() -> None:
+    assert [meeple_alignment(side) for side in range(4)] == [(0, -0.75), (0.75, 0), (0, 0.75), (-0.75, 0)]
+    assert meeple_alignment(4) == (0, 0)
+    assert meeple_alignment(MEEPLE_POS_INNER_FIELD) == (0, 0)
+    expected = [(-0.5, -0.7), (0.5, -0.7), (0.7, -0.5), (0.7, 0.5), (0.5, 0.7), (-0.5, 0.7), (-0.7, 0.5), (-0.7, -0.5)]
+    for half_edge in range(HALF_EDGE_COUNT):
+        assert meeple_alignment(MEEPLE_POS_FIELD + half_edge) == pytest.approx(expected[half_edge])

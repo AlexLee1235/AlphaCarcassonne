@@ -164,6 +164,15 @@ void ValidateModelConfig(const open_spiel::Game &game,
                                  " does not match current game action count " +
                                  std::to_string(game.NumDistinctActions()) + ".");
     }
+
+    // The global vector grows with the tile table while the tensor shape stays
+    // put; a model for an older table would read it misaligned.
+    if (config.global_features != open_spiel::carcassonne::kGlobalFeatures) {
+        throw std::runtime_error("AlphaZero model global vector size " + std::to_string(config.global_features) +
+                                 " does not match current game size " +
+                                 std::to_string(open_spiel::carcassonne::kGlobalFeatures) +
+                                 ". Use a checkpoint trained on the current tile table.");
+    }
 }
 
 class CarcassonneBotCli {

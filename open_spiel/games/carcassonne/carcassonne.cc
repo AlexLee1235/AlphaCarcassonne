@@ -18,14 +18,14 @@ namespace carcassonne {
 namespace {
 
 constexpr float kMeepleNormalization = 7.0f;
-constexpr float kRemainingNormalization = TOTAL_TILE_COUNT;
+// The remaining tiles are counted against the deck this game deals, the
+// completed turns against half of it.
 constexpr float kScoreNormalization = 40.0f;
 constexpr float kScoreDiffNormalization = 20.0f;
 // With farmers, random games end at p99 33 / max 46 pending points a player
 // (tools/diag_pending_scale); clipped.
 constexpr float kPendingNormalization = 40.0f;
 constexpr std::array<float, kStaticDiffScales> kStaticDiffNormalizations = {3.0f, 10.0f, 30.0f};
-constexpr float kTurnNormalization = 36.0f;
 constexpr float kLegalPlacementNormalization = 100.0f;
 constexpr int kMaxOpens = 6;
 constexpr float kFeatureScoreNormalization = 12.0f;
@@ -61,7 +61,14 @@ const GameType kGameType{/*short_name=*/"carcassonne",
                          /*provides_information_state_tensor=*/false,
                          /*provides_observation_string=*/true,
                          /*provides_observation_tensor=*/true,
-                         /*parameter_specification=*/{{"max_turns", GameParameter(0)}}};
+                         // Each expansion: "off", or "tiles" to deal its tiles
+                         // without its rules.
+                         /*parameter_specification=*/
+                         {{"max_turns", GameParameter(0)},
+                          {EXPANSION_NAMES[EXP_INNS_CATHEDRALS], GameParameter(std::string("off"))},
+                          {EXPANSION_NAMES[EXP_TRADERS_BUILDERS], GameParameter(std::string("off"))},
+                          {EXPANSION_NAMES[EXP_RIVER], GameParameter(std::string("off"))},
+                          {EXPANSION_NAMES[EXP_PRINCESS_DRAGON], GameParameter(std::string("off"))}}};
 
 std::shared_ptr<const Game> Factory(const GameParameters &params) {
     return std::shared_ptr<const Game>(new CarcassonneGame(params));
@@ -150,6 +157,8 @@ int TerrainIndex(EdgeType edge_type) {
         return 1;
     case ROAD:
         return 2;
+    case RIVER:
+        return 3;
     case NONE:
         break;
     }
@@ -273,8 +282,8 @@ int RotateFieldHalfEdge(int half_edge, int k, const SideGroups &groups) {
 
 CarcassonneState::CarcassonneState(std::shared_ptr<const Game> game) : State(std::move(game)), game_state_() {}
 
-CarcassonneState::CarcassonneState(std::shared_ptr<const Game> game, int max_turns)
-    : State(std::move(game)), game_state_(max_turns) {}
+CarcassonneState::CarcassonneState(std::shared_ptr<const Game> game, int max_turns, uint32_t expansions)
+    : State(std::move(game)), game_state_(max_turns, START_TILE_ROTATION, expansions) {}
 
 CarcassonneState::CarcassonneState(std::shared_ptr<const Game> game, const ::Carcassonne &game_state)
     : State(std::move(game)), game_state_(game_state) {}
@@ -425,7 +434,7 @@ void CarcassonneState::ObservationTensor(Player player, absl::Span<float> values
                 SetPlaneValue(values, kLastPlacedPlane, x, y, 1.0f);
             }
             for (int side = 0; side < 4; ++side) {
-                if (tile.edge[side] == GRASS) {
+                if (!isFeatureEdge(tile.edge[side])) {
                     continue;
                 }
                 const Feature &feature = game_state_.featureAt(placement.id, side);
@@ -487,8 +496,10 @@ void CarcassonneState::ObservationTensor(Player player, absl::Span<float> values
     }
     global[kGlobalMyMeeples] = game_state_.holding_meeples[player] / kMeepleNormalization;
     global[kGlobalOpponentMeeples] = game_state_.holding_meeples[opponent] / kMeepleNormalization;
-    global[kGlobalRemainingTiles] = game_state_.getTotalRemaining() / kRemainingNormalization;
-    global[kGlobalCompletedTurns] = game_state_.completed_turns / kTurnNormalization;
+    const float deck_size = static_cast<float>(game_state_.getDeckSize());
+    global[kGlobalRemainingTiles] = game_state_.getTotalRemaining() / deck_size;
+    global[kGlobalCompletedTurns] = game_state_.completed_turns / (deck_size / 2.0f);
+    // Types this game does not deal have nothing left: 0.
     for (int type_id = 1; type_id <= CANONICAL_TILE_TYPE_COUNT; ++type_id) {
         const int initial_count = tile_type_tables.draw_count_by_type[type_id];
         global[kGlobalRemainingByType + type_id - 1] =
@@ -593,6 +604,15 @@ void CarcassonneState::DoApplyAction(Action action) {
 CarcassonneGame::CarcassonneGame(const GameParameters &params)
     : Game(kGameType, params), max_turns_(ParameterValue<int>("max_turns")) {
     SPIEL_CHECK_GE(max_turns_, 0);
+    for (int expansion = 1; expansion < EXPANSION_COUNT; ++expansion) {
+        const std::string mode = ParameterValue<std::string>(EXPANSION_NAMES[expansion]);
+        if (mode == "tiles") {
+            expansions_ |= expansionBit(static_cast<Expansion>(expansion));
+        } else if (mode != "off") {
+            SpielFatalError(absl::StrCat("carcassonne: ", EXPANSION_NAMES[expansion], "=", mode,
+                                         "; expected off or tiles"));
+        }
+    }
 }
 
 SideGroups GetSideGroups(const CarcassonneState &state) {

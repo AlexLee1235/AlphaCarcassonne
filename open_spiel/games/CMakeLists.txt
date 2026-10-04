@@ -11,6 +11,7 @@ set(GAME_SOURCES
   carcassonne/game/game.cpp
   carcassonne/game/game.hpp
   carcassonne/game/tile.hpp
+  carcassonne/game/tile_check.hpp
   connect_four/connect_four.cc
   connect_four/connect_four.h
   othello/othello.cc

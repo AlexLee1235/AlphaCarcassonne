@@ -50,9 +50,10 @@
 一格的農田分區與貼城關係，在基本牌組下完全由該格的
 「4 邊地形 + 6 個 side-link 平面 + 盾/修道院」決定。這是單格的局部函數，CNN 很容易學。
 
-`carcassonne_test.cc` 的 `FieldLayoutTest` 把這件事釘成測試：
+`carcassonne_test.cc` 的 `TileTableTest` 把這件事釘成測試：
 `TileLook`（地形 + side-link）相同的兩種「磚型 × 旋轉」，`CanonicalFieldLayout` 必須相同。
-它對引擎實際使用的牌組（`tile.hpp` 的 `base_deck`）逐一檢查。
+它對整張牌表（`tile.hpp` 的 `all_tiles`，含已填的擴充）逐一檢查（`game/tile_check.hpp` 的 `TileLookConflicts`），
+例外要明列在 `kAcceptedTileLookConflicts`。`tools/dump_tiles` 也會列出這些牌對（見 `docs/adding_tiles.md` §7）。
 
 ### 2.2 擴充牌組：有反例
 
@@ -61,7 +62,7 @@
 - 反例磚：（待補：磚名，以及兩種佈局的差異）
 
 後果：
-- 換到那個牌組時，`FieldLayoutTest` 的 `TileLook` 檢查會失敗。這是它設計要抓的情況，不會靜默算錯。
+- 換到那個牌組時，`TileTableTest` 的 `TileLook` 檢查會失敗。這是它設計要抓的情況，不會靜默算錯。
 - 到那時，§3 的**候選 A 就不再是可選的消融臂，而是必要的修正**。否則網路從觀測裡分不出那些磚的農田佈局。
 
 ### 2.3 global vector 放不下盤面磚

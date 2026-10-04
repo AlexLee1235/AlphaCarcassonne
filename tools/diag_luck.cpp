@@ -100,7 +100,7 @@ static void Run(const char *label, Agent a0, Agent a1, int pairs) {
             int c = 0;
             probe.getAvailableDraws(d, c);
             for (int i = 0; i < c; ++i)
-                for (int k = 0; k < 12; ++k) deck.push_back(d[i].type_id);
+                for (int k = 0; k < MAX_PHYSICAL_IDS_PER_TYPE; ++k) deck.push_back(d[i].type_id);
             std::shuffle(deck.begin(), deck.end(), deckRng);
         }
         int r0 = PlayOne(deck, a0, a1, 0, playRng);   // agent0 坐 seat 0

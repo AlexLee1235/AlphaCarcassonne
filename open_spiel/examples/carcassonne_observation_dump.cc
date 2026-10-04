@@ -62,6 +62,8 @@ std::string TerrainName(int terrain) {
       return "city";
     case 2:
       return "road";
+    case 3:
+      return "river";
     default:
       return "unknown";
   }

@@ -1,5 +1,6 @@
 #include "open_spiel/games/carcassonne/carcassonne.h"
 #include "open_spiel/games/carcassonne/carcassonne_test_utils.h"
+#include "open_spiel/games/carcassonne/game/tile_check.hpp"
 
 #include <algorithm>
 #include <array>
@@ -7,9 +8,12 @@
 #include <iostream>
 #include <memory>
 #include <random>
+#include <string>
+#include <utility>
 #include <vector>
 
 #include "open_spiel/abseil-cpp/absl/random/random.h"
+#include "open_spiel/abseil-cpp/absl/strings/str_cat.h"
 #include "open_spiel/abseil-cpp/absl/types/span.h"
 #include "open_spiel/spiel.h"
 #include "open_spiel/spiel_utils.h"
@@ -31,6 +35,11 @@ float GlobalValue(const std::vector<float>& tensor, int index) {
 
 bool Near(float left, float right) { return std::abs(left - right) < 1e-6f; }
 
+// Every expansion's tiles, without their rules.
+constexpr const char* kAllExpansionsGame =
+    "carcassonne(inns_cathedrals=tiles,traders_builders=tiles,river=tiles,"
+    "princess_dragon=tiles)";
+
 int TestTerrainIndex(EdgeType edge_type) {
   switch (edge_type) {
     case GRASS:
@@ -39,6 +48,8 @@ int TestTerrainIndex(EdgeType edge_type) {
       return 1;
     case ROAD:
       return 2;
+    case RIVER:
+      return 3;
     case NONE:
       break;
   }
@@ -151,7 +162,7 @@ void ObservationTensorSmokeTest() {
   const std::vector<int> shape = game->ObservationTensorShape();
 
   SPIEL_CHECK_EQ(shape.size(), 3);
-  SPIEL_CHECK_EQ(shape[0], 95);
+  SPIEL_CHECK_EQ(shape[0], 99);
   SPIEL_CHECK_EQ(shape[0], kObservationPlanes);
   SPIEL_CHECK_EQ(shape[1], BOARD_SIZE);
   SPIEL_CHECK_EQ(shape[2], BOARD_SIZE);
@@ -414,7 +425,7 @@ void PendingScoreTest() {
         const Tile& tile = full_deck[placement.id][placement.rotation];
         for (int side = 0; side < 4; ++side) {
           const Feature& feature = core.featureAt(placement.id, side);
-          if (tile.edge[side] != GRASS && feature.opens == 0 &&
+          if (isFeatureEdge(tile.edge[side]) && feature.opens == 0 &&
               feature.hasMeeples()) {
             ++closed_but_unsettled;
             break;
@@ -454,7 +465,7 @@ void TiedFeatureTest() {
             if (placement.id == 0) continue;
             const Tile& tile = full_deck[placement.id][placement.rotation];
             for (int side = 0; side < 4; ++side) {
-              if (tile.edge[side] == GRASS) continue;
+              if (!isFeatureEdge(tile.edge[side])) continue;
               const Feature& feature = core.featureAt(placement.id, side);
               const int count = feature.meeple_count[0];
               if (count == 0 || feature.meeple_count[1] != count) continue;
@@ -483,101 +494,50 @@ void TiedFeatureTest() {
   SPIEL_CHECK_GT(tied_sides, 0);
 }
 
-// Fields renamed in order of first appearance (half-edges, then the inner one),
-// followed by the field count and each field's city sides: equal for two
-// tiles exactly when their field layouts are.
-std::vector<int> CanonicalFieldLayout(const Tile& tile) {
-  std::array<int, MAX_TILE_FIELDS> renamed;
-  renamed.fill(-1);
-  int next = 0;
-  std::vector<int> layout;
-  for (int half_edge = 0; half_edge < HALF_EDGE_COUNT; ++half_edge) {
-    const int field = tile.field[half_edge];
-    if (field != -1 && renamed[field] == -1) renamed[field] = next++;
-    layout.push_back(field == -1 ? -1 : renamed[field]);
+// Pairs of types (lower first) that look the same to the observation but have
+// different field layouts (tile_check::TileLookConflicts). The observation has
+// no planes for a tile's own field layout, so a network cannot tell them apart
+// (docs/carcassonne_field_observation.md §2.2). List a pair here only once it
+// has been looked at, with the reason it is accepted.
+const std::vector<std::pair<int, int>> kAcceptedTileLookConflicts = {};
+
+void PrintAll(const char* what, const std::vector<std::string>& messages) {
+  for (const std::string& message : messages) {
+    std::cerr << what << ": " << message << std::endl;
   }
-  if (tile.innerField() != -1) renamed[tile.innerField()] = next++;
-  layout.push_back(tile.field_count);
-  std::array<int, MAX_TILE_FIELDS> city_sides{};
-  for (int field = 0; field < tile.field_count; ++field) {
-    city_sides[renamed[field]] = tile.field_city_sides[field];
-  }
-  layout.insert(layout.end(), city_sides.begin(), city_sides.end());
-  return layout;
 }
 
-// What the observation shows of a tile's shape: its terrain and which pairs
-// of non-grass sides it joins.
-std::vector<int> TileLook(const Tile& tile) {
-  std::vector<int> look(tile.edge, tile.edge + 4);
-  for (int a = 0; a < 4; ++a) {
-    for (int b = a + 1; b < 4; ++b) {
-      look.push_back(tile.edge[a] != GRASS && tile.edge[b] != GRASS &&
-                     tile.link[a] == tile.link[b]);
-    }
-  }
-  return look;
-}
+// Every tile of the table, in every rotation, keeps the rules FieldLayout
+// states (tile_check::CheckTile), and each expansion section that is started
+// holds the whole box.
+void TileTableTest() {
+  PrintAll("tile table", tile_check::CheckTileTable());
+  SPIEL_CHECK_TRUE(tile_check::CheckTileTable().empty());
+  PrintAll("tile table", tile_check::IncompleteExpansions());
+  SPIEL_CHECK_TRUE(tile_check::IncompleteExpansions().empty());
 
-// Every base tile, in every rotation, keeps the rules FieldLayout states.
-void FieldLayoutTest() {
-  std::vector<Tile> all_rotations;
-  for (const TileBlueprint& blueprint : base_deck) {
+  for (const TileBlueprint& blueprint : all_tiles) {
     Tile tile = blueprint.tile;
     for (int rot = 0; rot < 4; ++rot, tile = tile.rotate()) {
-      all_rotations.push_back(tile);
-      SPIEL_CHECK_LE(tile.field_count, MAX_TILE_FIELDS);
-      // Fields 0 .. edge_fields - 1 are on half-edges; at most one more, the
-      // inner field, is on none.
-      int edge_fields = 0;
-      for (int half_edge = 0; half_edge < HALF_EDGE_COUNT; ++half_edge) {
-        edge_fields = std::max(edge_fields, tile.field[half_edge] + 1);
-      }
-      SPIEL_CHECK_LE(edge_fields, tile.field_count);
-      SPIEL_CHECK_LE(tile.field_count, edge_fields + 1);
-      std::array<bool, MAX_TILE_FIELDS> on_half_edge{};
-      for (int side = 0; side < 4; ++side) {
-        const int a = tile.field[2 * side];
-        const int b = tile.field[2 * side + 1];
-        if (tile.edge[side] == CITY) {
-          SPIEL_CHECK_EQ(a, -1);
-          SPIEL_CHECK_EQ(b, -1);
-          continue;
-        }
-        SPIEL_CHECK_GE(std::min(a, b), 0);
-        SPIEL_CHECK_LT(std::max(a, b), tile.field_count);
-        on_half_edge[a] = on_half_edge[b] = true;
-        if (tile.edge[side] == GRASS) SPIEL_CHECK_EQ(a, b);
-        // A road splits its side between two fields, unless it ends at a
-        // monastery on this tile (type 2).
-        if (tile.edge[side] == ROAD) SPIEL_CHECK_EQ(a == b, tile.monastery);
-      }
-      for (int field = 0; field < edge_fields; ++field) {
-        SPIEL_CHECK_TRUE(on_half_edge[field]);
-      }
-      for (int field = 0; field < MAX_TILE_FIELDS; ++field) {
-        const int sides = tile.field_city_sides[field];
-        if (field >= tile.field_count) {
-          SPIEL_CHECK_EQ(sides, 0);
-          continue;
-        }
-        for (int side = 0; side < 4; ++side) {
-          if (!(sides & (1 << side))) continue;
-          SPIEL_CHECK_EQ(tile.edge[side], CITY);
-          // Every side of a city the field borders.
-          for (int other = 0; other < 4; ++other) {
-            if (tile.edge[other] == CITY && tile.link[other] == tile.link[side]) {
-              SPIEL_CHECK_TRUE(sides & (1 << other));
-            }
-          }
-        }
-      }
+      SPIEL_CHECK_TRUE(tile_check::CheckTile(tile).empty());
     }
     // Four quarter turns are the identity.
-    SPIEL_CHECK_TRUE(CanonicalFieldLayout(tile) ==
-                     CanonicalFieldLayout(blueprint.tile));
+    SPIEL_CHECK_TRUE(tile_check::CanonicalFieldLayout(tile) ==
+                     tile_check::CanonicalFieldLayout(blueprint.tile));
     SPIEL_CHECK_TRUE(std::equal(tile.field, tile.field + HALF_EDGE_COUNT,
                                 blueprint.tile.field));
+  }
+
+  // In the base deck a road splits its side between two fields, unless it
+  // ends at a monastery on this tile (type 2).
+  for (int row = 0; row < BASE_TILE_TYPE_COUNT; ++row) {
+    const Tile& tile = all_tiles[row].tile;
+    for (int side = 0; side < 4; ++side) {
+      if (tile.edge[side] == ROAD) {
+        SPIEL_CHECK_EQ(tile.field[2 * side] == tile.field[2 * side + 1],
+                       tile.monastery);
+      }
+    }
   }
 
   const auto first_of_type = [](int type) -> const Tile& {
@@ -588,14 +548,60 @@ void FieldLayoutTest() {
   SPIEL_CHECK_EQ(first_of_type(2).field[4], first_of_type(2).field[5]);
 
   // The observation has no field planes for a tile's own layout, so the
-  // layout must follow from what it does show.
-  for (const Tile& a : all_rotations) {
-    for (const Tile& b : all_rotations) {
-      if (TileLook(a) == TileLook(b)) {
-        SPIEL_CHECK_TRUE(CanonicalFieldLayout(a) == CanonicalFieldLayout(b));
-      }
+  // layout must follow from what it does show, but for the accepted pairs.
+  for (const std::pair<int, int>& conflict : tile_check::TileLookConflicts()) {
+    const bool accepted =
+        std::find(kAcceptedTileLookConflicts.begin(),
+                  kAcceptedTileLookConflicts.end(),
+                  conflict) != kAcceptedTileLookConflicts.end();
+    if (!accepted) {
+      std::cerr << "tile table: types " << conflict.first << " and "
+                << conflict.second
+                << " look the same to the observation but have different "
+                   "fields; see kAcceptedTileLookConflicts"
+                << std::endl;
     }
+    SPIEL_CHECK_TRUE(accepted);
   }
+}
+
+// The checker itself: it must catch the mistakes it is there for.
+void TileCheckTest() {
+  // Fine: a straight river, the same shape as the straight road.
+  SPIEL_CHECK_TRUE(tile_check::CheckTile(
+                       Tile(RIVER, GRASS, RIVER, GRASS, 0, 1, 0, 2,
+                            {{0, 1, 1, 1, 1, 0, 0, 0}, 2, {}}))
+                       .empty());
+  // Fine: a lake ends the river, so the grass runs round it.
+  SPIEL_CHECK_TRUE(tile_check::CheckTile(
+                       Tile(RIVER, GRASS, GRASS, GRASS, 0, 1, 2, 3,
+                            {{0, 0, 0, 0, 0, 0, 0, 0}, 1, {}}))
+                       .empty());
+  const auto fails = [](const Tile& tile) {
+    return !tile_check::CheckTile(tile).empty();
+  };
+  // A city and a road sharing a link.
+  SPIEL_CHECK_TRUE(fails(Tile(CITY, ROAD, GRASS, ROAD, 0, 0, 2, 0,
+                              {{-1, -1, 0, 1, 1, 1, 1, 0}, 2, {SIDE_N}})));
+  // Two grass sides sharing a link.
+  SPIEL_CHECK_TRUE(fails(Tile(GRASS, GRASS, GRASS, GRASS, 0, 0, 2, 3,
+                              {{0, 0, 0, 0, 0, 0, 0, 0}, 1, {}}, false, true)));
+  // A city half-edge with a field.
+  SPIEL_CHECK_TRUE(fails(Tile(CITY, GRASS, GRASS, GRASS, 0, 1, 2, 3,
+                              {{0, -1, 0, 0, 0, 0, 0, 0}, 1, {SIDE_N}})));
+  // A river going on to the far side, but one field on both its halves.
+  SPIEL_CHECK_TRUE(fails(Tile(RIVER, GRASS, RIVER, GRASS, 0, 1, 0, 2,
+                              {{0, 0, 0, 0, 0, 0, 0, 0}, 1, {}})));
+  // A field listing only one side of the city it borders.
+  SPIEL_CHECK_TRUE(fails(Tile(CITY, CITY, GRASS, CITY, 0, 0, 1, 0,
+                              {{-1, -1, -1, -1, 0, 0, -1, -1}, 1, {SIDE_N}})));
+  // A shield on a tile with two cities.
+  SPIEL_CHECK_TRUE(fails(Tile(CITY, GRASS, CITY, GRASS, 0, 1, 2, 3,
+                              {{-1, -1, 0, 0, -1, -1, 0, 0}, 1, {SIDE_N | SIDE_S}},
+                              true)));
+  // Two inner fields.
+  SPIEL_CHECK_TRUE(fails(Tile(CITY, CITY, CITY, CITY, 0, 1, 2, 3,
+                              {{-1, -1, -1, -1, -1, -1, -1, -1}, 2, {0xF, 0xF}})));
 }
 
 // Draws `type`, places it at (tile_x, tile_y) turned `rot` and plays meeple
@@ -841,7 +847,7 @@ void ReturnsMatchScoresTest() {
 
 void ShortGameMaxTurnsTest() {
   std::shared_ptr<const Game> game = LoadGame("carcassonne(max_turns=10)");
-  SPIEL_CHECK_EQ(game->MaxGameLength(), (PHYSICAL_TILE_COUNT - 1) + 20);
+  SPIEL_CHECK_EQ(game->MaxGameLength(), (tileCountIn(BASE_ONLY) - 1) + 20);
 
   std::unique_ptr<State> state = game->NewInitialState();
   int actions_applied = 0;
@@ -906,11 +912,14 @@ void LastUnplaceableTileTest() {
 // feature changed), so the caller can check that case was exercised, and adds
 // the same count for farmer moves (half-edge shifts) to `renamed_farmer_moves`.
 int CheckRotatedTwin(absl::Span<const Action> history, int k,
-                     std::mt19937* rng, int* renamed_farmer_moves) {
-  std::shared_ptr<const Game> game = LoadGame("carcassonne");
-  CarcassonneState state(game);
+                     std::mt19937* rng, int* renamed_farmer_moves,
+                     const std::string& game_string = "carcassonne") {
+  std::shared_ptr<const Game> game = LoadGame(game_string);
+  const uint32_t expansions =
+      dynamic_cast<const CarcassonneGame&>(*game).Expansions();
+  CarcassonneState state(game, /*max_turns=*/0, expansions);
   CarcassonneState twin(game, ::Carcassonne(/*max_turns=*/0,
-                                            /*start_rotation=*/k));
+                                            /*start_rotation=*/k, expansions));
   // CarcassonneState's override hides State::ObservationTensor(Player).
   const State& state_view = state;
   const State& twin_view = twin;
@@ -1002,6 +1011,10 @@ void RotationEquivarianceTest() {
       renamed_meeple_moves +=
           CheckRotatedTwin({}, k, &rng, &renamed_farmer_moves);
     }
+    for (int game = 0; game < 3; ++game) {
+      renamed_meeple_moves += CheckRotatedTwin(
+          {}, k, &rng, &renamed_farmer_moves, kAllExpansionsGame);
+    }
   }
   std::cout << "RotationEquivarianceTest: " << renamed_meeple_moves
             << " meeple moves renamed beyond a side shift, "
@@ -1011,16 +1024,184 @@ void RotationEquivarianceTest() {
   SPIEL_CHECK_GT(renamed_farmer_moves, 0);
 }
 
+// Each expansion option deals that box's tiles and no others; the shapes stay
+// the same whatever is on.
+void ExpansionOptionsTest() {
+  std::shared_ptr<const Game> base = LoadGame("carcassonne");
+  SPIEL_CHECK_EQ(dynamic_cast<const CarcassonneGame&>(*base).Expansions(),
+                 BASE_ONLY);
+  for (int expansion = 0; expansion < EXPANSION_COUNT; ++expansion) {
+    uint32_t mask = BASE_ONLY;
+    std::string game_string = "carcassonne";
+    if (expansion != EXP_BASE) {
+      mask |= expansionBit(static_cast<Expansion>(expansion));
+      game_string = absl::StrCat("carcassonne(", EXPANSION_NAMES[expansion],
+                                 "=tiles)");
+    }
+    std::shared_ptr<const Game> game = LoadGame(game_string);
+    SPIEL_CHECK_EQ(dynamic_cast<const CarcassonneGame&>(*game).Expansions(),
+                   mask);
+    SPIEL_CHECK_EQ(game->ObservationTensorShape(),
+                   base->ObservationTensorShape());
+    SPIEL_CHECK_EQ(game->NumDistinctActions(), base->NumDistinctActions());
+    SPIEL_CHECK_EQ(game->MaxChanceOutcomes(), CANONICAL_TILE_TYPE_COUNT);
+    SPIEL_CHECK_EQ(game->MaxChanceNodesInHistory(), tileCountIn(mask) - 1);
+
+    std::unique_ptr<State> state = game->NewInitialState();
+    const ::Carcassonne& core =
+        dynamic_cast<const CarcassonneState&>(*state).UnderlyingState();
+    SPIEL_CHECK_EQ(core.getDeckSize(), tileCountIn(mask));
+    SPIEL_CHECK_EQ(core.getTotalRemaining(), tileCountIn(mask) - 1);
+    double total = 0.0;
+    for (const auto& [action, probability] : state->ChanceOutcomes()) {
+      const TileBlueprint& blueprint = all_tiles[action];  // type action + 1
+      SPIEL_CHECK_TRUE(mask & expansionBit(blueprint.expansion));
+      total += probability;
+    }
+    SPIEL_CHECK_TRUE(Near(total, 1.0));
+    // Remaining tiles count against this game's deck.
+    SPIEL_CHECK_TRUE(Near(GlobalValue(state->ObservationTensor(0),
+                                      kGlobalRemainingTiles),
+                          (tileCountIn(mask) - 1.0f) / tileCountIn(mask)));
+  }
+}
+
+// A river meets only river, splits fields like a road and takes no meeple.
+// The table may hold no river tiles yet, so these are built here and driven
+// through the modules directly.
+void RiverTileTest() {
+  SPIEL_CHECK_FALSE(isFeatureEdge(RIVER));
+  SPIEL_CHECK_FALSE(isFeatureEdge(GRASS));
+  SPIEL_CHECK_TRUE(isFeatureEdge(CITY));
+  SPIEL_CHECK_TRUE(isFeatureEdge(ROAD));
+
+  // A road crossing a north-south river on a bridge: four corner fields.
+  const Tile bridge(RIVER, ROAD, RIVER, ROAD, 0, 1, 0, 1,
+                    {{0, 1, 1, 2, 2, 3, 3, 0}, 4, {}});
+  const Tile grass_south(GRASS, GRASS, GRASS, GRASS, 0, 1, 2, 3,
+                         {{0, 0, 0, 0, 0, 0, 0, 0}, 1, {}});
+  const Tile river_south(GRASS, GRASS, RIVER, GRASS, 0, 1, 2, 3,
+                         {{0, 0, 0, 0, 0, 0, 0, 0}, 1, {}});
+  SPIEL_CHECK_TRUE(tile_check::CheckTile(bridge).empty());
+  SPIEL_CHECK_TRUE(tile_check::CheckTile(river_south).empty());
+
+  // Borrowed ids of tiles this test does not otherwise place. Nothing here
+  // looks them up in full_deck: FieldModule is not used.
+  const int bridge_id = tile_type_tables.draw_physical_ids_by_type[1][0];
+  const int road_id = tile_type_tables.draw_physical_ids_by_type[1][1];
+  auto board = std::make_unique<BoardModule>();
+  auto features = std::make_unique<FeatureModule>();
+  const int c = BOARD_SIZE / 2;
+  SPIEL_CHECK_TRUE(board->canPlaceTileAt(c, c, bridge));
+  board->placeTileOnBoard(bridge_id, c, c, 0, bridge);
+  features->placeTileOnBoard(bridge_id, c, c, 0, bridge, *board);
+
+  // North of the bridge: only a tile with river on its south side fits.
+  SPIEL_CHECK_FALSE(board->canPlaceTileAt(c, c - 1, grass_south));
+  SPIEL_CHECK_TRUE(board->canPlaceTileAt(c, c - 1, river_south));
+  // East: the road must meet a road; turned so a river faces it, it does not.
+  SPIEL_CHECK_TRUE(board->canPlaceTileAt(c + 1, c, bridge));
+  SPIEL_CHECK_FALSE(board->canPlaceTileAt(c + 1, c, bridge.rotate()));
+
+  // The only meeple spot is the road, named by its lowest side, east.
+  MeepleMoves moves;
+  features->getLegalMeepleMoves(moves, c, c, *board, bridge);
+  SPIEL_CHECK_EQ(moves.size(), 1);
+  SPIEL_CHECK_EQ(moves[0], 1);
+
+  // A straight road continuing east joins the bridge's road; the river is no
+  // feature, so nothing joins across it.
+  const Tile road_ew = Tile(ROAD, GRASS, ROAD, GRASS, 0, 1, 0, 2,
+                            {{0, 1, 1, 1, 1, 0, 0, 0}, 2, {}})
+                           .rotate();
+  SPIEL_CHECK_TRUE(board->canPlaceTileAt(c + 1, c, road_ew));
+  board->placeTileOnBoard(road_id, c + 1, c, 1, road_ew);
+  features->placeTileOnBoard(road_id, c + 1, c, 1, road_ew, *board);
+  const Feature& road = features->featureMap.getSetData(
+      features->edgeIndex(bridge_id, 1));
+  SPIEL_CHECK_EQ(road.type, ROAD);
+  SPIEL_CHECK_EQ(road.getTileCount(), 2);
+  SPIEL_CHECK_EQ(road.opens, 2);
+  int scores[2] = {0, 0};
+  features->resolveEndGameScore(scores);
+  SPIEL_CHECK_EQ(scores[0], 0);
+  SPIEL_CHECK_EQ(scores[1], 0);
+}
+
+// Random games dealing every expansion that is in the table: legal play, the
+// right deck, and river sides never shown as features.
+void ExpansionGamesTest() {
+  std::mt19937 rng(20261004);
+  std::shared_ptr<const Game> game = LoadGame(kAllExpansionsGame);
+  testing::RandomSimTest(*game, 10);
+  int river_sides = 0;
+  for (int sim = 0; sim < 20; ++sim) {
+    std::unique_ptr<State> state = game->NewInitialState();
+    int tiles_drawn = 1;  // the start tile
+    while (!state->IsTerminal()) {
+      if (state->IsChanceNode()) {
+        ++tiles_drawn;
+      } else {
+        const ::Carcassonne& core =
+            dynamic_cast<const CarcassonneState&>(*state).UnderlyingState();
+        const std::vector<float> obs = state->ObservationTensor(0);
+        for (int y = 0; y < BOARD_SIZE; ++y) {
+          for (int x = 0; x < BOARD_SIZE; ++x) {
+            const Placement placement = core.getPlacement(x, y);
+            if (placement.id == 0) continue;
+            const Tile& tile = full_deck[placement.id][placement.rotation];
+            // SPIEL_CHECK_EQ's own locals are called x and y.
+            for (int side = 0; side < 4; ++side) {
+              const int terrain = kNorthTerrainPlane + side * kTerrainTypes;
+              SPIEL_CHECK_TRUE(PlaneValue(obs, terrain + 3, x, y) ==
+                               (tile.edge[side] == RIVER ? 1.0f : 0.0f));
+              if (tile.edge[side] != RIVER) continue;
+              ++river_sides;
+              SPIEL_CHECK_TRUE(
+                  PlaneValue(obs, kFeatureOpensPlane + side, x, y) == 0.0f);
+              SPIEL_CHECK_TRUE(
+                  PlaneValue(obs, kFeatureScorePlane + side, x, y) == 0.0f);
+            }
+          }
+        }
+      }
+      const std::vector<Action> legal = state->LegalActions();
+      state->ApplyAction(
+          state->IsChanceNode()
+              ? SampleAction(state->ChanceOutcomes(), rng).first
+              : legal[std::uniform_int_distribution<int>(0, legal.size() - 1)(rng)]);
+    }
+    const ::Carcassonne& core =
+        dynamic_cast<const CarcassonneState&>(*state).UnderlyingState();
+    SPIEL_CHECK_EQ(core.getDeckSize(), tileCountIn(ALL_EXPANSIONS));
+    SPIEL_CHECK_LE(tiles_drawn, core.getDeckSize());
+  }
+  std::cout << "ExpansionGamesTest: " << tileCountIn(ALL_EXPANSIONS)
+            << " tiles in the deck, " << river_sides
+            << " river sides seen; opens underflows so far: "
+            << OpensUnderflowCount() << std::endl;
+  if (tileCountIn(expansionBit(EXP_RIVER)) > 0) {
+    SPIEL_CHECK_GT(river_sides, 0);
+  }
+  SPIEL_CHECK_EQ(OpensUnderflowCount(), 0);
+}
+
 void BasicCarcassonneTests() {
   testing::LoadGameTest("carcassonne");
   testing::LoadGameTest("carcassonne(max_turns=10)");
+  testing::LoadGameTest(kAllExpansionsGame);
   testing::ChanceOutcomesTest(*LoadGame("carcassonne"));
+  testing::ChanceOutcomesTest(*LoadGame(kAllExpansionsGame));
   testing::RandomSimTest(*LoadGame("carcassonne"), 50);
   ObservationTensorSmokeTest();
   RelativePerspectiveTest();
   PendingScoreTest();
   TiedFeatureTest();
-  FieldLayoutTest();
+  TileTableTest();
+  TileCheckTest();
+  ExpansionOptionsTest();
+  RiverTileTest();
+  ExpansionGamesTest();
   FieldScoringTest();
   InnerFieldTest();
   ReturnsMatchScoresTest();

@@ -15,7 +15,7 @@
 
 int main(int argc, char **argv) {
     printf("=== (A) 有盾磚型：單張磚上有幾個相異的城市元件 ===\n");
-    for (const auto &bp : base_deck) {
+    for (const auto &bp : all_tiles) {
         if (!bp.tile.shield) continue;
         int links[4], n = 0;
         for (int i = 0; i < 4; ++i) {

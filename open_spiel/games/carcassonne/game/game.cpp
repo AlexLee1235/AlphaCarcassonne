@@ -59,8 +59,8 @@ void Carcassonne::placeTileOnBoard(int tile_id, int x, int y, int rot) {
 
 Carcassonne::Carcassonne(int max_turns) : Carcassonne(max_turns, START_TILE_ROTATION) {}
 
-Carcassonne::Carcassonne(int max_turns, int start_rotation) : max_turns(max_turns) {
-    deck.initializeTypeCounts();
+Carcassonne::Carcassonne(int max_turns, int start_rotation, uint32_t expansions) : max_turns(max_turns) {
+    deck.initializeTypeCounts(expansions | BASE_ONLY);
     int start_tile_id = deck.consumeType(START_TILE_TYPE);
     placeTileOnBoard(start_tile_id, BOARD_SIZE / 2, BOARD_SIZE / 2, start_rotation);
     current_phase = PHASE_CHANCE;
@@ -150,7 +150,7 @@ void Carcassonne::getLastTileSideGroups(int8_t groups[4]) const {
     const Tile &tile = full_deck[placement.id][placement.rotation];
     int roots[4];
     for (int i = 0; i < 4; ++i) {
-        if (tile.edge[i] == GRASS) {
+        if (!isFeatureEdge(tile.edge[i])) {
             continue;
         }
         roots[i] = features.featureMap.find(features.edgeIndex(placement.id, i));

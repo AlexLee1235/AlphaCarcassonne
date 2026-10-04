@@ -7,13 +7,34 @@
 
 using namespace std;
 
-constexpr int PHYSICAL_TILE_COUNT = 72;
-constexpr int CANONICAL_TILE_TYPE_COUNT = 24;
-constexpr int MAX_PHYSICAL_IDS_PER_TYPE = 9;
 constexpr int START_TILE_TYPE = 20;
 constexpr int START_TILE_ROTATION = 0;
 
-enum EdgeType { NONE = 0, GRASS = 1, CITY = 2, ROAD = 3 };
+// RIVER only meets RIVER. It splits fields like a road, but it is no feature:
+// it never scores and takes no meeple.
+enum EdgeType { NONE = 0, GRASS = 1, CITY = 2, ROAD = 3, RIVER = 4 };
+
+// A side that belongs to a feature which scores and can hold a meeple.
+constexpr bool isFeatureEdge(EdgeType edge) { return edge == CITY || edge == ROAD; }
+
+// Which box each tile comes from. A game deals the base tiles plus the
+// expansions it turns on (a bit mask of expansionBit()).
+enum Expansion : uint8_t {
+    EXP_BASE = 0,
+    EXP_INNS_CATHEDRALS = 1,
+    EXP_TRADERS_BUILDERS = 2,
+    EXP_RIVER = 3,
+    EXP_PRINCESS_DRAGON = 4,
+};
+constexpr int EXPANSION_COUNT = 5;
+// Also the names of the game parameters that turn each expansion on.
+constexpr const char *EXPANSION_NAMES[EXPANSION_COUNT] = {"base", "inns_cathedrals", "traders_builders", "river",
+                                                          "princess_dragon"};
+// How many tiles each box has, to check a finished table section against.
+constexpr int OFFICIAL_TILE_COUNTS[EXPANSION_COUNT] = {72, 18, 24, 12, 30};
+constexpr uint32_t expansionBit(Expansion expansion) { return 1u << expansion; }
+constexpr uint32_t BASE_ONLY = 1u << EXP_BASE;
+constexpr uint32_t ALL_EXPANSIONS = (1u << EXPANSION_COUNT) - 1;
 
 // Fields (farms). Each side has two halves; half-edge e = 2 * side + h runs
 // clockwise round the tile: 0 N-west, 1 N-east, 2 E-north, 3 E-south,
@@ -32,25 +53,25 @@ constexpr uint8_t SIDE_S = 1 << 2;
 constexpr uint8_t SIDE_W = 1 << 3;
 
 struct FieldLayout {
-    int8_t half_edge[HALF_EDGE_COUNT];   // local field of each half-edge, -1 on a city side
-    uint8_t count;                       // local fields, the inner one (no half-edge) last
-    uint8_t city_sides[MAX_TILE_FIELDS]; // the sides of every city each field borders
+    int8_t half_edge[HALF_EDGE_COUNT] = {};    // local field of each half-edge, -1 on a city side
+    uint8_t count = 0;                         // local fields, the inner one (no half-edge) last
+    uint8_t city_sides[MAX_TILE_FIELDS] = {};  // the sides of every city each field borders
 };
 
 class Tile {
   public:
-    EdgeType edge[4];
-    int link[4];
-    bool shield;
-    bool monastery;
-    int8_t field[HALF_EDGE_COUNT];
-    uint8_t field_count;
-    uint8_t field_city_sides[MAX_TILE_FIELDS];
+    EdgeType edge[4] = {NONE, NONE, NONE, NONE};
+    int link[4] = {};
+    bool shield = false;
+    bool monastery = false;
+    int8_t field[HALF_EDGE_COUNT] = {};
+    uint8_t field_count = 0;
+    uint8_t field_city_sides[MAX_TILE_FIELDS] = {};
 
-    Tile() = default;
+    constexpr Tile() = default;
 
-    Tile(EdgeType e1, EdgeType e2, EdgeType e3, EdgeType e4, int l1, int l2, int l3, int l4, const FieldLayout &fields,
-         bool sh = false, bool mo = false) {
+    constexpr Tile(EdgeType e1, EdgeType e2, EdgeType e3, EdgeType e4, int l1, int l2, int l3, int l4,
+                   const FieldLayout &fields, bool sh = false, bool mo = false) {
         edge[0] = e1;
         edge[1] = e2;
         edge[2] = e3;
@@ -106,11 +127,19 @@ struct TileBlueprint {
     Tile tile;
     int count;
     int canonical_type;
+    Expansion expansion = EXP_BASE;
 };
 
+// One row per tile type, its canonical type being its row number + 1. The
+// base types 1-24 come first and keep their numbers; expansion types follow.
+// How to fill a row, with examples: docs/adding_tiles.md. Check the table with
+// tools/dump_tiles (game/tile_check.hpp) and look at it drawn over the tile
+// images with tools/render_tile_table.py.
+//
 // Fields of each tile: the local field of half-edges 0..7, the number of
 // fields, and the city sides each field borders.
-const static TileBlueprint base_deck[] = {
+constexpr TileBlueprint all_tiles[] = {
+    // ---- Base game: 72 tiles, types 1-24. ----
     {Tile(GRASS, GRASS, GRASS, GRASS, 0, 1, 2, 3, {{0, 0, 0, 0, 0, 0, 0, 0}, 1, {}}, false, true), 4, 1},
     // The road ends at the monastery, so the field runs round it.
     {Tile(GRASS, GRASS, ROAD, GRASS, 0, 1, 2, 3, {{0, 0, 0, 0, 0, 0, 0, 0}, 1, {}}, false, true), 2, 2},
@@ -142,13 +171,76 @@ const static TileBlueprint base_deck[] = {
     {Tile(GRASS, GRASS, ROAD, ROAD, 0, 1, 2, 2, {{0, 0, 0, 0, 0, 1, 1, 0}, 2, {}}), 9, 22},
     {Tile(GRASS, ROAD, ROAD, ROAD, 0, 1, 2, 3, {{0, 0, 0, 1, 1, 2, 2, 0}, 3, {}}), 4, 23},
     {Tile(ROAD, ROAD, ROAD, ROAD, 0, 1, 2, 3, {{0, 1, 1, 2, 2, 3, 3, 0}, 4, {}}), 1, 24},
+
+    // ---- Inns & Cathedrals: 18 tiles, rows end with EXP_INNS_CATHEDRALS. ----
+
+    // ---- Traders & Builders: 24 tiles, rows end with EXP_TRADERS_BUILDERS. ----
+
+    // ---- River: 12 tiles, rows end with EXP_RIVER. ----
+
+    // ---- The Princess & the Dragon: 30 tiles, rows end with EXP_PRINCESS_DRAGON. ----
 };
+
+constexpr int CANONICAL_TILE_TYPE_COUNT = static_cast<int>(sizeof(all_tiles) / sizeof(all_tiles[0]));
+constexpr int BASE_TILE_TYPE_COUNT = 24;
+
+// Physical tiles in a deck of the expansions in `expansions`.
+constexpr int tileCountIn(uint32_t expansions) {
+    int total = 0;
+    for (const TileBlueprint &bp : all_tiles) {
+        if (expansions & expansionBit(bp.expansion)) {
+            total += bp.count;
+        }
+    }
+    return total;
+}
+
+constexpr int maxCopiesOfAType() {
+    int most = 0;
+    for (const TileBlueprint &bp : all_tiles) {
+        most = std::max(most, bp.count);
+    }
+    return most;
+}
+
+constexpr int monasteryTileCount() {
+    int total = 0;
+    for (const TileBlueprint &bp : all_tiles) {
+        total += bp.tile.monastery ? bp.count : 0;
+    }
+    return total;
+}
+
+// Row i is type i + 1, every type has a tile, and the base types come first.
+constexpr bool tileTableIsNumbered() {
+    for (int i = 0; i < CANONICAL_TILE_TYPE_COUNT; ++i) {
+        const TileBlueprint &bp = all_tiles[i];
+        if (bp.canonical_type != i + 1 || bp.count < 1 || (bp.expansion == EXP_BASE) != (i < BASE_TILE_TYPE_COUNT)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+// Every tile of every expansion: the most a game can deal. Physical ids run
+// 1..PHYSICAL_TILE_COUNT in table order, so the base tiles keep ids 1-72.
+constexpr int PHYSICAL_TILE_COUNT = tileCountIn(ALL_EXPANSIONS);
+constexpr int MAX_PHYSICAL_IDS_PER_TYPE = maxCopiesOfAType();
+constexpr int MONASTERY_TILE_COUNT = monasteryTileCount();
+
+static_assert(tileTableIsNumbered(), "all_tiles: row i must be canonical type i + 1 with count >= 1, base rows first");
+static_assert(tileCountIn(BASE_ONLY) == 72, "the base rows must hold the 72 base tiles");
+static_assert(PHYSICAL_TILE_COUNT <= 255, "Placement::id is a uint8_t");
+static_assert(all_tiles[START_TILE_TYPE - 1].expansion == EXP_BASE, "the start tile is a base tile");
+
+// A set of physical tiles, indexed by physical id.
+using TileMask = std::bitset<PHYSICAL_TILE_COUNT + 1>;
 
 const static auto full_deck = []() {
     std::array<std::array<Tile, 4>, PHYSICAL_TILE_COUNT + 1> result{};
     int current_id = 1;
 
-    for (const auto &bp : base_deck) {
+    for (const auto &bp : all_tiles) {
         for (int count = 0; count < bp.count; ++count) {
             result[current_id][0] = bp.tile;
             result[current_id][1] = result[current_id][0].rotate();
@@ -165,7 +257,7 @@ const static auto PHYSICAL_TO_CANONICAL_TYPE = []() {
     std::array<int, PHYSICAL_TILE_COUNT + 1> result{};
     int current_id = 1;
 
-    for (const auto &bp : base_deck) {
+    for (const auto &bp : all_tiles) {
         for (int count = 0; count < bp.count; ++count)
             result[current_id++] = bp.canonical_type;
     }
@@ -192,8 +284,8 @@ const static auto tile_type_tables = []() {
     return tables;
 }();
 
-const static std::bitset<73> SHIELD_MASK = []() {
-    std::bitset<73> mask;
+const static TileMask SHIELD_MASK = []() {
+    TileMask mask;
     for (int i = 1; i <= PHYSICAL_TILE_COUNT; ++i) {
         if (full_deck[i][0].shield)
             mask.set(i);

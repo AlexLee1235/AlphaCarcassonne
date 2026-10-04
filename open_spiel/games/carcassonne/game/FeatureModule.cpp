@@ -72,7 +72,7 @@ void FeatureModule::settleCompletedFeatures(int tile_id, int side, int *player_s
 void FeatureModule::resolveEndGameScore(int *player_scores) {
     for (auto it = featureMap.begin(); it != featureMap.end(); ++it) {
         Feature &feature = *it;
-        if (feature.opens == 0 || feature.type == GRASS) {
+        if (feature.opens == 0 || !isFeatureEdge(feature.type)) {
             continue;
         }
         int m0 = feature.meeple_count[0];
@@ -97,7 +97,7 @@ void FeatureModule::placeTileOnBoard(int tile_id, int x, int y, int rot, const T
 
     for (int i = 0; i < 4; ++i) {
         for (int j = i + 1; j < 4; ++j) {
-            if (tile.link[i] == tile.link[j] && tile.edge[i] != GRASS) {
+            if (tile.link[i] == tile.link[j] && isFeatureEdge(tile.edge[i])) {
                 featureMap.unionSet(edgeIndex(tile_id, i), edgeIndex(tile_id, j));
             }
         }
@@ -106,7 +106,7 @@ void FeatureModule::placeTileOnBoard(int tile_id, int x, int y, int rot, const T
     for (int i = 0; i < 4; ++i) {
         int nx = x + dx[i];
         int ny = y + dy[i];
-        if (isInside(nx, ny) && board.board[ny][nx].id != 0 && tile.edge[i] != GRASS) {
+        if (isInside(nx, ny) && board.board[ny][nx].id != 0 && isFeatureEdge(tile.edge[i])) {
             int my_edge = edgeIndex(tile_id, i);
             int their_edge = edgeIndex(board.board[ny][nx].id, op[i]);
             featureMap.unionSet(my_edge, their_edge);
@@ -131,7 +131,7 @@ void FeatureModule::getLegalMeepleMoves(MeepleMoves &ret, int x, int y, const Bo
     int seen_roots[4];
     int root_count = 0;
     for (int i = 0; i < 4; ++i) {
-        if (tile.edge[i] == GRASS) {
+        if (!isFeatureEdge(tile.edge[i])) {
             continue;
         }
         int root = featureMap.find(edgeIndex(board.board[y][x].id, i));
@@ -161,7 +161,7 @@ void FeatureModule::placeMeeple(int x, int y, int pos, int player, const BoardMo
 
 void FeatureModule::settleAfterPlaceMeeple(int x, int y, const BoardModule &board, int *player_scores, int *holding_meeples){
     for (int i = 0; i < 4; ++i) {
-        if (board.edge[y][x][i] != GRASS) {
+        if (isFeatureEdge(board.edge[y][x][i])) {
             settleCompletedFeatures(board.board[y][x].id, i, player_scores, holding_meeples);
         }
     }

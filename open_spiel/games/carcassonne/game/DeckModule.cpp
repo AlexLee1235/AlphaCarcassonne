@@ -17,11 +17,14 @@ int DeckModule::consumeType(int type_id) {
     return physical_id;
 }
 
-void DeckModule::initializeTypeCounts() {
-    total_remaining = TOTAL_TILE_COUNT;
+void DeckModule::initializeTypeCounts(uint32_t expansions) {
+    total_remaining = 0;
     for (int type_id = 1; type_id <= CANONICAL_TILE_TYPE_COUNT; ++type_id) {
-        type_counts[type_id] = tile_type_tables.draw_count_by_type[type_id];
+        const bool dealt = expansions & expansionBit(all_tiles[type_id - 1].expansion);
+        type_counts[type_id] = dealt ? tile_type_tables.draw_count_by_type[type_id] : 0;
+        total_remaining += type_counts[type_id];
     }
+    initial_total = total_remaining;
 }
 
 void DeckModule::getAvailableDraws(ChanceBranch *out, int &count) const {

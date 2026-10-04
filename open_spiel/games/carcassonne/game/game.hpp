@@ -71,7 +71,7 @@ struct MonasteryTracker {
 class Feature {
   public:
     EdgeType type = NONE;
-    std::bitset<73> tile_mask;
+    TileMask tile_mask;
     uint8_t opens = 0;
     uint8_t meeple_count[2] = {};
 
@@ -121,7 +121,7 @@ class Field {
     // For each piece of city the field borders, one of its edge slots
     // (FeatureModule::edgeIndex); featureMap finds the whole city from it.
     std::bitset<EDGE_SLOT_COUNT> city_edges;
-    std::bitset<73> tile_mask;
+    TileMask tile_mask;
     uint8_t farmer_count[2] = {};
 
     Field operator+(const Field &other) const;
@@ -160,7 +160,8 @@ class FieldModule {
 
 class MonasteryModule {
   public:
-    FixedVector<MonasteryTracker, 6> active_monasteries;
+    // One per monastery tile in the table: enough for any deck.
+    FixedVector<MonasteryTracker, MONASTERY_TILE_COUNT> active_monasteries;
     void placeTileOnBoard(int tile_id, int x, int y, int rot);
     void resolveEndGameScore(int *player_scores);
     void placeMeeple(int x, int y, int pos, int player, const BoardModule &board, int *player_scores, int *holding_meeples);
@@ -183,18 +184,22 @@ class FrontierModule {
 class DeckModule {
   public:
     int total_remaining = 0;
+    // The size of this game's deck, the start tile included.
+    int initial_total = 0;
     int type_counts[CANONICAL_TILE_TYPE_COUNT + 1] = {};
     int consumeType(int type_id);
-    void initializeTypeCounts();
+    // Deals every tile of the expansions in `expansions` (expansionBit() mask);
+    // the other types are never drawn.
+    void initializeTypeCounts(uint32_t expansions);
     void getAvailableDraws(ChanceBranch *out, int &count) const;
 };
 
 class LogModule {
   public:
-    int tile_x[73], tile_y[73];
+    int tile_x[PHYSICAL_TILE_COUNT + 1], tile_y[PHYSICAL_TILE_COUNT + 1];
     LogModule() {
-        fill(tile_x, tile_x + 73, -1);
-        fill(tile_y, tile_y + 73, -1);
+        fill(tile_x, tile_x + PHYSICAL_TILE_COUNT + 1, -1);
+        fill(tile_y, tile_y + PHYSICAL_TILE_COUNT + 1, -1);
     }
     void placeTileOnBoard(int tile_id, int x, int y, int rot) {
         tile_x[tile_id] = x;
@@ -202,7 +207,7 @@ class LogModule {
     }
     void getMeepleMap(const FeatureModule &features, const MonasteryModule &monasteries, int player, float *span) const {
         int opponent = 1 - player;
-        for (int i = 1; i < 73; i++) {
+        for (int i = 1; i <= PHYSICAL_TILE_COUNT; i++) {
             int x = tile_x[i], y = tile_y[i];
             if (x == -1 || y == -1)
                 continue;
@@ -253,12 +258,16 @@ class Carcassonne {
     explicit Carcassonne(int max_turns = 0);
     // Starts with the start tile turned by start_rotation quarter turns: the
     // whole game rotated about the centre. Used to test board-rotation symmetry.
-    Carcassonne(int max_turns, int start_rotation);
+    // The deck holds the base tiles and those of the expansions in
+    // `expansions` (an expansionBit() mask).
+    Carcassonne(int max_turns, int start_rotation, uint32_t expansions = BASE_ONLY);
     int currentTileType() const;
     Carcassonne clone() const;
 
     Placement getPlacement(int x, int y) const { return board.board[y][x]; }
     int getTotalRemaining() const { return deck.total_remaining; }
+    // The size of this game's deck, the start tile included.
+    int getDeckSize() const { return deck.initial_total; }
     int getRemainingTypeCount(int type_id) const { return deck.type_counts[type_id]; }
     void WriteMeepleMap(int player, float *span) const;
 
@@ -290,7 +299,7 @@ class Carcassonne {
     void placeTile(int x, int y, int rot);
     MeepleMoves getLegalMeepleMoves() const;
     // For each side of the last placed tile, the lowest side of that tile in the
-    // same feature (-1 for grass or no tile). Meeple moves name a feature by that
+    // same feature (-1 for grass, river or no tile). Meeple moves name a feature by that
     // lowest side, so this is what maps meeple moves under board rotation.
     void getLastTileSideGroups(int8_t groups[4]) const;
     // The same for fields: for each half-edge of the last placed tile, the

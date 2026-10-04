@@ -34,27 +34,28 @@ static_assert(kMeepleActionCount <= 16, "alpha_zero_torch's conv policy head wou
 // is not spatial. Its first kGlobalFeatures cells hold a vector of board-wide
 // quantities (scores, the deck, the tile in hand, the phase); broadcasting
 // each of them would fill a whole plane with one repeated value.
-inline constexpr int kTerrainTypes = 3; // grass, city, road
+inline constexpr int kTerrainTypes = 4; // grass, city, road, river
 inline constexpr int kNumSidePairs = 6;
 inline constexpr int kLegalPlacementPlanes = 4;
 
 // Tiles on the board.
 inline constexpr int kOccupiedPlane = 0;
-inline constexpr int kNorthTerrainPlane = 1; // 3 terrains per side, then the next side
+inline constexpr int kNorthTerrainPlane = 1; // 4 terrains per side, then the next side
 inline constexpr int kEastTerrainPlane = kNorthTerrainPlane + kTerrainTypes;
 inline constexpr int kSouthTerrainPlane = kEastTerrainPlane + kTerrainTypes;
 inline constexpr int kWestTerrainPlane = kSouthTerrainPlane + kTerrainTypes;
 inline constexpr int kShieldPlane = kWestTerrainPlane + kTerrainTypes;
 inline constexpr int kMonasteryPlane = kShieldPlane + 1;
-// Pairs of non-grass sides a tile joins by itself, in the order N-E, N-S, N-W,
-// E-S, E-W, S-W. This tells CGGC tiles with one city from those with two.
+// Pairs of non-grass sides (river included) a tile joins by itself, in the
+// order N-E, N-S, N-W, E-S, E-W, S-W. This tells CGGC tiles with one city from
+// those with two.
 inline constexpr int kSideLinkPlane = kMonasteryPlane + 1;
 // Where the tile in hand can go.
 inline constexpr int kFrontierPlane = kSideLinkPlane + kNumSidePairs;
 inline constexpr int kLegalPlacementPlane = kFrontierPlane + 1; // one per rotation
 inline constexpr int kLastPlacedPlane = kLegalPlacementPlane + kLegalPlacementPlanes;
-// The feature each non-grass side of a tile belongs to, one plane per side for
-// each quantity. Summing them along a feature needs the whole feature in view,
+// The feature each city or road side of a tile belongs to, one plane per side
+// for each quantity. Summing them along a feature needs the whole feature in view,
 // which the convolutions cannot do, so they are computed here.
 inline constexpr int kFeatureOpensPlane = kLastPlacedPlane + 1;         // min(opens, 6) / 6
 inline constexpr int kFeatureScorePlane = kFeatureOpensPlane + 4;       // getScore() / 12
@@ -80,8 +81,8 @@ inline constexpr int kInnerFieldOpenCitiesPlane = kInnerFieldSizePlane + 1;
 inline constexpr int kSpatialPlanes = kInnerFieldOpenCitiesPlane + 1;
 inline constexpr int kGlobalFeaturePlane = kSpatialPlanes;
 inline constexpr int kObservationPlanes = kGlobalFeaturePlane + 1;
-static_assert(kLastPlacedPlane == 26);
-static_assert(kSpatialPlanes == 94);
+static_assert(kLastPlacedPlane == 30);
+static_assert(kSpatialPlanes == 98);
 
 // Offsets in the global vector, all from the observing player's side.
 inline constexpr int kGlobalMyScore = 0;           // / 40
@@ -93,9 +94,10 @@ inline constexpr int kGlobalStaticDiff = 5;        // banked + pending diff: cli
 inline constexpr int kStaticDiffScales = 3;
 inline constexpr int kGlobalMyMeeples = kGlobalStaticDiff + kStaticDiffScales; // / 7
 inline constexpr int kGlobalOpponentMeeples = kGlobalMyMeeples + 1;
-inline constexpr int kGlobalRemainingTiles = kGlobalOpponentMeeples + 1;      // / 72
-inline constexpr int kGlobalCompletedTurns = kGlobalRemainingTiles + 1;       // / 36
-inline constexpr int kGlobalRemainingByType = kGlobalCompletedTurns + 1;      // left / initial count
+inline constexpr int kGlobalRemainingTiles = kGlobalOpponentMeeples + 1;      // / deck size (72 in the base game)
+inline constexpr int kGlobalCompletedTurns = kGlobalRemainingTiles + 1;       // / (deck size / 2)
+// Every type of every expansion has a slot, whether this game deals it or not.
+inline constexpr int kGlobalRemainingByType = kGlobalCompletedTurns + 1;      // left / count in the table; 0 if not dealt
 inline constexpr int kGlobalTileInHand = kGlobalRemainingByType + CANONICAL_TILE_TYPE_COUNT; // one-hot
 inline constexpr int kGlobalTilePhase = kGlobalTileInHand + CANONICAL_TILE_TYPE_COUNT;
 inline constexpr int kGlobalMeeplePhase = kGlobalTilePhase + 1;
@@ -108,7 +110,7 @@ inline constexpr int kGlobalIsPlayer0 = kGlobalLegalPlacements + 1;
 inline constexpr int kGlobalMyFieldPending = kGlobalIsPlayer0 + 1;
 inline constexpr int kGlobalOpponentFieldPending = kGlobalMyFieldPending + 1;
 inline constexpr int kGlobalFeatures = kGlobalOpponentFieldPending + 1;
-static_assert(kGlobalFeatures == 81);
+static_assert(kGlobalFeatures == 33 + 2 * CANONICAL_TILE_TYPE_COUNT);
 static_assert(kGlobalFeatures <= BOARD_SIZE * BOARD_SIZE);
 inline constexpr int kObservationTensorSize = kObservationPlanes * BOARD_SIZE * BOARD_SIZE;
 
@@ -117,7 +119,8 @@ class CarcassonneGame;
 class CarcassonneState : public State {
   public:
     explicit CarcassonneState(std::shared_ptr<const Game> game);
-    CarcassonneState(std::shared_ptr<const Game> game, int max_turns);
+    // `expansions`: the expansionBit() mask of expansions whose tiles are dealt.
+    CarcassonneState(std::shared_ptr<const Game> game, int max_turns, uint32_t expansions = BASE_ONLY);
     CarcassonneState(std::shared_ptr<const Game> game, const ::Carcassonne &game_state);
     CarcassonneState(const CarcassonneState &) = default;
 
@@ -147,8 +150,9 @@ class CarcassonneGame : public Game {
 
     int NumDistinctActions() const override { return kNumDistinctPlayerActions; }
     std::unique_ptr<State> NewInitialState() const override {
-        return std::unique_ptr<State>(new CarcassonneState(shared_from_this(), max_turns_));
+        return std::unique_ptr<State>(new CarcassonneState(shared_from_this(), max_turns_, expansions_));
     }
+    // Every type of every expansion, so the shapes do not depend on the options.
     int MaxChanceOutcomes() const override { return kChanceActionCount; }
     int NumPlayers() const override { return kNumPlayers; }
     double MinUtility() const override { return -1; }
@@ -156,13 +160,18 @@ class CarcassonneGame : public Game {
     double MaxUtility() const override { return 1; }
     std::vector<int> ObservationTensorShape() const override { return {kObservationPlanes, BOARD_SIZE, BOARD_SIZE}; }
     int MaxGameLength() const override {
-        return max_turns_ > 0 ? (PHYSICAL_TILE_COUNT - 1) + 2 * max_turns_
-                              : (PHYSICAL_TILE_COUNT - 1) * 3;
+        const int deck_size = tileCountIn(expansions_);
+        return max_turns_ > 0 ? (deck_size - 1) + 2 * max_turns_ : (deck_size - 1) * 3;
     }
-    int MaxChanceNodesInHistory() const override { return PHYSICAL_TILE_COUNT - 1; }
+    int MaxChanceNodesInHistory() const override { return tileCountIn(expansions_) - 1; }
+
+    // The expansionBit() mask of the expansions whose tiles this game deals,
+    // the base game included.
+    uint32_t Expansions() const { return expansions_; }
 
   private:
     int max_turns_ = 0;
+    uint32_t expansions_ = BASE_ONLY;
 };
 
 // Board rotation, for training-data augmentation. Rules, deck and the square

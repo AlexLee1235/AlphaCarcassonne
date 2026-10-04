@@ -293,6 +293,100 @@ constexpr TileBlueprint all_tiles[] = {
      1, 51, EXP_INNS_CATHEDRALS},
 
     // ---- Traders & Builders: 24 tiles, types 52-75, rows end with EXP_TRADERS_BUILDERS. ----
+    // A north-west corner city (cloth) and caps east and south round an inner field.
+    {Tile(CITY, CITY, CITY, CITY, 0, 1, 2, 0,
+          {{-1, -1, -1, -1, -1, -1, -1, -1}, 1, {SIDE_N | SIDE_E | SIDE_S | SIDE_W}}, {MARK_CLOTH, 0, 0, 0}), 1, 52,
+     EXP_TRADERS_BUILDERS},
+    // Corner cities north-west (wine) and south-east; the grass between runs
+    // corner to corner and touches no side.
+    {Tile(CITY, CITY, CITY, CITY, 0, 1, 1, 0,
+          {{-1, -1, -1, -1, -1, -1, -1, -1}, 1, {SIDE_N | SIDE_E | SIDE_S | SIDE_W}}, {MARK_WINE, 0, 0, 0}), 1, 53,
+     EXP_TRADERS_BUILDERS},
+    // One city north to south (wine), grass west, a separate cap east. The
+    // grass between that city and the cap touches no side: an inner field.
+    {Tile(CITY, CITY, CITY, GRASS, 0, 1, 0, 2,
+          {{-1, -1, -1, -1, -1, -1, 0, 0}, 2, {SIDE_N | SIDE_S, SIDE_N | SIDE_E | SIDE_S}}, {MARK_WINE, 0, 0, 0}), 1, 54,
+     EXP_TRADERS_BUILDERS},
+    // A cap north; one city east to west (cloth); grass south. The grass
+    // between the cap and that city touches no side: an inner field.
+    {Tile(CITY, CITY, GRASS, CITY, 0, 1, 2, 1,
+          {{-1, -1, -1, -1, 0, 0, -1, -1}, 2, {SIDE_E | SIDE_W, SIDE_N | SIDE_E | SIDE_W}}, {0, MARK_CLOTH, 0, 0}), 1,
+     55, EXP_TRADERS_BUILDERS},
+    // One city north, south and west (wheat), grass east.
+    {Tile(CITY, GRASS, CITY, CITY, 0, 1, 0, 0, {{-1, -1, 0, 0, -1, -1, -1, -1}, 1, {SIDE_N | SIDE_S | SIDE_W}},
+          {MARK_WHEAT, 0, 0, 0}), 1, 56, EXP_TRADERS_BUILDERS},
+    // A cap north, a south-east corner city (wheat); a road from the west ends
+    // at its gate.
+    {Tile(CITY, CITY, CITY, ROAD, 0, 1, 1, 2,
+          {{-1, -1, -1, -1, -1, -1, 0, 1}, 2, {SIDE_E | SIDE_S, SIDE_N | SIDE_E | SIDE_S}}, {0, MARK_WHEAT, 0, 0}), 1,
+     57, EXP_TRADERS_BUILDERS},
+    // A south-west corner city (cloth) with a road from the north at its gate; a cap east.
+    {Tile(ROAD, CITY, CITY, CITY, 0, 1, 2, 2,
+          {{0, 1, -1, -1, -1, -1, -1, -1}, 2, {SIDE_S | SIDE_W, SIDE_E | SIDE_S | SIDE_W}}, {0, 0, MARK_CLOTH, 0}), 1,
+     58, EXP_TRADERS_BUILDERS},
+    // Type 6 (city north, east and west, a road south from its gate) with wine.
+    {Tile(CITY, CITY, ROAD, CITY, 0, 0, 1, 0,
+          {{-1, -1, -1, -1, 0, 1, -1, -1}, 2, {SIDE_N | SIDE_E | SIDE_W, SIDE_N | SIDE_E | SIDE_W}},
+          {MARK_WINE, 0, 0, 0}), 1, 59, EXP_TRADERS_BUILDERS},
+    // Type 8 (north-west corner city) with wine.
+    {Tile(CITY, GRASS, GRASS, CITY, 0, 1, 2, 0, {{-1, -1, 0, 0, 0, 0, -1, -1}, 1, {SIDE_N | SIDE_W}},
+          {MARK_WINE, 0, 0, 0}), 1, 60, EXP_TRADERS_BUILDERS},
+    // A south-east corner city with wheat.
+    {Tile(GRASS, CITY, CITY, GRASS, 0, 1, 1, 2, {{0, 0, -1, -1, -1, -1, 0, 0}, 1, {SIDE_E | SIDE_S}},
+          {0, MARK_WHEAT, 0, 0}), 1, 61, EXP_TRADERS_BUILDERS},
+    // A city east and south (wheat), a road from the north at its gate. Its
+    // wall reaches the north-west corner, so the grass west is a field apart.
+    {Tile(ROAD, CITY, CITY, GRASS, 0, 1, 1, 2,
+          {{0, 1, -1, -1, -1, -1, 2, 2}, 3, {SIDE_E | SIDE_S, SIDE_E | SIDE_S, SIDE_E | SIDE_S}}, {0, MARK_WHEAT, 0, 0}),
+     1, 62, EXP_TRADERS_BUILDERS},
+    // A south-west corner city (wheat), a road from the east at its gate.
+    {Tile(GRASS, ROAD, CITY, CITY, 0, 1, 2, 2, {{0, 0, 0, 1, -1, -1, -1, -1}, 2, {SIDE_S | SIDE_W, SIDE_S | SIDE_W}},
+          {0, 0, MARK_WHEAT, 0}), 1, 63, EXP_TRADERS_BUILDERS},
+    // A north-east corner city (cloth), a road south from its gate.
+    {Tile(CITY, CITY, ROAD, GRASS, 0, 0, 1, 2, {{-1, -1, -1, -1, 0, 1, 1, 1}, 2, {SIDE_N | SIDE_E, SIDE_N | SIDE_E}},
+          {MARK_CLOTH, 0, 0, 0}), 1, 64, EXP_TRADERS_BUILDERS},
+    // A city south and west (wine), a road from the north at its gate. Its
+    // wall reaches the north-east corner, so the grass east is a field apart.
+    {Tile(ROAD, GRASS, CITY, CITY, 0, 1, 2, 2,
+          {{0, 1, 2, 2, -1, -1, -1, -1}, 3, {SIDE_S | SIDE_W, SIDE_S | SIDE_W, SIDE_S | SIDE_W}}, {0, 0, MARK_WINE, 0}),
+     1, 65, EXP_TRADERS_BUILDERS},
+    // A city south and west (wine); roads from the north and from the east end at its gates.
+    {Tile(ROAD, ROAD, CITY, CITY, 0, 1, 2, 2,
+          {{0, 1, 1, 2, -1, -1, -1, -1}, 3, {SIDE_S | SIDE_W, SIDE_S | SIDE_W, SIDE_S | SIDE_W}}, {0, 0, MARK_WINE, 0}),
+     1, 66, EXP_TRADERS_BUILDERS},
+    // A city north and east (cloth); roads from the south and from the west end
+    // at its gates. Its wall reaches the south-west corner: four fields.
+    {Tile(CITY, CITY, ROAD, ROAD, 0, 0, 1, 2,
+          {{-1, -1, -1, -1, 0, 1, 2, 3}, 4, {SIDE_N | SIDE_E, SIDE_N | SIDE_E, SIDE_N | SIDE_E, SIDE_N | SIDE_E}},
+          {MARK_CLOTH, 0, 0, 0}), 1, 67, EXP_TRADERS_BUILDERS},
+    // One city north to south (wine), grass east and west.
+    {Tile(CITY, GRASS, CITY, GRASS, 0, 1, 0, 2, {{-1, -1, 0, 0, -1, -1, 1, 1}, 2, {SIDE_N | SIDE_S, SIDE_N | SIDE_S}},
+          {MARK_WINE, 0, 0, 0}), 1, 68, EXP_TRADERS_BUILDERS},
+    // One city north to south (wheat), a road from the east at its gate, grass west.
+    {Tile(CITY, ROAD, CITY, GRASS, 0, 1, 0, 2,
+          {{-1, -1, 0, 1, -1, -1, 2, 2}, 3, {SIDE_N | SIDE_S, SIDE_N | SIDE_S, SIDE_N | SIDE_S}}, {MARK_WHEAT, 0, 0, 0}),
+     1, 69, EXP_TRADERS_BUILDERS},
+    // The same with wine.
+    {Tile(CITY, ROAD, CITY, GRASS, 0, 1, 0, 2,
+          {{-1, -1, 0, 1, -1, -1, 2, 2}, 3, {SIDE_N | SIDE_S, SIDE_N | SIDE_S, SIDE_N | SIDE_S}}, {MARK_WINE, 0, 0, 0}),
+     1, 70, EXP_TRADERS_BUILDERS},
+    // A road from the north crosses the west road on a bridge and ends at a
+    // house; the west road ends at the gate of a cap east.
+    {Tile(ROAD, CITY, GRASS, ROAD, 0, 1, 2, 3, {{0, 1, -1, -1, 2, 2, 2, 0}, 3, {0, SIDE_E, SIDE_E}}), 1, 71,
+     EXP_TRADERS_BUILDERS},
+    // One city north to south (wine); roads from east and west end at its gates.
+    {Tile(CITY, ROAD, CITY, ROAD, 0, 1, 0, 2,
+          {{-1, -1, 0, 1, -1, -1, 2, 3}, 4, {SIDE_N | SIDE_S, SIDE_N | SIDE_S, SIDE_N | SIDE_S, SIDE_N | SIDE_S}},
+          {MARK_WINE, 0, 0, 0}), 1, 72, EXP_TRADERS_BUILDERS},
+    // A cap north; a road leaves its gate and bends east.
+    {Tile(CITY, ROAD, GRASS, GRASS, 0, 1, 2, 3, {{-1, -1, 0, 1, 1, 1, 1, 1}, 2, {SIDE_N, SIDE_N}}), 1, 73,
+     EXP_TRADERS_BUILDERS},
+    // Roads from north, south and west end at a monastery; like type 23, they
+    // split the grass in three.
+    {Tile(ROAD, GRASS, ROAD, ROAD, 0, 1, 2, 3, {{0, 1, 1, 1, 1, 2, 2, 0}, 3, {}}, {}, TILE_MONASTERY), 1, 74,
+     EXP_TRADERS_BUILDERS},
+    // Two roads crossing on a bridge, north-south and east-west: four corner fields.
+    {Tile(ROAD, ROAD, ROAD, ROAD, 0, 1, 0, 1, {{0, 1, 1, 2, 2, 3, 3, 0}, 4, {}}), 1, 75, EXP_TRADERS_BUILDERS},
 
     // ---- The Princess & the Dragon: 30 tiles, types 76-104, rows end with EXP_PRINCESS_DRAGON. ----
 };

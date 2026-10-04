@@ -500,7 +500,12 @@ void TiedFeatureTest() {
 // no planes for a tile's own field layout, so a network cannot tell them apart
 // (docs/carcassonne_field_observation.md §2.2). List a pair here only once it
 // has been looked at, with the reason it is accepted.
-const std::vector<std::pair<int, int>> kAcceptedTileLookConflicts = {};
+const std::vector<std::pair<int, int>> kAcceptedTileLookConflicts = {
+    // Both: a city on one side, grass on three. Type 16's city is a cap and
+    // its grass one field; type 42's walls run corner to corner and cut the
+    // grass in two. Telling them apart needs candidate A of that doc.
+    {16, 42},
+};
 
 void PrintAll(const char* what, const std::vector<std::string>& messages) {
   for (const std::string& message : messages) {

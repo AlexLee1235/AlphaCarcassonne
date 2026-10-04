@@ -236,6 +236,61 @@ constexpr TileBlueprint all_tiles[] = {
     {Tile(RIVER, GRASS, RIVER, GRASS, 0, 1, 0, 2, {{0, 1, 1, 1, 1, 0, 0, 0}, 2, {}}), 2, 34, EXP_RIVER},
 
     // ---- Inns & Cathedrals: 18 tiles, types 35-51, rows end with EXP_INNS_CATHEDRALS. ----
+    // Four separate cities round an inner field.
+    {Tile(CITY, CITY, CITY, CITY, 0, 1, 2, 3,
+          {{-1, -1, -1, -1, -1, -1, -1, -1}, 1, {SIDE_N | SIDE_E | SIDE_S | SIDE_W}}), 1, 35, EXP_INNS_CATHEDRALS},
+    // The cathedral: two in the box.
+    {Tile(CITY, CITY, CITY, CITY, 0, 0, 0, 0, {{-1, -1, -1, -1, -1, -1, -1, -1}, 0, {}}), 2, 36, EXP_INNS_CATHEDRALS},
+    // Three separate cities, grass east.
+    {Tile(CITY, GRASS, CITY, CITY, 0, 1, 2, 3, {{-1, -1, 0, 0, -1, -1, -1, -1}, 1, {SIDE_N | SIDE_S | SIDE_W}}),
+     1, 37, EXP_INNS_CATHEDRALS},
+    // A north-west corner city with the shield, a separate city south.
+    {Tile(CITY, GRASS, CITY, CITY, 0, 1, 2, 0, {{-1, -1, 0, 0, -1, -1, -1, -1}, 1, {SIDE_N | SIDE_S | SIDE_W}},
+          {MARK_SHIELD, 0, 0, 0}), 1, 38, EXP_INNS_CATHEDRALS},
+    // A north-west corner city; a road leaves its gate south, the inn's lake beside it.
+    {Tile(CITY, GRASS, ROAD, CITY, 0, 1, 2, 0, {{-1, -1, 0, 0, 0, 1, -1, -1}, 2, {SIDE_N | SIDE_W, SIDE_N | SIDE_W}},
+          {0, 0, MARK_INN, 0}), 1, 39, EXP_INNS_CATHEDRALS},
+    // A north-west corner city; a road leaves its gate east.
+    {Tile(CITY, ROAD, GRASS, CITY, 0, 1, 2, 0, {{-1, -1, 0, 1, 1, 1, -1, -1}, 2, {SIDE_N | SIDE_W, SIDE_N | SIDE_W}}),
+     1, 40, EXP_INNS_CATHEDRALS},
+    // Type 11 (corner city with the shield, road bend east to south) with an inn.
+    {Tile(CITY, ROAD, ROAD, CITY, 0, 1, 1, 0, {{-1, -1, 0, 1, 1, 0, -1, -1}, 2, {SIDE_N | SIDE_W}},
+          {MARK_SHIELD, MARK_INN, 0, 0}), 1, 41, EXP_INNS_CATHEDRALS},
+    // A city on the east side only, but its walls run corner to corner, so it
+    // splits the grass in two. Looks like type 16 to the observation, whose
+    // grass is one field (docs/carcassonne_field_observation.md §2.2).
+    {Tile(GRASS, CITY, GRASS, GRASS, 0, 1, 2, 3, {{0, 0, -1, -1, 1, 1, 0, 0}, 2, {SIDE_E, SIDE_E}}), 1, 42,
+     EXP_INNS_CATHEDRALS},
+    // A city north; a road leaves its gate south.
+    {Tile(CITY, GRASS, ROAD, GRASS, 0, 1, 2, 3, {{-1, -1, 0, 0, 0, 1, 1, 1}, 2, {SIDE_N, SIDE_N}}), 1, 43,
+     EXP_INNS_CATHEDRALS},
+    // Type 17 (city north, road bend south to west) with an inn.
+    {Tile(CITY, GRASS, ROAD, ROAD, 0, 1, 2, 2, {{-1, -1, 0, 0, 0, 1, 1, 0}, 2, {SIDE_N}}, {0, 0, MARK_INN, 0}), 1, 44,
+     EXP_INNS_CATHEDRALS},
+    // One city east to west with the shield; a road ends at it from the north
+    // and another from the south.
+    {Tile(ROAD, CITY, ROAD, CITY, 0, 1, 2, 1,
+          {{0, 1, -1, -1, 2, 3, -1, -1}, 4, {SIDE_E | SIDE_W, SIDE_E | SIDE_W, SIDE_E | SIDE_W, SIDE_E | SIDE_W}},
+          {0, MARK_SHIELD, 0, 0}), 1, 45, EXP_INNS_CATHEDRALS},
+    // Type 22 (road bend south to west) with an inn.
+    {Tile(GRASS, GRASS, ROAD, ROAD, 0, 1, 2, 2, {{0, 0, 0, 0, 0, 1, 1, 0}, 2, {}}, {0, 0, MARK_INN, 0}), 1, 46,
+     EXP_INNS_CATHEDRALS},
+    // A monastery the road runs past, east to west.
+    {Tile(GRASS, ROAD, GRASS, ROAD, 0, 1, 2, 3, {{0, 0, 0, 1, 1, 1, 1, 0}, 2, {}}, {}, TILE_MONASTERY), 1, 47,
+     EXP_INNS_CATHEDRALS},
+    // A straight road east to west with an inn.
+    {Tile(GRASS, ROAD, GRASS, ROAD, 0, 1, 2, 1, {{0, 0, 0, 1, 1, 1, 1, 0}, 2, {}}, {0, MARK_INN, 0, 0}), 1, 48,
+     EXP_INNS_CATHEDRALS},
+    // Type 23 (junction east, south, west) with an inn on the east road.
+    {Tile(GRASS, ROAD, ROAD, ROAD, 0, 1, 2, 3, {{0, 0, 0, 1, 1, 2, 2, 0}, 3, {}}, {0, MARK_INN, 0, 0}), 1, 49,
+     EXP_INNS_CATHEDRALS},
+    // Two road bends, north to west and east to south.
+    {Tile(ROAD, ROAD, ROAD, ROAD, 0, 1, 1, 0, {{0, 1, 1, 2, 2, 1, 1, 0}, 3, {}}), 1, 50, EXP_INNS_CATHEDRALS},
+    // Separate cities east and west; roads from north and south meet two short
+    // roads to the city gates. Those two touch no side, so the engine has no
+    // feature for them.
+    {Tile(ROAD, CITY, ROAD, CITY, 0, 1, 2, 3, {{0, 1, -1, -1, 2, 3, -1, -1}, 4, {SIDE_W, SIDE_E, SIDE_E, SIDE_W}}),
+     1, 51, EXP_INNS_CATHEDRALS},
 
     // ---- Traders & Builders: 24 tiles, types 52-75, rows end with EXP_TRADERS_BUILDERS. ----
 

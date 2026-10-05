@@ -18,12 +18,13 @@ struct Samples {
     std::vector<int> per, diff, last_per, last_diff;            // 總 pending
     std::vector<int> field_per, field_last_per;                  // 農田 pending
     std::vector<int> banked, banked_diff, last_banked, last_banked_diff;  // 已入袋
+    std::vector<int> static_diff, last_static_diff;              // 已入袋分差 + pending 分差
 };
 
 void Play(int games, bool greedy, std::mt19937 &rng, Samples *s) {
     for (int g = 0; g < games; ++g) {
         Carcassonne game;
-        int last[2] = {0, 0}, last_field[2] = {0, 0}, last_banked[2] = {0, 0};
+        int last[2] = {0, 0}, last_field[2] = {0, 0}, last_banked[2] = {0, 0}, last_static = 0;
         while (game.current_phase != PHASE_TERMINAL) {
             if (game.current_phase == PHASE_CHANCE) {
                 if (!diag::SampleDraw(game, rng)) break;
@@ -42,6 +43,8 @@ void Play(int games, bool greedy, std::mt19937 &rng, Samples *s) {
             }
             s->diff.push_back(pending[0] - pending[1]);
             s->banked_diff.push_back(game.player_scores[0] - game.player_scores[1]);
+            last_static = game.player_scores[0] - game.player_scores[1] + pending[0] - pending[1];
+            s->static_diff.push_back(last_static);
             const int me = game.currentPlayer;
             if (game.current_phase == PHASE_TILE) {
                 if (greedy) diag::GreedyPlaceTile(game, me);
@@ -58,6 +61,7 @@ void Play(int games, bool greedy, std::mt19937 &rng, Samples *s) {
         }
         s->last_diff.push_back(last[0] - last[1]);
         s->last_banked_diff.push_back(last_banked[0] - last_banked[1]);
+        s->last_static_diff.push_back(last_static);
     }
 }
 
@@ -82,6 +86,8 @@ void ReportAll(const Samples &s, const char *title, int games) {
     Report(s.last_banked, "  最後一手");
     Report(s.banked_diff, "已入袋 分差");
     Report(s.last_banked_diff, "  最後一手");
+    Report(s.static_diff, "static_diff");
+    Report(s.last_static_diff, "  最後一手");
 }
 
 } // namespace

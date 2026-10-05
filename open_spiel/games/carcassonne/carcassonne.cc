@@ -674,5 +674,43 @@ void RotateObservation(absl::Span<const float> observation, int k, const SideGro
     }
 }
 
+float ObservationPlaneDenominator(int plane) {
+    SPIEL_CHECK_GE(plane, 0);
+    SPIEL_CHECK_LT(plane, kObservationPlanes);
+    auto in = [plane](int first, int count) { return plane >= first && plane < first + count; };
+    // Each is the normalization ObservationTensor writes the plane with.
+    // Everything up to the last-placed plane is 0/1, and the owner is +-1.
+    if (plane <= kLastPlacedPlane || plane == kMonasteryOwnerPlane) {
+        return 1.0f;
+    }
+    if (in(kFeatureOpensPlane, 4)) {
+        return static_cast<float>(kMaxOpens);
+    }
+    if (in(kFeatureScorePlane, 4) || in(kFeatureSignedScorePlane, 4)) {
+        return kFeatureScoreNormalization;
+    }
+    if (in(kFeatureMyMeeplesPlane, 4) || in(kFeatureOpponentMeeplesPlane, 4) ||
+        in(kFieldMyFarmersPlane, HALF_EDGE_COUNT) || in(kFieldOpponentFarmersPlane, HALF_EDGE_COUNT) ||
+        plane == kInnerFieldMyFarmersPlane || plane == kInnerFieldOpponentFarmersPlane) {
+        return kMeepleNormalization;
+    }
+    if (plane == kMonasteryCoveragePlane) {
+        return kMonasteryCoverageNormalization;
+    }
+    if (in(kFieldScorePlane, HALF_EDGE_COUNT) || plane == kInnerFieldScorePlane) {
+        return kFieldScoreNormalization;
+    }
+    if (in(kFieldSizePlane, HALF_EDGE_COUNT) || plane == kInnerFieldSizePlane) {
+        return kFieldSizeNormalization;
+    }
+    if (in(kFieldOpenCitiesPlane, HALF_EDGE_COUNT) || plane == kInnerFieldOpenCitiesPlane) {
+        return kFieldOpenCitiesNormalization;
+    }
+    if (plane == kGlobalFeaturePlane) {
+        return 0.0f;
+    }
+    SpielFatalError(absl::StrCat("No denominator for observation plane ", plane, "."));
+}
+
 } // namespace carcassonne
 } // namespace open_spiel

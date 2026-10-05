@@ -15,6 +15,7 @@
 #include "open_spiel/algorithms/alpha_zero_torch/alpha_zero.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
@@ -38,6 +39,7 @@
 #include "open_spiel/abseil-cpp/absl/time/time.h"
 #include "open_spiel/abseil-cpp/absl/types/optional.h"
 #include "open_spiel/algorithms/alpha_zero_torch/device_manager.h"
+#include "open_spiel/algorithms/alpha_zero_torch/observation_codec.h"
 #include "open_spiel/algorithms/alpha_zero_torch/vpevaluator.h"
 #include "open_spiel/algorithms/alpha_zero_torch/vpnet.h"
 #include "open_spiel/algorithms/mcts.h"
@@ -109,6 +111,9 @@ Trajectory PlayGame(Logger* logger, int game_num, const open_spiel::Game& game,
   std::unique_ptr<open_spiel::State> state = game.NewInitialState();
   std::vector<std::string> history;
   Trajectory trajectory;
+  // Observations are stored compact from here on: in the trajectory, the
+  // queue and the replay buffer. Encoding here keeps the cost on the actors.
+  const ObservationCodec codec(game);
 
   while (true) {
     // A chance action can also end the game, e.g. when Carcassonne discards
@@ -155,8 +160,9 @@ Trajectory PlayGame(Logger* logger, int game_num, const open_spiel::Game& game,
         symmetry_context = carcassonne::GetSideGroups(*carcassonne_state);
       }
       trajectory.states.push_back(Trajectory::State{
-          state->ObservationTensor(), player, state->LegalActions(), action,
-          std::move(policy), root_value, raw_value, symmetry_context});
+          codec.Encode(state->ObservationTensor()), player,
+          state->LegalActions(), action, std::move(policy), root_value,
+          raw_value, symmetry_context});
       std::string action_str = state->ActionToString(player, action);
       history.push_back(action_str);
       state->ApplyAction(action);
@@ -329,15 +335,31 @@ void evaluator(const open_spiel::Game& game, const AlphaZeroConfig& config,
 
 namespace {
 
-// Rewrites a Carcassonne training sample as the same position rotated by k
-// quarter turns. The value target does not change.
-void RotateTrainInputs(int k, VPNetModel::TrainInputs* sample) {
-  if (k == 0) return;
+// VPNetModel::TrainInputs as the replay buffer keeps it: the observation
+// compact (see ObservationCodec), a quarter of the floats' size for
+// Carcassonne.
+struct ReplaySample {
+  std::vector<Action> legal_actions;
+  CompactObservation observation;
+  ActionsAndProbs policy;
+  double value;
+  std::array<int8_t, 12> symmetry_context;
+
+  NOP_STRUCTURE(ReplaySample, legal_actions, observation, policy, value,
+                symmetry_context);
+};
+static_assert(std::is_same_v<decltype(ReplaySample::symmetry_context),
+                             decltype(VPNetModel::TrainInputs::symmetry_context)>);
+
+// Rewrites a Carcassonne training sample, whose observation is still to be
+// filled in from `observation`, as the same position rotated by k quarter
+// turns. The value target does not change.
+void RotateTrainInputs(int k, absl::Span<const float> observation,
+                       VPNetModel::TrainInputs* sample) {
   const carcassonne::SideGroups groups = sample->symmetry_context;
-  std::vector<float> rotated(sample->observations.size());
-  carcassonne::RotateObservation(sample->observations, k, groups,
-                                 absl::MakeSpan(rotated));
-  sample->observations.swap(rotated);
+  sample->observations.resize(observation.size());
+  carcassonne::RotateObservation(observation, k, groups,
+                                 absl::MakeSpan(sample->observations));
   for (Action& action : sample->legal_actions) {
     action = carcassonne::RotateAction(action, k, groups);
   }
@@ -347,16 +369,40 @@ void RotateTrainInputs(int k, VPNetModel::TrainInputs* sample) {
   sample->symmetry_context = carcassonne::RotateSideGroups(groups, k);
 }
 
-// Puts a whole batch in the random orientations training would have used, so
-// a batch that is only measured gets the same treatment as one trained on.
-void AugmentBatch(bool augment_rotations, std::mt19937* rng,
-                  std::vector<VPNetModel::TrainInputs>* batch) {
-  if (!augment_rotations) return;
+// The training inputs a batch of replay samples stands for; with
+// `augment_rotations`, each in a fresh random orientation, as training uses
+// them (a batch that is only measured gets the same treatment). A rotated
+// sample is decoded into one scratch observation and rotated from there into
+// its own, so every sample costs one new float observation, not two: at 167
+// KB each, allocating them is most of the cost.
+std::vector<VPNetModel::TrainInputs> ToTrainInputs(
+    const ObservationCodec& codec, std::vector<ReplaySample> samples,
+    bool augment_rotations, std::mt19937* rng) {
   std::uniform_int_distribution<int> rotation_dist(
       0, carcassonne::kNumBoardRotations - 1);
-  for (VPNetModel::TrainInputs& sample : *batch) {
-    RotateTrainInputs(rotation_dist(*rng), &sample);
+  std::vector<float> decoded;
+  std::vector<VPNetModel::TrainInputs> inputs;
+  inputs.reserve(samples.size());
+  for (ReplaySample& sample : samples) {
+    VPNetModel::TrainInputs input{std::move(sample.legal_actions),
+                                  {},
+                                  std::move(sample.policy),
+                                  sample.value,
+                                  sample.symmetry_context};
+    const int k = augment_rotations ? rotation_dist(*rng) : 0;
+    if (k == 0) {
+      input.observations = codec.Decode(sample.observation);
+    } else {
+      if (decoded.empty()) {
+        decoded = codec.Decode(sample.observation);
+      } else {
+        codec.Decode(sample.observation, absl::MakeSpan(decoded));
+      }
+      RotateTrainInputs(k, decoded, &input);
+    }
+    inputs.push_back(std::move(input));
   }
+  return inputs;
 }
 
 // One set of losses, for learner.jsonl.
@@ -389,15 +435,21 @@ void learner(const open_spiel::Game& game, const AlphaZeroConfig& config,
   logger.Print("Running the learner on device %d: %s", device_id,
                device_manager->Get(0, device_id)->Device());
 
-  SerializableCircularBuffer<VPNetModel::TrainInputs> replay_buffer(
+  const ObservationCodec codec(game);
+  logger.Print(
+      "Replay buffer observations: %d bytes each (%d as floats), %.2f GB "
+      "for %d samples",
+      codec.CompactBytes(), game.ObservationTensorSize() * sizeof(float),
+      static_cast<double>(codec.CompactBytes()) * config.replay_buffer_size /
+          1e9,
+      config.replay_buffer_size);
+  SerializableCircularBuffer<ReplaySample> replay_buffer(
       config.replay_buffer_size);
   if (start_info.start_step > 1) {
     replay_buffer.LoadBuffer(config.path + "/replay_buffer.data");
   }
   int learn_rate = config.replay_buffer_size / config.replay_buffer_reuse;
   int64_t total_trajectories = start_info.total_trajectories;
-  std::uniform_int_distribution<int> rotation_dist(
-      0, carcassonne::kNumBoardRotations - 1);
 
   const int stage_count = 7;
   std::vector<open_spiel::BasicStats> value_accuracies(stage_count);
@@ -437,7 +489,7 @@ void learner(const open_spiel::Game& game, const AlphaZeroConfig& config,
     // The trained half of the held-out pair. Drawn before this step's states
     // arrive, so everything in it has already been through at least one
     // update, and measured below with the same weights as the fresh half.
-    std::vector<VPNetModel::TrainInputs> trained_sample;
+    std::vector<ReplaySample> trained_sample;
     if (replay_buffer.Size() >= config.train_batch_size) {
       trained_sample = replay_buffer.Sample(&rng, config.train_batch_size);
     }
@@ -450,7 +502,7 @@ void learner(const open_spiel::Game& game, const AlphaZeroConfig& config,
     // A uniform sample of the states arriving this step. The network has not
     // been trained on any of them yet, so measuring the loss on them before
     // this step's updates is a held-out loss on data it produced itself.
-    std::vector<VPNetModel::TrainInputs> held_out;
+    std::vector<ReplaySample> held_out;
     held_out.reserve(config.train_batch_size);
     int64_t fresh_seen = 0;
     while (!stop->StopRequested() && num_states < learn_rate) {
@@ -469,9 +521,9 @@ void learner(const open_spiel::Game& game, const AlphaZeroConfig& config,
               config.value_is_current_player
                   ? trajectory->returns[state.current_player]
                   : p1_outcome;
-          VPNetModel::TrainInputs sample{state.legal_actions,
-                                         state.observation, state.policy,
-                                         value_target, state.symmetry_context};
+          ReplaySample sample{state.legal_actions, state.observation,
+                              state.policy, value_target,
+                              state.symmetry_context};
           // Reservoir sampling: every state arriving this step has the same
           // chance of being measured, however many of them arrive.
           if (static_cast<int>(held_out.size()) < config.train_batch_size) {
@@ -531,8 +583,8 @@ void learner(const open_spiel::Game& game, const AlphaZeroConfig& config,
     const int held_out_states = held_out.size();
     const int trained_states = trained_sample.size();
     double held_out_s = 0;
-    double augment_s = 0;
     double sample_s = 0;
+    double decode_s = 0;
     double train_s = 0;
     int num_batches = 0;
     phase_start = absl::Now();
@@ -551,32 +603,32 @@ void learner(const open_spiel::Game& game, const AlphaZeroConfig& config,
       // between the two is generalization rather than the weights moving
       // during the step. Reported in learner.jsonl only.
       absl::Time held_out_start = absl::Now();
+      // Each is a training batch's worth of states, decoded only here and
+      // given back before the updates start.
       if (!held_out.empty()) {
-        AugmentBatch(config.augment_rotations, &rng, &held_out);
-        fresh_losses = learn_model->Evaluate(held_out);
+        fresh_losses = learn_model->Evaluate(
+            ToTrainInputs(codec, std::move(held_out),
+                          config.augment_rotations, &rng));
       }
       if (!trained_sample.empty()) {
-        AugmentBatch(config.augment_rotations, &rng, &trained_sample);
-        trained_losses = learn_model->Evaluate(trained_sample);
+        trained_losses = learn_model->Evaluate(
+            ToTrainInputs(codec, std::move(trained_sample),
+                          config.augment_rotations, &rng));
       }
       held_out_s = absl::ToDoubleSeconds(absl::Now() - held_out_start);
-      held_out = {};        // Each is a training batch's worth of states;
-      trained_sample = {};  // give the memory back before the updates start.
 
       // Learn from them.
       for (int i = 0; i < replay_buffer.Size() / config.train_batch_size; i++) {
         absl::Time batch_start = absl::Now();
-        std::vector<VPNetModel::TrainInputs> batch =
+        std::vector<ReplaySample> sampled =
             replay_buffer.Sample(&rng, config.train_batch_size);
         sample_s += absl::ToDoubleSeconds(absl::Now() - batch_start);
-        if (config.augment_rotations) {
-          // A fresh random orientation every time a state is sampled.
-          absl::Time augment_start = absl::Now();
-          for (VPNetModel::TrainInputs& sample : batch) {
-            RotateTrainInputs(rotation_dist(rng), &sample);
-          }
-          augment_s += absl::ToDoubleSeconds(absl::Now() - augment_start);
-        }
+        // Back to floats, in a fresh random orientation every time a state
+        // is sampled when augmenting.
+        batch_start = absl::Now();
+        std::vector<VPNetModel::TrainInputs> batch = ToTrainInputs(
+            codec, std::move(sampled), config.augment_rotations, &rng);
+        decode_s += absl::ToDoubleSeconds(absl::Now() - batch_start);
         batch_start = absl::Now();
         losses += learn_model->Learn(batch);
         train_s += absl::ToDoubleSeconds(absl::Now() - batch_start);
@@ -608,9 +660,9 @@ void learner(const open_spiel::Game& game, const AlphaZeroConfig& config,
     logger.Print("Checkpoint saved: %s", checkpoint_path);
     logger.Print(
         "Timing: collect: %.1fs, buffer save: %.1fs, learn: %.1fs "
-        "(%d batches: sample %.1fs, augment %.1fs, train %.1fs), "
+        "(%d batches: sample %.1fs, decode %.1fs, train %.1fs), "
         "checkpoint: %.1fs",
-        collect_s, buffer_save_s, learn_s, num_batches, sample_s, augment_s,
+        collect_s, buffer_save_s, learn_s, num_batches, sample_s, decode_s,
         train_s, checkpoint_s);
 
     DataLogger::Record record = {
@@ -646,7 +698,7 @@ void learner(const open_spiel::Game& game, const AlphaZeroConfig& config,
                        {"held_out", held_out_s},
                        {"learn", learn_s},
                        {"sample", sample_s},
-                       {"augment", augment_s},
+                       {"decode", decode_s},
                        {"train", train_s},
                        {"batches", num_batches},
                        {"checkpoint", checkpoint_s},

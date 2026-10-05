@@ -1011,6 +1011,49 @@ void RotationEquivarianceTest() {
   SPIEL_CHECK_GT(renamed_farmer_moves, 0);
 }
 
+// Every spatial observation value is n / ObservationPlaneDenominator(plane)
+// for an int8 n, and the global plane is 0 past the global vector: what lets
+// alpha_zero_torch keep observations as int8 (observation_codec.h).
+void ObservationDenominatorTest() {
+  constexpr int kPlaneSize = BOARD_SIZE * BOARD_SIZE;
+  for (int plane = 0; plane < kSpatialPlanes; ++plane) {
+    SPIEL_CHECK_GT(ObservationPlaneDenominator(plane), 0.0f);
+  }
+  SPIEL_CHECK_EQ(ObservationPlaneDenominator(kGlobalFeaturePlane), 0.0f);
+
+  std::shared_ptr<const Game> game = LoadGame("carcassonne");
+  std::mt19937 rng(20261005);
+  for (int g = 0; g < 10; ++g) {
+    std::unique_ptr<State> state = game->NewInitialState();
+    while (!state->IsTerminal()) {
+      if (state->IsChanceNode()) {
+        state->ApplyAction(SampleAction(state->ChanceOutcomes(), rng).first);
+        continue;
+      }
+      for (Player player = 0; player < kNumPlayers; ++player) {
+        const std::vector<float> observation = state->ObservationTensor(player);
+        for (int plane = 0; plane < kSpatialPlanes; ++plane) {
+          const float denominator = ObservationPlaneDenominator(plane);
+          for (int cell = 0; cell < kPlaneSize; ++cell) {
+            const float value = observation[plane * kPlaneSize + cell];
+            const long n = std::lround(value * denominator);
+            SPIEL_CHECK_GE(n, -128);
+            SPIEL_CHECK_LE(n, 127);
+            SPIEL_CHECK_EQ(static_cast<float>(n) / denominator, value);
+          }
+        }
+        for (int cell = kGlobalFeatures; cell < kPlaneSize; ++cell) {
+          SPIEL_CHECK_EQ(observation[kGlobalFeaturePlane * kPlaneSize + cell],
+                         0.0f);
+        }
+      }
+      const std::vector<Action> legal = state->LegalActions();
+      state->ApplyAction(
+          legal[std::uniform_int_distribution<int>(0, legal.size() - 1)(rng)]);
+    }
+  }
+}
+
 void BasicCarcassonneTests() {
   testing::LoadGameTest("carcassonne");
   testing::LoadGameTest("carcassonne(max_turns=10)");
@@ -1027,6 +1070,7 @@ void BasicCarcassonneTests() {
   ShortGameMaxTurnsTest();
   LastUnplaceableTileTest();
   RotationEquivarianceTest();
+  ObservationDenominatorTest();
 }
 
 }  // namespace

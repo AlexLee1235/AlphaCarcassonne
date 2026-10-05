@@ -8,31 +8,6 @@
 // 用法: ./diag_value_gap_strong [局數=300]
 #include "common.hpp"
 
-static void PlayTileGreedy(Carcassonne &g, int me) {
-    static std::vector<TileMove> buf;
-    buf.resize(BOARD_SIZE * BOARD_SIZE * 4);
-    int c = 0; g.getLegalTileMoves(buf.data(), c);
-    if (c == 0) return;
-    int best = 0, bs = -1000000;
-    for (int i = 0; i < c; ++i) {
-        Carcassonne t = g; t.placeTile(buf[i].x, buf[i].y, buf[i].rot);
-        int s = diag::BankedDiff(t, me) + diag::PendingDiff(t, me);
-        if (s > bs) { bs = s; best = i; }
-    }
-    g.placeTile(buf[best].x, buf[best].y, buf[best].rot);
-}
-static void PlayMeepleGreedy(Carcassonne &g, int me) {
-    MeepleMoves mm = g.getLegalMeepleMoves();
-    if (mm.size() == 0) return;
-    int best = mm[0], bs = -1000000;
-    for (int i = 0; i < mm.size(); ++i) {
-        Carcassonne t = g; t.placeMeeple(mm[i]);
-        int s = diag::BankedDiff(t, me) + diag::PendingDiff(t, me);
-        if (s > bs) { bs = s; best = mm[i]; }
-    }
-    g.placeMeeple(best);
-}
-
 int main(int argc, char **argv) {
     const int N = argc > 1 ? atoi(argv[1]) : 300;
     constexpr int B = 10;
@@ -51,10 +26,10 @@ int main(int argc, char **argv) {
                     const double banked = diag::BankedDiff(game, cur);
                     recs.push_back({cur, banked, banked + diag::PendingDiff(game, cur)});
                     if (mode == 0) { if (!diag::RandomPlaceTile(game, rng)) break; }
-                    else PlayTileGreedy(game, cur);
+                    else diag::GreedyPlaceTile(game, cur);
                 } else {
                     if (mode == 0) { if (!diag::RandomPlaceMeeple(game, rng)) break; }
-                    else PlayMeepleGreedy(game, game.currentPlayer);
+                    else diag::GreedyPlaceMeeple(game, game.currentPlayer);
                 }
             }
             int s0 = game.player_scores[0], s1 = game.player_scores[1];

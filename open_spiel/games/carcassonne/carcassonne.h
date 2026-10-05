@@ -84,10 +84,10 @@ static_assert(kLastPlacedPlane == 26);
 static_assert(kSpatialPlanes == 94);
 
 // Offsets in the global vector, all from the observing player's side.
-inline constexpr int kGlobalMyScore = 0;           // / 40
+inline constexpr int kGlobalMyScore = 0;           // clip(/80)
 inline constexpr int kGlobalOpponentScore = 1;
 inline constexpr int kGlobalScoreDiff = 2;         // clip(diff / 20)
-inline constexpr int kGlobalMyPending = 3;         // / 20, see getPendingScore()
+inline constexpr int kGlobalMyPending = 3;         // clip(/60), see getPendingScore()
 inline constexpr int kGlobalOpponentPending = 4;
 inline constexpr int kGlobalStaticDiff = 5;        // banked + pending diff: clip(/3), clip(/10), clip(/30)
 inline constexpr int kStaticDiffScales = 3;
@@ -104,11 +104,15 @@ inline constexpr int kGlobalMeeplePhase = kGlobalTilePhase + 1;
 inline constexpr int kGlobalLegalMeeple = kGlobalMeeplePhase + 1;
 inline constexpr int kGlobalLegalPlacements = kGlobalLegalMeeple + kMeepleActionCount; // / 100
 inline constexpr int kGlobalIsPlayer0 = kGlobalLegalPlacements + 1;
-// The part of the pending scores that fields score, / 40.
+// The part of the pending scores that fields score, clip(/40).
 inline constexpr int kGlobalMyFieldPending = kGlobalIsPlayer0 + 1;
 inline constexpr int kGlobalOpponentFieldPending = kGlobalMyFieldPending + 1;
-inline constexpr int kGlobalFeatures = kGlobalOpponentFieldPending + 1;
-static_assert(kGlobalFeatures == 81);
+// Farmers on the board, / 7. They never come back, so with the meeples held
+// they also give how many are out on features and will return.
+inline constexpr int kGlobalMyFarmers = kGlobalOpponentFieldPending + 1;
+inline constexpr int kGlobalOpponentFarmers = kGlobalMyFarmers + 1;
+inline constexpr int kGlobalFeatures = kGlobalOpponentFarmers + 1;
+static_assert(kGlobalFeatures == 83);
 static_assert(kGlobalFeatures <= BOARD_SIZE * BOARD_SIZE);
 inline constexpr int kObservationTensorSize = kObservationPlanes * BOARD_SIZE * BOARD_SIZE;
 

@@ -19,11 +19,15 @@ namespace {
 
 constexpr float kMeepleNormalization = 7.0f;
 constexpr float kRemainingNormalization = TOTAL_TILE_COUNT;
-constexpr float kScoreNormalization = 40.0f;
+// Points a player has scored, at the last decision (tools/diag_pending_scale):
+// random games p99 20 / max 38, greedy games p99 85 / max 97. Clipped.
+constexpr float kScoreNormalization = 80.0f;
 constexpr float kScoreDiffNormalization = 20.0f;
-// With farmers, random games end at p99 33 / max 46 pending points a player
-// (tools/diag_pending_scale); clipped.
-constexpr float kPendingNormalization = 40.0f;
+// Pending points a player at the last decision (tools/diag_pending_scale):
+// random games p99 33 / max 46, greedy games p99 62 / max 72. Clipped.
+constexpr float kPendingNormalization = 60.0f;
+// The fields' part of it: random p99 15 / max 21, greedy p99 36 / max 36.
+constexpr float kFieldPendingNormalization = 40.0f;
 constexpr std::array<float, kStaticDiffScales> kStaticDiffNormalizations = {3.0f, 10.0f, 30.0f};
 constexpr float kTurnNormalization = 36.0f;
 constexpr float kLegalPlacementNormalization = 100.0f;
@@ -477,8 +481,8 @@ void CarcassonneState::ObservationTensor(Player player, absl::Span<float> values
     game_state_.getPendingScore(pending);
     const float score_diff = static_cast<float>(scores[player] - scores[opponent]);
     const float static_diff = score_diff + static_cast<float>(pending[player] - pending[opponent]);
-    global[kGlobalMyScore] = scores[player] / kScoreNormalization;
-    global[kGlobalOpponentScore] = scores[opponent] / kScoreNormalization;
+    global[kGlobalMyScore] = Clip(scores[player] / kScoreNormalization);
+    global[kGlobalOpponentScore] = Clip(scores[opponent] / kScoreNormalization);
     global[kGlobalScoreDiff] = Clip(score_diff / kScoreDiffNormalization);
     global[kGlobalMyPending] = Clip(pending[player] / kPendingNormalization);
     global[kGlobalOpponentPending] = Clip(pending[opponent] / kPendingNormalization);
@@ -510,8 +514,10 @@ void CarcassonneState::ObservationTensor(Player player, absl::Span<float> values
     global[kGlobalIsPlayer0] = game_state_.currentPlayer == 0 ? 1.0f : 0.0f;
     int field_pending[2];
     game_state_.getPendingFieldScore(field_pending);
-    global[kGlobalMyFieldPending] = Clip(field_pending[player] / kPendingNormalization);
-    global[kGlobalOpponentFieldPending] = Clip(field_pending[opponent] / kPendingNormalization);
+    global[kGlobalMyFieldPending] = Clip(field_pending[player] / kFieldPendingNormalization);
+    global[kGlobalOpponentFieldPending] = Clip(field_pending[opponent] / kFieldPendingNormalization);
+    global[kGlobalMyFarmers] = game_state_.farmersOnBoard(player) / kMeepleNormalization;
+    global[kGlobalOpponentFarmers] = game_state_.farmersOnBoard(opponent) / kMeepleNormalization;
 }
 
 std::unique_ptr<State> CarcassonneState::Clone() const { return std::unique_ptr<State>(new CarcassonneState(*this)); }

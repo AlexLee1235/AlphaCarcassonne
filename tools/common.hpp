@@ -67,4 +67,32 @@ inline int BankedDiff(const Carcassonne &g, int player) {
     return g.player_scores[player] - g.player_scores[1 - player];
 }
 
+// greedy:每一手選讓 me 的 banked + pending 分差最大的動作。當「強玩家」的代理
+// (§2.1 警告框)。pending 含農田,所以 greedy 也會主動放農夫。
+inline void GreedyPlaceTile(Carcassonne &g, int me) {
+    static std::vector<TileMove> buf;
+    buf.resize(BOARD_SIZE * BOARD_SIZE * 4);
+    int c = 0; g.getLegalTileMoves(buf.data(), c);
+    if (c == 0) return;
+    int best = 0, bs = -1000000;
+    for (int i = 0; i < c; ++i) {
+        Carcassonne t = g; t.placeTile(buf[i].x, buf[i].y, buf[i].rot);
+        int s = BankedDiff(t, me) + PendingDiff(t, me);
+        if (s > bs) { bs = s; best = i; }
+    }
+    g.placeTile(buf[best].x, buf[best].y, buf[best].rot);
+}
+
+inline void GreedyPlaceMeeple(Carcassonne &g, int me) {
+    MeepleMoves mm = g.getLegalMeepleMoves();
+    if (mm.size() == 0) return;
+    int best = mm[0], bs = -1000000;
+    for (int i = 0; i < mm.size(); ++i) {
+        Carcassonne t = g; t.placeMeeple(mm[i]);
+        int s = BankedDiff(t, me) + PendingDiff(t, me);
+        if (s > bs) { bs = s; best = mm[i]; }
+    }
+    g.placeMeeple(best);
+}
+
 } // namespace diag

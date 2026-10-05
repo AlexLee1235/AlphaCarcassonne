@@ -143,6 +143,8 @@ class FieldModule {
     DisjointSet<Field, std::plus<Field>, FIELD_SLOT_COUNT> fieldMap;
     // The slot of every farmer placed, so scoring visits only those fields.
     FixedVector<int16_t, MAX_FARMERS> farmed_slots;
+    // Farmers each player has placed; they never come back.
+    uint8_t farmers_placed[2] = {};
     FieldModule();
     int fieldIndex(int tile_id, int local) const;
     void placeTileOnBoard(int tile_id, int x, int y, const Tile &tile, const BoardModule &board,
@@ -271,6 +273,8 @@ class Carcassonne {
     int fieldRoot(int tile_id, int local) const { return fields.fieldMap.find(fields.fieldIndex(tile_id, local)); }
     const Field &fieldAtRoot(int root) const { return fields.fieldMap.getSetData(root); }
     CityCounts citiesNextTo(const Field &field) const { return fields.adjacentCities(field, features); }
+    // Meeples a player has locked up as farmers for the rest of the game.
+    int farmersOnBoard(int player) const { return fields.farmers_placed[player]; }
     bool isFrontier(int x, int y) const { return frontier.frontier[y][x]; }
     int coverage3x3(int x, int y) const { return board.count3x3(x, y); }
     int monasteryOwner(int x, int y) const { return monasteries.ownerAt(x, y); }

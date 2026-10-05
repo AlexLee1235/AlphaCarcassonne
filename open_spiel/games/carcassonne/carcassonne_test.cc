@@ -225,7 +225,8 @@ void ObservationTensorSmokeTest() {
                 kGlobalStaticDiff + 1, kGlobalStaticDiff + 2,
                 kGlobalCompletedTurns, kGlobalTilePhase, kGlobalMeeplePhase,
                 kGlobalLegalPlacements, kGlobalMyFieldPending,
-                kGlobalOpponentFieldPending}) {
+                kGlobalOpponentFieldPending, kGlobalMyFarmers,
+                kGlobalOpponentFarmers}) {
     SPIEL_CHECK_EQ(GlobalValue(initial_obs, i), 0.0f);
   }
   SPIEL_CHECK_EQ(GlobalValue(initial_obs, kGlobalMyMeeples), 1.0f);
@@ -352,13 +353,13 @@ void RelativePerspectiveTest() {
     const std::vector<float>& obs = *views[player];
     const int opponent = 1 - player;
     SPIEL_CHECK_TRUE(Near(GlobalValue(obs, kGlobalMyScore),
-                          core.player_scores[player] / 40.0f));
+                          std::min(1.0f, core.player_scores[player] / 80.0f)));
     SPIEL_CHECK_TRUE(Near(GlobalValue(obs, kGlobalOpponentScore),
-                          core.player_scores[opponent] / 40.0f));
+                          std::min(1.0f, core.player_scores[opponent] / 80.0f)));
     SPIEL_CHECK_TRUE(Near(GlobalValue(obs, kGlobalMyPending),
-                          std::min(1.0f, pending[player] / 40.0f)));
+                          std::min(1.0f, pending[player] / 60.0f)));
     SPIEL_CHECK_TRUE(Near(GlobalValue(obs, kGlobalOpponentPending),
-                          std::min(1.0f, pending[opponent] / 40.0f)));
+                          std::min(1.0f, pending[opponent] / 60.0f)));
     SPIEL_CHECK_TRUE(Near(GlobalValue(obs, kGlobalMyFieldPending),
                           std::min(1.0f, field_pending[player] / 40.0f)));
     SPIEL_CHECK_TRUE(Near(GlobalValue(obs, kGlobalOpponentFieldPending),
@@ -367,6 +368,10 @@ void RelativePerspectiveTest() {
                           core.holding_meeples[player] / 7.0f));
     SPIEL_CHECK_TRUE(Near(GlobalValue(obs, kGlobalOpponentMeeples),
                           core.holding_meeples[opponent] / 7.0f));
+    SPIEL_CHECK_TRUE(Near(GlobalValue(obs, kGlobalMyFarmers),
+                          core.farmersOnBoard(player) / 7.0f));
+    SPIEL_CHECK_TRUE(Near(GlobalValue(obs, kGlobalOpponentFarmers),
+                          core.farmersOnBoard(opponent) / 7.0f));
     const int diff = core.player_scores[player] - core.player_scores[opponent] +
                      pending[player] - pending[opponent];
     SPIEL_CHECK_TRUE(Near(GlobalValue(obs, kGlobalStaticDiff),
@@ -698,9 +703,11 @@ void FieldScoringTest() {
     // Ten pieces on six tiles: the start tile, its neighbour and the junction
     // each have pieces on both sides of the road.
     CheckField(game, c, c, 0, 6, 0, 3);
-    // Farmers never come back.
+    // Farmers never come back: two each, and nothing else is out.
     SPIEL_CHECK_EQ(game.holding_meeples[0], 5);
     SPIEL_CHECK_EQ(game.holding_meeples[1], 5);
+    SPIEL_CHECK_EQ(game.farmersOnBoard(0), 2);
+    SPIEL_CHECK_EQ(game.farmersOnBoard(1), 2);
   }
   // A field next to two separate cities on one tile scores each of them.
   {

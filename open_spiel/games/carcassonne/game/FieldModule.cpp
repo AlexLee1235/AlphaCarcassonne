@@ -110,6 +110,7 @@ void FieldModule::placeFarmer(int tile_id, const Tile &tile, int pos, int player
     int slot = fieldIndex(tile_id, local);
     fieldMap.getSetData(slot).farmer_count[player]++;
     farmed_slots.push_back(static_cast<int16_t>(slot));
+    farmers_placed[player]++;
 }
 
 void FieldModule::getHalfEdgeGroups(int tile_id, const Tile &tile, int8_t groups[HALF_EDGE_COUNT]) const {

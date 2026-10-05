@@ -163,6 +163,8 @@ std::vector<std::string> GlobalFeatureNames() {
   names[kGlobalIsPlayer0] = "current_player_is_player0";
   names[kGlobalMyFieldPending] = "my_field_pending";
   names[kGlobalOpponentFieldPending] = "opponent_field_pending";
+  names[kGlobalMyFarmers] = "my_farmers";
+  names[kGlobalOpponentFarmers] = "opponent_farmers";
   return names;
 }
 

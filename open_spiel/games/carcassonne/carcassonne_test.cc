@@ -193,7 +193,7 @@ void ObservationTensorSmokeTest() {
   SPIEL_CHECK_EQ(PlaneValue(initial_obs, kFeatureOpensPlane + 2, c, c), 0.0f);
   for (int side : {0, 1, 3}) {
     SPIEL_CHECK_TRUE(Near(PlaneValue(initial_obs, kFeatureScorePlane + side, c, c),
-                          1.0f / 12));
+                          1.0f / 30));
   }
   SPIEL_CHECK_EQ(PlaneValue(initial_obs, kFeatureScorePlane + 2, c, c), 0.0f);
   CheckZeroPlanes(initial_obs, kFeatureMyMeeplesPlane, 12);
@@ -208,9 +208,9 @@ void ObservationTensorSmokeTest() {
     const bool on_field = half_edge >= 2;
     const bool north = half_edge == 2 || half_edge == 7;
     SPIEL_CHECK_TRUE(Near(PlaneSum(initial_obs, kFieldSizePlane + half_edge),
-                          on_field ? 1.0f / 30 : 0.0f));
+                          on_field ? 1.0f / 60 : 0.0f));
     SPIEL_CHECK_TRUE(Near(PlaneValue(initial_obs, kFieldSizePlane + half_edge, c, c),
-                          on_field ? 1.0f / 30 : 0.0f));
+                          on_field ? 1.0f / 60 : 0.0f));
     SPIEL_CHECK_TRUE(Near(PlaneSum(initial_obs, kFieldOpenCitiesPlane + half_edge),
                           north ? 1.0f / 10 : 0.0f));
     SPIEL_CHECK_TRUE(
@@ -295,7 +295,7 @@ void ObservationTensorSmokeTest() {
   std::vector<float> player1_chance_obs = state->ObservationTensor(1);
   SPIEL_CHECK_EQ(GlobalValue(player1_chance_obs, kGlobalIsPlayer0), 0.0f);
   SPIEL_CHECK_TRUE(Near(GlobalValue(player1_chance_obs, kGlobalCompletedTurns),
-                        1.0f / 36.0f));
+                        1.0f / 71.0f));
 }
 
 void RelativePerspectiveTest() {
@@ -353,13 +353,13 @@ void RelativePerspectiveTest() {
     const std::vector<float>& obs = *views[player];
     const int opponent = 1 - player;
     SPIEL_CHECK_TRUE(Near(GlobalValue(obs, kGlobalMyScore),
-                          std::min(1.0f, core.player_scores[player] / 80.0f)));
+                          std::min(1.0f, core.player_scores[player] / 100.0f)));
     SPIEL_CHECK_TRUE(Near(GlobalValue(obs, kGlobalOpponentScore),
-                          std::min(1.0f, core.player_scores[opponent] / 80.0f)));
+                          std::min(1.0f, core.player_scores[opponent] / 100.0f)));
     SPIEL_CHECK_TRUE(Near(GlobalValue(obs, kGlobalMyPending),
-                          std::min(1.0f, pending[player] / 60.0f)));
+                          std::min(1.0f, pending[player] / 70.0f)));
     SPIEL_CHECK_TRUE(Near(GlobalValue(obs, kGlobalOpponentPending),
-                          std::min(1.0f, pending[opponent] / 60.0f)));
+                          std::min(1.0f, pending[opponent] / 70.0f)));
     SPIEL_CHECK_TRUE(Near(GlobalValue(obs, kGlobalMyFieldPending),
                           std::min(1.0f, field_pending[player] / 40.0f)));
     SPIEL_CHECK_TRUE(Near(GlobalValue(obs, kGlobalOpponentFieldPending),

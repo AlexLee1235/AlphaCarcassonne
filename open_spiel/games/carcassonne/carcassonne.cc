@@ -19,25 +19,36 @@ namespace {
 
 constexpr float kMeepleNormalization = 7.0f;
 constexpr float kRemainingNormalization = TOTAL_TILE_COUNT;
-// Points a player has scored, at the last decision (tools/diag_pending_scale):
-// random games p99 20 / max 38, greedy games p99 85 / max 97. Clipped.
-constexpr float kScoreNormalization = 80.0f;
-constexpr float kScoreDiffNormalization = 20.0f;
-// Pending points a player at the last decision (tools/diag_pending_scale):
-// random games p99 33 / max 46, greedy games p99 62 / max 72. Clipped.
-constexpr float kPendingNormalization = 60.0f;
-// The fields' part of it: random p99 15 / max 21, greedy p99 36 / max 36.
+// The measured scales below give the p99 at the last decision as random /
+// greedy / self-play games, and the largest value seen; section 11 of
+// CLAUDE.md says how to measure them again. All are clipped.
+// Points a player has scored: 20 / 85 / 93, max 120 (tools/diag_pending_scale,
+// tools/diag_replay_scale).
+constexpr float kScoreNormalization = 100.0f;
+// The difference in them: 18 / 66 / 54, max 85.
+constexpr float kScoreDiffNormalization = 70.0f;
+// Pending points of a player: 33 / 62 / 69, max 76.
+constexpr float kPendingNormalization = 70.0f;
+// The fields' part of it: 15 / 36 / 36, max 45.
 constexpr float kFieldPendingNormalization = 40.0f;
-constexpr std::array<float, kStaticDiffScales> kStaticDiffNormalizations = {3.0f, 10.0f, 30.0f};
-constexpr float kTurnNormalization = 36.0f;
+// Banked plus pending difference: 28 / 60 / 49, max 75. The /3 and /10 scales
+// tell close games apart.
+constexpr std::array<float, kStaticDiffScales> kStaticDiffNormalizations = {3.0f, 10.0f, 60.0f};
+// completed_turns counts the turns of both players, one per tile drawn after
+// the start tile.
+constexpr float kTurnNormalization = TOTAL_TILE_COUNT - 1;
 constexpr float kLegalPlacementNormalization = 100.0f;
 constexpr int kMaxOpens = 6;
-constexpr float kFeatureScoreNormalization = 12.0f;
+// The spatial planes, per side or half-edge (tools/diag_plane_scale). The
+// observation codec needs their denominators to be integers up to 127.
+// A feature's getScore(): 12 / 26 / 26, max 52.
+constexpr float kFeatureScoreNormalization = 30.0f;
 constexpr float kMonasteryCoverageNormalization = 9.0f;
+// 3 x the completed cities next to a field: 9 / 30 / 30, max 36.
 constexpr float kFieldScoreNormalization = 30.0f;
-// Per half-edge in random games: size p99 28 tiles (32 at the last move, max
-// 41), open cities next to it p99 9-10 (max 16). Both clipped.
-constexpr float kFieldSizeNormalization = 30.0f;
+// Tiles in a field: 30 / 56 / 60, max 65.
+constexpr float kFieldSizeNormalization = 60.0f;
+// Open cities next to a field: 10 / 9 / 8, max 19.
 constexpr float kFieldOpenCitiesNormalization = 10.0f;
 
 // The planes one field is written to: a half-edge's or an inner field's.

@@ -57,10 +57,10 @@ inline constexpr int kLastPlacedPlane = kLegalPlacementPlane + kLegalPlacementPl
 // each quantity. Summing them along a feature needs the whole feature in view,
 // which the convolutions cannot do, so they are computed here.
 inline constexpr int kFeatureOpensPlane = kLastPlacedPlane + 1;         // min(opens, 6) / 6
-inline constexpr int kFeatureScorePlane = kFeatureOpensPlane + 4;       // getScore() / 12
+inline constexpr int kFeatureScorePlane = kFeatureOpensPlane + 4;       // getScore() / 30
 inline constexpr int kFeatureMyMeeplesPlane = kFeatureScorePlane + 4;   // count / 7
 inline constexpr int kFeatureOpponentMeeplesPlane = kFeatureMyMeeplesPlane + 4;
-inline constexpr int kFeatureSignedScorePlane = kFeatureOpponentMeeplesPlane + 4; // +-getScore() / 12
+inline constexpr int kFeatureSignedScorePlane = kFeatureOpponentMeeplesPlane + 4; // +-getScore() / 30
 // Monasteries: tiles around it / 9, and +1 mine, -1 the opponent's.
 inline constexpr int kMonasteryCoveragePlane = kFeatureSignedScorePlane + 4;
 inline constexpr int kMonasteryOwnerPlane = kMonasteryCoveragePlane + 1;
@@ -69,7 +69,7 @@ inline constexpr int kMonasteryOwnerPlane = kMonasteryCoveragePlane + 1;
 inline constexpr int kFieldMyFarmersPlane = kMonasteryOwnerPlane + 1;                 // count / 7
 inline constexpr int kFieldOpponentFarmersPlane = kFieldMyFarmersPlane + HALF_EDGE_COUNT;
 inline constexpr int kFieldScorePlane = kFieldOpponentFarmersPlane + HALF_EDGE_COUNT; // 3 * completed cities / 30
-inline constexpr int kFieldSizePlane = kFieldScorePlane + HALF_EDGE_COUNT;            // tiles / 30
+inline constexpr int kFieldSizePlane = kFieldScorePlane + HALF_EDGE_COUNT;            // tiles / 60
 inline constexpr int kFieldOpenCitiesPlane = kFieldSizePlane + HALF_EDGE_COUNT;       // open cities next to it / 10
 // The same for a tile's inner field, which touches no half-edge.
 inline constexpr int kInnerFieldMyFarmersPlane = kFieldOpenCitiesPlane + HALF_EDGE_COUNT;
@@ -84,17 +84,17 @@ static_assert(kLastPlacedPlane == 26);
 static_assert(kSpatialPlanes == 94);
 
 // Offsets in the global vector, all from the observing player's side.
-inline constexpr int kGlobalMyScore = 0;           // clip(/80)
+inline constexpr int kGlobalMyScore = 0;           // clip(/100)
 inline constexpr int kGlobalOpponentScore = 1;
-inline constexpr int kGlobalScoreDiff = 2;         // clip(diff / 20)
-inline constexpr int kGlobalMyPending = 3;         // clip(/60), see getPendingScore()
+inline constexpr int kGlobalScoreDiff = 2;         // clip(diff / 70)
+inline constexpr int kGlobalMyPending = 3;         // clip(/70), see getPendingScore()
 inline constexpr int kGlobalOpponentPending = 4;
-inline constexpr int kGlobalStaticDiff = 5;        // banked + pending diff: clip(/3), clip(/10), clip(/30)
+inline constexpr int kGlobalStaticDiff = 5;        // banked + pending diff: clip(/3), clip(/10), clip(/60)
 inline constexpr int kStaticDiffScales = 3;
 inline constexpr int kGlobalMyMeeples = kGlobalStaticDiff + kStaticDiffScales; // / 7
 inline constexpr int kGlobalOpponentMeeples = kGlobalMyMeeples + 1;
 inline constexpr int kGlobalRemainingTiles = kGlobalOpponentMeeples + 1;      // / 72
-inline constexpr int kGlobalCompletedTurns = kGlobalRemainingTiles + 1;       // / 36
+inline constexpr int kGlobalCompletedTurns = kGlobalRemainingTiles + 1;       // / 71
 inline constexpr int kGlobalRemainingByType = kGlobalCompletedTurns + 1;      // left / initial count
 inline constexpr int kGlobalTileInHand = kGlobalRemainingByType + CANONICAL_TILE_TYPE_COUNT; // one-hot
 inline constexpr int kGlobalTilePhase = kGlobalTileInHand + CANONICAL_TILE_TYPE_COUNT;

@@ -293,6 +293,8 @@ Player CarcassonneState::CurrentPlayer() const {
     return game_state_.currentPlayer;
 }
 
+// The actor logs record games with these strings; tools/actor_log.hpp parses
+// them to replay self-play games.
 std::string CarcassonneState::ActionToString(Player player, Action action) const {
     if (player == kChancePlayerId) {
         return absl::StrCat("draw_type(", DecodeChanceAction(action), ")");

@@ -10,9 +10,9 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 try:
-    from domain import GameState, Move, MoveRecord, PlacedTile
+    from domain import BotValue, GameState, Move, MoveRecord, PlacedTile
 except ImportError:  # pragma: no cover - package import fallback
-    from ..domain import GameState, Move, MoveRecord, PlacedTile
+    from ..domain import BotValue, GameState, Move, MoveRecord, PlacedTile
 
 try:
     from .. import _carcassonne_cpp
@@ -193,6 +193,9 @@ class CppCarcassonneAdapter:
         self._latest_tile_marker: Optional[Tuple[Tuple[int, int], int]] = None
         self.move_records: List[MoveRecord] = []
         self._pending_tile_move: Optional[Tuple[int, int, int, int, int]] = None
+        # The value an AlphaZero player reported for its last tile placement.
+        self._pending_bot_value: Optional[BotValue] = None
+        self.last_bot_value: Optional[BotValue] = None
         self._turn = 1
         self._pending_meeple_options: List[int] = []
         self._viewport_origin = self._default_viewport_origin()
@@ -324,6 +327,17 @@ class CppCarcassonneAdapter:
         response = self._bot_request(player, self._choose_payload(spec))
         if response.get("kind") != "tile":
             raise RuntimeError(f"Expected tile action from bot CLI, got {response.get('kind')}.")
+        # Only AlphaZero reports a value. Its meeple search often has a single legal
+        # move and stops after one simulation, so the tile search's value is the one kept.
+        self._pending_bot_value = None
+        if "value" in response:
+            self._pending_bot_value = BotValue(
+                player=player + 1,
+                value=float(response["value"]),
+                raw_value=float(response["raw_value"]),
+                simulations=int(response["simulations"]),
+            )
+            self.last_bot_value = self._pending_bot_value
         return int(response["x"]), int(response["y"]), int(response["rot"])
 
     def _choose_bot_meeple_move(self, player: int) -> int:
@@ -353,6 +367,9 @@ class CppCarcassonneAdapter:
         if self._pending_tile_move is None:
             return
         player, tile_id, x, y, rotation = self._pending_tile_move
+        bot_value, self._pending_bot_value = self._pending_bot_value, None
+        if bot_value is not None and bot_value.player != player:
+            bot_value = None
         self.move_records.insert(
             0,
             MoveRecord(
@@ -363,6 +380,8 @@ class CppCarcassonneAdapter:
                 rotation=rotation,
                 meeple_pos=meeple_pos,
                 score_deltas=score_deltas,
+                value=bot_value.value if bot_value else None,
+                raw_value=bot_value.raw_value if bot_value else None,
             ),
         )
         self._pending_tile_move = None

@@ -254,13 +254,33 @@ class CarcassonneBotCli {
             ResolveValueIsCurrentPlayer(az_path));
     }
 
-    open_spiel::Action ChooseAlphaZero(const open_spiel::State &state, int simulations, int seed) {
+    struct AlphaZeroChoice {
+        open_spiel::Action action = open_spiel::kInvalidAction;
+        double value = 0.0;      // The search's expected return, for the player to move.
+        double raw_value = 0.0;  // The network's value of this state, same player.
+        int simulations = 0;
+    };
+
+    // MCTSBot::Step, keeping the root so its value can be reported.
+    AlphaZeroChoice ChooseAlphaZero(const open_spiel::State &state, int simulations, int seed) {
         EnsureAlphaZero();
         open_spiel::algorithms::MCTSBot bot(*game_, az_evaluator_, kDefaultUctC, simulations, kDefaultMaxMemoryMb,
                                             kDefaultSolve, seed, /*verbose=*/false,
                                             open_spiel::algorithms::ChildSelectionPolicy::PUCT, 0, 0,
                                             /*dont_return_chance_node=*/true);
-        return bot.Step(state);
+        std::unique_ptr<open_spiel::algorithms::SearchNode> root = bot.MCTSearch(state);
+        AlphaZeroChoice choice;
+        if (simulations <= 1) {
+            std::mt19937 rng(seed);
+            choice.action = root->SampleFromPrior(state, az_evaluator_.get(), &rng);
+        } else {
+            choice.action = root->BestChild().action;
+        }
+        // The root belongs to the player to move, so its mean return is from their side.
+        choice.simulations = root->explore_count;
+        choice.value = root->explore_count > 0 ? root->total_reward / root->explore_count : 0.0;
+        choice.raw_value = az_evaluator_->Evaluate(state)[state.CurrentPlayer()];
+        return choice;
     }
 
     json Choose(const json &request) {
@@ -275,23 +295,30 @@ class CarcassonneBotCli {
         const std::string bot = request.value("bot", "");
         const int seed = request.value("seed", EnvInt("CARCASSONNE_BOT_SEED", 1));
         open_spiel::Action action = open_spiel::kInvalidAction;
+        json values = json::object();
         if (bot == "random") {
             action = ChooseRandom(state, seed);
         } else if (bot == "mcts") {
             action = ChooseMcts(state, request.value("simulations", PositiveEnvInt("CARCASSONNE_MCTS_SIMULATIONS", 200)),
                                 seed);
         } else if (bot == "alphazero" || bot == "az") {
-            action = ChooseAlphaZero(state, request.value("simulations", FallbackSimulations()), seed);
+            const AlphaZeroChoice choice = ChooseAlphaZero(state, request.value("simulations", FallbackSimulations()), seed);
+            action = choice.action;
+            values = json{{"value", choice.value}, {"raw_value", choice.raw_value}, {"simulations", choice.simulations}};
         } else {
             throw std::runtime_error("Unknown bot: " + bot);
         }
 
         if (mirror_.current_phase == PHASE_TILE) {
             auto [x, y, rot] = DecodeTileAction(action);
-            return json{{"ok", true}, {"kind", "tile"}, {"x", x}, {"y", y}, {"rot", rot}};
+            json response{{"ok", true}, {"kind", "tile"}, {"x", x}, {"y", y}, {"rot", rot}};
+            response.update(values);
+            return response;
         }
         if (mirror_.current_phase == PHASE_MEEPLE) {
-            return json{{"ok", true}, {"kind", "meeple"}, {"pos", DecodeMeepleAction(action)}};
+            json response{{"ok", true}, {"kind", "meeple"}, {"pos", DecodeMeepleAction(action)}};
+            response.update(values);
+            return response;
         }
         throw std::runtime_error("Bot returned an action for an unsupported phase.");
     }

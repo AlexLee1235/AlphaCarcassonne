@@ -11,7 +11,7 @@ from typing import Dict, List, Optional, Sequence, Tuple
 import flet as ft
 
 try:
-    from domain import Move, MoveRecord
+    from domain import BotValue, Move, MoveRecord
     from engine import (
         BOARD_SIZE,
         HALF_EDGE_COUNT,
@@ -21,7 +21,7 @@ try:
         PlayerSpec,
     )
 except ImportError:  # pragma: no cover - package import fallback
-    from ..domain import Move, MoveRecord
+    from ..domain import BotValue, Move, MoveRecord
     from ..engine import (
         BOARD_SIZE,
         HALF_EDGE_COUNT,
@@ -170,6 +170,13 @@ def parse_ui_config(argv: Optional[Sequence[str]] = None) -> PlayUiConfig:
 
 
 def format_move_record(record: MoveRecord) -> str:
+    text = _format_move_and_score(record)
+    if record.value is not None:
+        text += f" v{record.value:+.2f}"
+    return text
+
+
+def _format_move_and_score(record: MoveRecord) -> str:
     base = f"P{record.player}({record.tile_id},{record.x},{record.y},{record.rotation},{record.meeple_pos})"
     nonzero_deltas = {player: delta for player, delta in sorted(record.score_deltas.items()) if delta}
     if not nonzero_deltas:
@@ -180,6 +187,14 @@ def format_move_record(record: MoveRecord) -> str:
 
     deltas = "/".join(f"P{player}{delta:+d}" for player, delta in nonzero_deltas.items())
     return f"{base} {deltas}(得分)"
+
+
+def format_bot_value(bot_value: BotValue) -> str:
+    """AlphaZero's view of the game when it placed its last tile, from its own side."""
+    return (
+        f"AZ (P{bot_value.player}) value {bot_value.value:+.2f}"
+        f" · net {bot_value.raw_value:+.2f} · {bot_value.simulations} sims"
+    )
 
 
 def summarize_ai_status(status: str, limit: int = 240) -> str:
@@ -413,6 +428,7 @@ class CarcassonneUI:
         self.turn_text = ft.Text()
         self.score_text = ft.Text()
         self.meeple_text = ft.Text()
+        self.value_text = ft.Text(visible=False)
         self.thinking_row = ft.Row(
             [ft.ProgressRing(width=16, height=16, stroke_width=2), ft.Text("AI thinking...")],
             visible=False,
@@ -446,6 +462,7 @@ class CarcassonneUI:
                     content=self.holding_image,
                 ),
                 self.score_text,
+                self.value_text,
                 self.meeple_text,
                 ft.Row([self.confirm_btn, self.skip_btn], wrap=True),
                 ft.Row(list(self.meeple_buttons.values()), wrap=True),
@@ -548,6 +565,9 @@ class CarcassonneUI:
 
         self.score_text.value = f"Scores -> P1: {self.state.scores[1]} | P2: {self.state.scores[2]}"
         self.meeple_text.spans = self._meeple_spans()
+        bot_value = self.engine.last_bot_value
+        self.value_text.visible = bot_value is not None
+        self.value_text.value = format_bot_value(bot_value) if bot_value is not None else ""
         record_controls: List[ft.Control] = [
             ft.Text(format_move_record(record), selectable=True) for record in self.engine.move_records
         ]

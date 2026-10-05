@@ -16,9 +16,12 @@ from play.cpp_engine import (
 )
 from play.engine import adapter as adapter_module
 from play.engine.adapter import BotCliClient
-from play.models import Move, MoveRecord
+from pathlib import Path
+
+from play.models import BotValue, Move, MoveRecord
 from play.ui.app import (
     build_player_specs,
+    format_bot_value,
     format_move_record,
     human_seat,
     is_farmer,
@@ -613,6 +616,68 @@ def test_adapter_without_auto_run_leaves_bot_turn_to_caller(monkeypatch: pytest.
     assert adapter.state.current_player == 1
     assert not adapter.is_ai_turn()
     assert [record.player for record in adapter.move_records] == [2, 1]
+
+
+class FakeValueBotCli(FakeBotCli):
+    """An AlphaZero-like bot: its tile choice also reports the search and network value."""
+
+    def request(self, payload: dict) -> dict:
+        response = super().request(payload)
+        if response.get("kind") == "tile":
+            response.update({"value": 0.42, "raw_value": -0.1, "simulations": 800})
+        elif response.get("kind") == "meeple":
+            response.update({"value": 0.99, "raw_value": 0.99, "simulations": 1})
+        return response
+
+
+def test_adapter_records_the_bot_tile_search_value(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(adapter_module, "BotCliClient", FakeValueBotCli)
+    adapter = CppCarcassonneAdapter(
+        seed=42,
+        player_specs=(PlayerSpec(type="human"), PlayerSpec(type="random")),
+        auto_run_bots=False,
+    )
+    adapter.confirm_tile(adapter.get_valid_moves()[0])
+    adapter.apply_meeple(-1)
+    assert adapter.last_bot_value is None
+
+    assert adapter.run_ai_turns(1) == 1
+
+    bot_record, human_record = adapter.move_records
+    # The tile search's value is kept, not the meeple search's.
+    assert (bot_record.value, bot_record.raw_value) == (0.42, -0.1)
+    assert (human_record.value, human_record.raw_value) == (None, None)
+    assert adapter.last_bot_value == BotValue(player=2, value=0.42, raw_value=-0.1, simulations=800)
+
+
+def test_format_bot_value_and_record_suffix() -> None:
+    assert format_bot_value(BotValue(player=2, value=0.42, raw_value=-0.1, simulations=800)) == (
+        "AZ (P2) value +0.42 · net -0.10 · 800 sims"
+    )
+    record = MoveRecord(player=2, tile_id=20, x=7, y=8, rotation=2, meeple_pos=-1, score_deltas={}, value=-0.375)
+    assert format_move_record(record) == "P2(20,7,8,2,-1) +0(得分) v-0.38"
+
+
+AZ_MODEL_1005 = Path("/mnt/c/achieve/Carcassonne/1005")
+
+
+@pytest.mark.skipif(not (AZ_MODEL_1005 / "vpnet.pb").exists(), reason="needs the 1005 model")
+def test_bot_cli_alphazero_reports_value(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CARCASSONNE_AZ_PATH", str(AZ_MODEL_1005))
+    monkeypatch.setenv("CARCASSONNE_AZ_CHECKPOINT", "75")
+    engine = _carcassonne_cpp.Carcassonne()
+    cli = BotCliClient()
+    try:
+        draw_type = list(engine.get_available_draws())[0][0]
+        cli.request({"cmd": "apply_draw", "type": draw_type})
+        response = cli.request({"cmd": "choose", "bot": "alphazero", "seed": 123, "simulations": 4})
+    finally:
+        cli.close()
+
+    assert response["kind"] == "tile"
+    assert -1.0 <= response["value"] <= 1.0
+    assert -1.0 <= response["raw_value"] <= 1.0
+    assert response["simulations"] >= 1
 
 
 def test_bot_cli_rejects_binary_built_for_another_board() -> None:

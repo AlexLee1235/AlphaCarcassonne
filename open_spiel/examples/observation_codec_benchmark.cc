@@ -89,6 +89,7 @@ const std::vector<PlaneGroup>& PlaneGroups() {
       {"feature big meeple (mine, theirs)", kFeatureMyBigMeeplePlane, 8},
       {"monastery big meeple", kMonasteryBigMeeplePlane, 1},
       {"feature inn or cathedral", kFeatureInnCathedralPlane, 4},
+      {"feature builder (mine, theirs)", kFeatureMyBuilderPlane, 8},
   };
   return groups;
 }

@@ -43,8 +43,10 @@ constexpr uint32_t BASE_ONLY = 1u << EXP_BASE;
 constexpr uint32_t ALL_EXPANSIONS = (1u << EXPANSION_COUNT) - 1;
 // The expansions whose rules the engine plays: these can be dealt "on" (their
 // tiles and their rules) as well as "tiles" (their tiles only). Inns &
-// Cathedrals: the big meeple, inns and cathedrals.
-constexpr uint32_t RULED_EXPANSIONS = expansionBit(EXP_INNS_CATHEDRALS) | expansionBit(EXP_RIVER);
+// Cathedrals: the big meeple, inns and cathedrals. Traders & Builders: the
+// builder so far (no goods, no pig).
+constexpr uint32_t RULED_EXPANSIONS =
+    expansionBit(EXP_INNS_CATHEDRALS) | expansionBit(EXP_TRADERS_BUILDERS) | expansionBit(EXP_RIVER);
 // Those whose tiles make no sense without their rules: dealt, they are "on".
 constexpr uint32_t RULES_REQUIRED_EXPANSIONS = expansionBit(EXP_RIVER);
 

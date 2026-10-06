@@ -36,6 +36,8 @@ Feature Feature::operator+(const Feature &other) const {
     res.meeple_count[1] = meeple_count[1] + other.meeple_count[1];
     res.big_meeples[0] = big_meeples[0] + other.big_meeples[0];
     res.big_meeples[1] = big_meeples[1] + other.big_meeples[1];
+    res.builders[0] = builders[0] + other.builders[0];
+    res.builders[1] = builders[1] + other.builders[1];
     res.opens = opens + other.opens;
     res.shields = shields + other.shields;
     res.inns = inns + other.inns;

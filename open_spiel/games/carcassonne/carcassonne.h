@@ -22,14 +22,15 @@ inline constexpr int kNumPlayers = 2;
 inline constexpr int kChanceActionCount = CANONICAL_TILE_TYPE_COUNT;
 inline constexpr int kTileActionCount = BOARD_SIZE * BOARD_SIZE * 4;
 // One action per meeple position, -1 (skip) to MEEPLE_POS_COUNT - 2: skip,
-// the 14 spots with a meeple, then the same 14 with the big meeple.
+// the 14 spots with a meeple, the same 14 with the big meeple, then the
+// builder on sides 0-3.
 inline constexpr int kMeepleActionCount = MEEPLE_POS_COUNT;
 inline constexpr int kMeepleActionOffset = kTileActionCount;
 inline constexpr int kNumDistinctPlayerActions = kTileActionCount + kMeepleActionCount;
 // The conv policy head of alpha_zero_torch (model.cc) reads at most
-// kMaxExtraActions = 32 actions beyond the tile placements; with more it
+// kMaxExtraActions = 64 actions beyond the tile placements; with more it
 // silently falls back to the dense head.
-static_assert(kMeepleActionCount <= 32, "alpha_zero_torch's conv policy head would not fit");
+static_assert(kMeepleActionCount <= 64, "alpha_zero_torch's conv policy head would not fit");
 
 // Observation: spatial planes for what is on the board, then one plane that
 // is not spatial. Its first kGlobalFeatures cells hold a vector of board-wide
@@ -92,11 +93,15 @@ inline constexpr int kMonasteryBigMeeplePlane = kFeatureOpponentBigMeeplePlane +
 // score plane leaves them out, the signed score plane counts them. One plane
 // per side.
 inline constexpr int kFeatureInnCathedralPlane = kMonasteryBigMeeplePlane + 1;
-inline constexpr int kSpatialPlanes = kFeatureInnCathedralPlane + 4;
+// The builder (Traders & Builders), which is no follower: 1 where the feature
+// on that side holds my / the opponent's builder, one plane per side.
+inline constexpr int kFeatureMyBuilderPlane = kFeatureInnCathedralPlane + 4;
+inline constexpr int kFeatureOpponentBuilderPlane = kFeatureMyBuilderPlane + 4;
+inline constexpr int kSpatialPlanes = kFeatureOpponentBuilderPlane + 4;
 inline constexpr int kGlobalFeaturePlane = kSpatialPlanes;
 inline constexpr int kObservationPlanes = kGlobalFeaturePlane + 1;
 static_assert(kLastPlacedPlane == 33);
-static_assert(kSpatialPlanes == 114);
+static_assert(kSpatialPlanes == 122);
 
 // Offsets in the global vector, all from the observing player's side.
 inline constexpr int kGlobalMyScore = 0;           // clip(/100)
@@ -116,7 +121,8 @@ inline constexpr int kGlobalTileInHand = kGlobalRemainingByType + CANONICAL_TILE
 inline constexpr int kGlobalTilePhase = kGlobalTileInHand + CANONICAL_TILE_TYPE_COUNT;
 inline constexpr int kGlobalMeeplePhase = kGlobalTilePhase + 1;
 // Legal meeple moves in action order: skip, sides 0-3, monastery, half-edges
-// 0-7, inner field, then those 14 with the big meeple.
+// 0-7, inner field, then those 14 with the big meeple, then the builder on
+// sides 0-3.
 inline constexpr int kGlobalLegalMeeple = kGlobalMeeplePhase + 1;
 inline constexpr int kGlobalLegalPlacements = kGlobalLegalMeeple + kMeepleActionCount; // / 100
 inline constexpr int kGlobalIsPlayer0 = kGlobalLegalPlacements + 1;
@@ -142,8 +148,17 @@ inline constexpr int kGlobalOpponentBigMeeple = kGlobalMyBigMeeple + 1;
 // hand, it is on a feature or a monastery, where the big meeple planes show it.
 inline constexpr int kGlobalMyBigFarmer = kGlobalOpponentBigMeeple + 1;
 inline constexpr int kGlobalOpponentBigFarmer = kGlobalMyBigFarmer + 1;
-inline constexpr int kGlobalFeatures = kGlobalOpponentBigFarmer + 1;
-static_assert(kGlobalFeatures == 62 + 2 * CANONICAL_TILE_TYPE_COUNT);
+// The builder in hand, 1 or 0; 0 without its rules. Not in hand, the builder
+// planes show where it is.
+inline constexpr int kGlobalMyBuilder = kGlobalOpponentBigFarmer + 1;
+inline constexpr int kGlobalOpponentBuilder = kGlobalMyBuilder + 1;
+// The builder's double turn, for whoever is to play: the tile just placed
+// extends their builder, so they place another after it; they are on that
+// other tile, after which there is no third.
+inline constexpr int kGlobalBuilderExtraTile = kGlobalOpponentBuilder + 1;
+inline constexpr int kGlobalBuilderSecondTile = kGlobalBuilderExtraTile + 1;
+inline constexpr int kGlobalFeatures = kGlobalBuilderSecondTile + 1;
+static_assert(kGlobalFeatures == 70 + 2 * CANONICAL_TILE_TYPE_COUNT);
 static_assert(kGlobalFeatures <= BOARD_SIZE * BOARD_SIZE);
 inline constexpr int kObservationTensorSize = kObservationPlanes * BOARD_SIZE * BOARD_SIZE;
 

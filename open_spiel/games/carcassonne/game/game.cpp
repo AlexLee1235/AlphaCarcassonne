@@ -97,6 +97,7 @@ void Carcassonne::resolveEndGameScore() {
 void Carcassonne::resolveNoMoreDraws() {
     current_tile_in_hand = 0;
     current_phase = PHASE_TERMINAL;
+    builder_extra_tile = builder_second_tile = false;  // no tile left to play
     resolveEndGameScore();
 }
 
@@ -128,6 +129,10 @@ Carcassonne::Carcassonne(int max_turns, int start_rotation, uint32_t expansions,
         holding_big_meeples[0] = holding_big_meeples[1] = 1;
     }
     features.inns_cathedrals = big_meeple_rules;
+    builder_rules = (this->rules & expansionBit(EXP_TRADERS_BUILDERS)) != 0;
+    if (builder_rules) {
+        holding_builders[0] = holding_builders[1] = 1;
+    }
     // With the river the spring starts the game instead of the base start tile,
     // which the deck leaves out.
     int start_tile_id = deck.consumeType(river_rules ? RIVER_SPRING_TYPE : START_TILE_TYPE);
@@ -185,6 +190,11 @@ void Carcassonne::placeTile(int x, int y, int rot) {
     placeTileOnBoard(tile_id, x, y, rot);
     current_tile_in_hand = 0;
     current_phase = PHASE_MEEPLE;
+    // A builder goes down only in the meeple phase, so one in a feature of this
+    // tile was there before: the tile extends it. Even if it completes the
+    // feature, which sends the builder home, the extra tile stands.
+    builder_extra_tile = builder_rules && !builder_second_tile &&
+                         features.hasBuilderOf(tile_id, full_deck[tile_id][rot], currentPlayer);
 }
 
 MeepleMoves Carcassonne::getLegalMeepleMoves() const {
@@ -195,7 +205,8 @@ MeepleMoves Carcassonne::getLegalMeepleMoves() const {
     ret.push_back(MEEPLE_POS_SKIP);
     const bool meeple = holding_meeples[currentPlayer] > 0;
     const bool big = holding_big_meeples[currentPlayer] > 0;
-    if (!meeple && !big) {
+    const bool builder = holding_builders[currentPlayer] > 0;
+    if (!meeple && !big && !builder) {
         return ret;
     }
     int x = last_x;
@@ -213,6 +224,9 @@ MeepleMoves Carcassonne::getLegalMeepleMoves() const {
     }
     for (int i = 0; big && i < spots.size(); ++i) {
         ret.push_back(spots[i] + MEEPLE_POS_BIG);
+    }
+    if (builder) {
+        features.getLegalBuilderMoves(ret, x, y, board, tile, currentPlayer);
     }
     return ret;
 }
@@ -280,7 +294,7 @@ void Carcassonne::getPendingScoreByResolving(int pending[2]) const {
     if (copy.current_phase == PHASE_MEEPLE) {
         // What placeMeeple settles whatever the move is.
         copy.features.settleAfterPlaceMeeple(last_x, last_y, copy.board, copy.player_scores, copy.holding_meeples,
-                                             copy.holding_big_meeples);
+                                             copy.holding_big_meeples, copy.holding_builders);
         copy.monasteries.settleCompletedMonasteries(copy.player_scores, copy.holding_meeples,
                                                     copy.holding_big_meeples);
     }
@@ -292,7 +306,10 @@ void Carcassonne::getPendingScoreByResolving(int pending[2]) const {
 void Carcassonne::placeMeeple(int pos) {
     int x = last_x;
     int y = last_y;
-    if (pos != MEEPLE_POS_SKIP) {
+    if (isBuilderPos(pos)) {
+        holding_builders[currentPlayer]--;
+        features.placeBuilder(x, y, meepleSpot(pos), currentPlayer, board);
+    } else if (pos != MEEPLE_POS_SKIP) {
         const bool big = isBigMeeplePos(pos);
         const int spot = meepleSpot(pos);
         (big ? holding_big_meeples : holding_meeples)[currentPlayer]--;
@@ -306,11 +323,18 @@ void Carcassonne::placeMeeple(int pos) {
             features.placeMeeple(x, y, spot, currentPlayer, big, board);
         }
     }
-    features.settleAfterPlaceMeeple(x, y, board, player_scores, holding_meeples, holding_big_meeples);
+    features.settleAfterPlaceMeeple(x, y, board, player_scores, holding_meeples, holding_big_meeples,
+                                    holding_builders);
     monasteries.settleCompletedMonasteries(player_scores, holding_meeples, holding_big_meeples);
 
     completed_turns++;
-    currentPlayer = 1 - currentPlayer;
+    // The builder's double turn: the same player draws once more, never a
+    // third time.
+    builder_second_tile = builder_extra_tile;
+    builder_extra_tile = false;
+    if (!builder_second_tile) {
+        currentPlayer = 1 - currentPlayer;
+    }
     if (max_turns > 0 && completed_turns >= max_turns) {
         resolveNoMoreDraws();
         return;

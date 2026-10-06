@@ -1,5 +1,6 @@
 #include "game.hpp"
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <bitset>
@@ -46,7 +47,7 @@ int FeatureModule::edgeIndex(int tile_id, int side) const { return (tile_id - 1)
 FeatureModule::FeatureModule() : featureMap(std::plus<Feature>{}) {}
 
 void FeatureModule::settleCompletedFeatures(int tile_id, int side, int *player_scores, int *holding_meeples,
-                                            int *holding_big_meeples) {
+                                            int *holding_big_meeples, int *holding_builders) {
     int root = featureMap.find(edgeIndex(tile_id, side));
     Feature &feature = featureMap.getSetData(root);
     if (feature.opens != 0) {
@@ -54,6 +55,7 @@ void FeatureModule::settleCompletedFeatures(int tile_id, int side, int *player_s
     }
     int m0 = feature.meeple_count[0];
     int m1 = feature.meeple_count[1];
+    // A builder only joins a feature that holds a follower of its owner.
     if (m0 == 0 && m1 == 0) {
         return;
     }
@@ -64,12 +66,15 @@ void FeatureModule::settleCompletedFeatures(int tile_id, int side, int *player_s
     if (m1 >= m0) {
         player_scores[1] += score;
     }
-    // The big meeple is two of the strength but one piece, back to its own supply.
+    // The big meeple is two of the strength but one piece, back to its own
+    // supply; the builders come back with the followers.
     for (int player = 0; player < 2; ++player) {
         holding_meeples[player] += feature.meeple_count[player] - 2 * feature.big_meeples[player];
         holding_big_meeples[player] += feature.big_meeples[player];
+        holding_builders[player] += feature.builders[player];
         feature.meeple_count[player] = 0;
         feature.big_meeples[player] = 0;
+        feature.builders[player] = 0;
     }
 }
 
@@ -184,11 +189,45 @@ void FeatureModule::placeMeeple(int x, int y, int side, int player, bool big, co
     feature.big_meeples[player] += big ? 1 : 0;
 }
 
+void FeatureModule::getLegalBuilderMoves(MeepleMoves &ret, int x, int y, const BoardModule &board,
+                                         const Tile &tile, int player) const {
+    int seen_roots[4];
+    int root_count = 0;
+    for (int i = 0; i < 4; ++i) {
+        if (!isFeatureEdge(tile.edge[i])) {
+            continue;
+        }
+        int root = featureMap.find(edgeIndex(board.board[y][x].id, i));
+        if (std::find(seen_roots, seen_roots + root_count, root) != seen_roots + root_count) {
+            continue;
+        }
+        seen_roots[root_count++] = root;
+        // Other players' meeples and builders may be there too.
+        if (featureMap.getSetData(root).meeple_count[player] > 0) {
+            ret.push_back(MEEPLE_POS_BUILDER + i);
+        }
+    }
+}
+
+void FeatureModule::placeBuilder(int x, int y, int side, int player, const BoardModule &board) {
+    featureMap.getSetData(edgeIndex(board.board[y][x].id, side)).builders[player]++;
+}
+
+bool FeatureModule::hasBuilderOf(int tile_id, const Tile &tile, int player) const {
+    for (int i = 0; i < 4; ++i) {
+        if (isFeatureEdge(tile.edge[i]) && featureMap.getSetData(edgeIndex(tile_id, i)).builders[player] > 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
 void FeatureModule::settleAfterPlaceMeeple(int x, int y, const BoardModule &board, int *player_scores,
-                                           int *holding_meeples, int *holding_big_meeples) {
+                                           int *holding_meeples, int *holding_big_meeples, int *holding_builders) {
     for (int i = 0; i < 4; ++i) {
         if (isFeatureEdge(board.edge[y][x][i])) {
-            settleCompletedFeatures(board.board[y][x].id, i, player_scores, holding_meeples, holding_big_meeples);
+            settleCompletedFeatures(board.board[y][x].id, i, player_scores, holding_meeples, holding_big_meeples,
+                                    holding_builders);
         }
     }
 }

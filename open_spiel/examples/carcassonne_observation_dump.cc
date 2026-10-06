@@ -137,8 +137,10 @@ std::vector<std::string> PlaneNames() {
   }
   names[kMonasteryBigMeeplePlane] = "monastery_big_meeple";
   for (int side = 0; side < 4; ++side) {
-    names[kFeatureInnCathedralPlane + side] =
-        "feature_inn_or_cathedral_side_" + std::to_string(side);
+    const std::string suffix = "_side_" + std::to_string(side);
+    names[kFeatureInnCathedralPlane + side] = "feature_inn_or_cathedral" + suffix;
+    names[kFeatureMyBuilderPlane + side] = "feature_my_builder" + suffix;
+    names[kFeatureOpponentBuilderPlane + side] = "feature_opponent_builder" + suffix;
   }
   names[kGlobalFeaturePlane] = "global_vector";
   return names;
@@ -167,7 +169,8 @@ std::vector<std::string> GlobalFeatureNames() {
   }
   names[kGlobalTilePhase] = "is_tile_phase";
   names[kGlobalMeeplePhase] = "is_meeple_phase";
-  // Skip, then the spots with the meeple and with the big meeple.
+  // Skip, then the spots with the meeple and with the big meeple, then the
+  // builder's sides.
   const char* spots[MEEPLE_POS_BIG] = {
       "edge_0",  "edge_1",  "edge_2",  "edge_3",  "monastery",
       "field_0", "field_1", "field_2", "field_3", "field_4",
@@ -178,6 +181,10 @@ std::vector<std::string> GlobalFeatureNames() {
         std::string("legal_meeple_") + spots[spot];
     names[kGlobalLegalMeeple + 1 + MEEPLE_POS_BIG + spot] =
         std::string("legal_big_meeple_") + spots[spot];
+  }
+  for (int side = 0; side < 4; ++side) {
+    names[kGlobalLegalMeeple + 1 + MEEPLE_POS_BUILDER + side] =
+        std::string("legal_builder_") + spots[side];
   }
   names[kGlobalLegalPlacements] = "legal_placements";
   names[kGlobalIsPlayer0] = "current_player_is_player0";
@@ -195,6 +202,10 @@ std::vector<std::string> GlobalFeatureNames() {
   names[kGlobalOpponentBigMeeple] = "opponent_holding_big_meeple";
   names[kGlobalMyBigFarmer] = "my_big_farmer";
   names[kGlobalOpponentBigFarmer] = "opponent_big_farmer";
+  names[kGlobalMyBuilder] = "my_holding_builder";
+  names[kGlobalOpponentBuilder] = "opponent_holding_builder";
+  names[kGlobalBuilderExtraTile] = "builder_extra_tile";
+  names[kGlobalBuilderSecondTile] = "builder_second_tile";
   return names;
 }
 

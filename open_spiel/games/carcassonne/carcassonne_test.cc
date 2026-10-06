@@ -36,12 +36,13 @@ float GlobalValue(const std::vector<float>& tensor, int index) {
 bool Near(float left, float right) { return std::abs(left - right) < 1e-6f; }
 
 // Every expansion's tiles, with the rules of those that have them (the river,
-// the big meeple).
+// Inns & Cathedrals, the builder).
 constexpr const char* kAllExpansionsGame =
-    "carcassonne(inns_cathedrals=on,traders_builders=tiles,river=on,"
+    "carcassonne(inns_cathedrals=on,traders_builders=on,river=on,"
     "princess_dragon=tiles)";
 constexpr const char* kRiverGame = "carcassonne(river=on)";
 constexpr const char* kInnsCathedralsGame = "carcassonne(inns_cathedrals=on)";
+constexpr const char* kTradersBuildersGame = "carcassonne(traders_builders=on)";
 
 int TestTerrainIndex(EdgeType edge_type) {
   switch (edge_type) {
@@ -165,11 +166,11 @@ void ObservationTensorSmokeTest() {
   const std::vector<int> shape = game->ObservationTensorShape();
 
   SPIEL_CHECK_EQ(shape.size(), 3);
-  SPIEL_CHECK_EQ(shape[0], 115);
+  SPIEL_CHECK_EQ(shape[0], 123);
   SPIEL_CHECK_EQ(shape[0], kObservationPlanes);
   SPIEL_CHECK_EQ(shape[1], BOARD_SIZE);
   SPIEL_CHECK_EQ(shape[2], BOARD_SIZE);
-  SPIEL_CHECK_EQ(game->NumDistinctActions(), 4 * BOARD_SIZE * BOARD_SIZE + 29);
+  SPIEL_CHECK_EQ(game->NumDistinctActions(), 4 * BOARD_SIZE * BOARD_SIZE + 33);
 
   SPIEL_CHECK_EQ(state->ObservationTensor(0).size(), kObservationTensorSize);
   SPIEL_CHECK_EQ(state->ObservationTensor(1).size(), kObservationTensorSize);
@@ -234,7 +235,7 @@ void ObservationTensorSmokeTest() {
   }
   CheckZeroPlanes(initial_obs, kInnerFieldMyFarmersPlane,
                   kInnerFieldOpenCitiesPlane + 1 - kInnerFieldMyFarmersPlane);
-  // No big meeple, inn or cathedral in the base game.
+  // No big meeple, inn, cathedral or builder in the base game.
   CheckZeroPlanes(initial_obs, kFeatureMyBigMeeplePlane,
                   kSpatialPlanes - kFeatureMyBigMeeplePlane);
   CheckRemainingByType(initial_obs, initial_state->UnderlyingState());
@@ -246,7 +247,9 @@ void ObservationTensorSmokeTest() {
                 kGlobalOpponentFieldPending, kGlobalMyFarmers,
                 kGlobalOpponentFarmers, kGlobalRiverTiles, kGlobalMyBigMeeple,
                 kGlobalOpponentBigMeeple, kGlobalMyBigFarmer,
-                kGlobalOpponentBigFarmer}) {
+                kGlobalOpponentBigFarmer, kGlobalMyBuilder,
+                kGlobalOpponentBuilder, kGlobalBuilderExtraTile,
+                kGlobalBuilderSecondTile}) {
     SPIEL_CHECK_EQ(GlobalValue(initial_obs, i), 0.0f);
   }
   for (int cell = 0; cell < kGlobalExpansionCells; ++cell) {
@@ -937,6 +940,7 @@ void CheckBigMeepleMoves(const ::Carcassonne& core) {
   std::vector<int> spots;
   std::vector<int> big_spots;
   for (int i = 1; i < moves.size(); ++i) {
+    if (isBuilderPos(moves[i])) continue;  // see CheckBuilders
     (isBigMeeplePos(moves[i]) ? big_spots : spots).push_back(meepleSpot(moves[i]));
   }
   const int player = core.currentPlayer;
@@ -1370,6 +1374,235 @@ void InnCathedralTest() {
   SPIEL_CHECK_GT(cathedral_sides, 0);
 }
 
+// Every builder is in hand or on a feature that holds one of its owner's
+// followers; the observation shows where, and the builder is offered exactly on
+// the features of the tile just placed that hold such a follower.
+void CheckBuilders(const State& state) {
+  const ::Carcassonne& core =
+      dynamic_cast<const CarcassonneState&>(state).UnderlyingState();
+  const std::vector<float> obs0 = state.ObservationTensor(0);
+  const std::vector<float> obs1 = state.ObservationTensor(1);
+  int builders[2] = {core.holding_builders[0], core.holding_builders[1]};
+  std::vector<const Feature*> seen;
+  // SPIEL_CHECK_EQ's own locals are called x and y.
+  for (int ty = 0; ty < BOARD_SIZE; ++ty) {
+    for (int tx = 0; tx < BOARD_SIZE; ++tx) {
+      const Placement placement = core.getPlacement(tx, ty);
+      if (placement.id == 0) continue;
+      const Tile& tile = full_deck[placement.id][placement.rotation];
+      for (int side = 0; side < 4; ++side) {
+        if (!isFeatureEdge(tile.edge[side])) continue;
+        const Feature& feature = core.featureAt(placement.id, side);
+        for (Player player = 0; player < kNumPlayers; ++player) {
+          const std::vector<float>& obs = player == 0 ? obs0 : obs1;
+          SPIEL_CHECK_EQ(PlaneValue(obs, kFeatureMyBuilderPlane + side, tx, ty),
+                         static_cast<float>(feature.builders[player]));
+          SPIEL_CHECK_EQ(
+              PlaneValue(obs, kFeatureOpponentBuilderPlane + side, tx, ty),
+              static_cast<float>(feature.builders[1 - player]));
+        }
+        if (std::find(seen.begin(), seen.end(), &feature) != seen.end()) continue;
+        seen.push_back(&feature);
+        for (Player player = 0; player < kNumPlayers; ++player) {
+          const int on_feature = feature.builders[player];
+          SPIEL_CHECK_LE(on_feature, 1);
+          // It stays only with one of its owner's followers.
+          if (on_feature > 0) {
+            SPIEL_CHECK_GT(static_cast<int>(feature.meeple_count[player]), 0);
+          }
+          builders[player] += on_feature;
+        }
+      }
+    }
+  }
+  for (Player player = 0; player < kNumPlayers; ++player) {
+    SPIEL_CHECK_EQ(builders[player], core.builder_rules ? 1 : 0);
+    const std::vector<float>& obs = player == 0 ? obs0 : obs1;
+    SPIEL_CHECK_EQ(GlobalValue(obs, kGlobalMyBuilder),
+                   static_cast<float>(core.holding_builders[player]));
+    SPIEL_CHECK_EQ(GlobalValue(obs, kGlobalOpponentBuilder),
+                   static_cast<float>(core.holding_builders[1 - player]));
+    SPIEL_CHECK_EQ(GlobalValue(obs, kGlobalBuilderExtraTile),
+                   core.builder_extra_tile ? 1.0f : 0.0f);
+    SPIEL_CHECK_EQ(GlobalValue(obs, kGlobalBuilderSecondTile),
+                   core.builder_second_tile ? 1.0f : 0.0f);
+  }
+  SPIEL_CHECK_FALSE(core.builder_extra_tile && core.builder_second_tile);
+  if (core.current_phase != PHASE_MEEPLE) return;
+  const int player = core.currentPlayer;
+  const Placement last = core.getPlacement(core.last_x, core.last_y);
+  const Tile& last_tile = full_deck[last.id][last.rotation];
+  std::vector<int> expected;
+  std::vector<const Feature*> last_features;
+  for (int side = 0; side < 4; ++side) {
+    if (!isFeatureEdge(last_tile.edge[side])) continue;
+    const Feature& feature = core.featureAt(last.id, side);
+    if (std::find(last_features.begin(), last_features.end(), &feature) !=
+        last_features.end()) {
+      continue;  // named by its lowest side
+    }
+    last_features.push_back(&feature);
+    if (core.holding_builders[player] > 0 && feature.meeple_count[player] > 0) {
+      expected.push_back(MEEPLE_POS_BUILDER + side);
+    }
+  }
+  std::vector<int> offered;
+  for (int move : core.getLegalMeepleMoves()) {
+    if (isBuilderPos(move)) offered.push_back(move);
+  }
+  SPIEL_CHECK_TRUE(offered == expected);
+}
+
+// Traders & Builders' builder: it joins one of its owner's followers, and each
+// tile its owner adds to that road or city brings one more tile after it, never
+// a third. It does not count for the majority and comes back with the
+// followers.
+void BuilderTest() {
+  const uint32_t traders = BASE_ONLY | expansionBit(EXP_TRADERS_BUILDERS);
+  SPIEL_CHECK_FALSE(::Carcassonne().builder_rules);
+  SPIEL_CHECK_FALSE(::Carcassonne(0, START_TILE_ROTATION, traders, /*rules=*/0u)
+                        .builder_rules);
+  auto builder_moves = [](const ::Carcassonne& core) {
+    std::vector<int> moves;
+    for (int move : core.getLegalMeepleMoves()) {
+      if (isBuilderPos(move)) moves.push_back(move);
+    }
+    return moves;
+  };
+  auto play_meeple = [](::Carcassonne* core, int pos) {
+    const MeepleMoves moves = core->getLegalMeepleMoves();
+    SPIEL_CHECK_TRUE(std::find(moves.begin(), moves.end(), pos) != moves.end());
+    core->placeMeeple(pos);
+  };
+
+  // The start tile (type 20) at the centre has a road east-west, and so has
+  // type 21 turned once.
+  const int c = BOARD_SIZE / 2;
+  std::shared_ptr<const Game> traders_game = LoadGame(kTradersBuildersGame);
+  ::Carcassonne game(/*max_turns=*/0, START_TILE_ROTATION, traders);
+  SPIEL_CHECK_TRUE(game.builder_rules);
+  SPIEL_CHECK_EQ(game.holding_builders[0], 1);
+  SPIEL_CHECK_EQ(game.holding_builders[1], 1);
+  // P0: a meeple on the road. It held no follower of P0's yet: no builder.
+  PlaceTile(&game, 21, c + 1, c, 1);
+  SPIEL_CHECK_TRUE(builder_moves(game).empty());
+  play_meeple(&game, 1);
+  // P1 closes the start tile's city.
+  PlayTurn(&game, 16, c, c - 1, 2, MEEPLE_POS_SKIP);
+  // P0 extends the road: the builder can go on it, a meeple cannot.
+  PlaceTile(&game, 21, c + 2, c, 1);
+  SPIEL_CHECK_FALSE(game.builder_extra_tile);
+  SPIEL_CHECK_TRUE((builder_moves(game) == std::vector<int>{MEEPLE_POS_BUILDER + 1}));
+  {
+    const MeepleMoves moves = game.getLegalMeepleMoves();
+    SPIEL_CHECK_TRUE(std::find(moves.begin(), moves.end(), 1) == moves.end());
+  }
+  play_meeple(&game, MEEPLE_POS_BUILDER + 1);
+  const int start_id = game.getPlacement(c, c).id;
+  SPIEL_CHECK_EQ(game.holding_builders[0], 0);
+  SPIEL_CHECK_EQ(static_cast<int>(game.featureAt(start_id, 1).builders[0]), 1);
+  // It is no follower: the strength is still the one meeple's.
+  SPIEL_CHECK_EQ(static_cast<int>(game.featureAt(start_id, 1).meeple_count[0]), 1);
+  // Placed this turn, it gave no extra tile.
+  SPIEL_CHECK_EQ(game.currentPlayer, 1);
+  // P1 extends P0's road: only its owner's tiles count.
+  PlayTurn(&game, 21, c - 1, c, 1, MEEPLE_POS_SKIP);
+  SPIEL_CHECK_EQ(game.currentPlayer, 0);
+  // P0 extends it: one more tile.
+  PlaceTile(&game, 21, c + 3, c, 1);
+  SPIEL_CHECK_TRUE(game.builder_extra_tile);
+  play_meeple(&game, MEEPLE_POS_SKIP);
+  SPIEL_CHECK_EQ(game.current_phase, PHASE_CHANCE);
+  SPIEL_CHECK_EQ(game.currentPlayer, 0);
+  SPIEL_CHECK_TRUE(game.builder_second_tile);
+  {
+    CarcassonneState view(traders_game, game);
+    const State& state = view;
+    const std::vector<float> obs = state.ObservationTensor(0);
+    SPIEL_CHECK_EQ(GlobalValue(obs, kGlobalBuilderSecondTile), 1.0f);
+    SPIEL_CHECK_EQ(GlobalValue(obs, kGlobalBuilderExtraTile), 0.0f);
+    SPIEL_CHECK_EQ(GlobalValue(obs, kGlobalMyBuilder), 0.0f);
+    SPIEL_CHECK_EQ(GlobalValue(obs, kGlobalOpponentBuilder), 1.0f);
+    for (int side : {1, 3}) {
+      SPIEL_CHECK_EQ(PlaneValue(obs, kFeatureMyBuilderPlane + side, c, c), 1.0f);
+      SPIEL_CHECK_EQ(PlaneValue(obs, kFeatureOpponentBuilderPlane + side, c, c),
+                     0.0f);
+    }
+    SPIEL_CHECK_TRUE(state.ToString().find("builder_second_tile") !=
+                     std::string::npos);
+    CheckBuilders(state);
+  }
+  // The second tile extends it again, but there is no third.
+  PlaceTile(&game, 21, c + 4, c, 1);
+  SPIEL_CHECK_FALSE(game.builder_extra_tile);
+  play_meeple(&game, MEEPLE_POS_SKIP);
+  SPIEL_CHECK_EQ(game.currentPlayer, 1);
+  SPIEL_CHECK_FALSE(game.builder_second_tile);
+  // P1 ends the road east; P0 ends it west and completes it: eight tiles, the
+  // builder adds nothing, and it comes back with the meeple. The tile still
+  // extended the road, so P0 places one more.
+  PlayTurn(&game, 2, c + 5, c, 1, MEEPLE_POS_SKIP);
+  PlaceTile(&game, 2, c - 2, c, 3);
+  SPIEL_CHECK_TRUE(game.builder_extra_tile);
+  play_meeple(&game, MEEPLE_POS_SKIP);
+  SPIEL_CHECK_EQ(game.player_scores[0], 8);
+  SPIEL_CHECK_EQ(game.player_scores[1], 0);
+  SPIEL_CHECK_EQ(game.holding_meeples[0], MEEPLES_PER_PLAYER);
+  SPIEL_CHECK_EQ(game.holding_builders[0], 1);
+  SPIEL_CHECK_EQ(game.currentPlayer, 0);
+  SPIEL_CHECK_TRUE(game.builder_second_tile);
+
+  // Random games: every state checked; a meeple move keeps the same player
+  // exactly when its tile extended their builder and the game goes on.
+  // Dealt as "tiles" there is no builder.
+  std::mt19937 rng(20261009);
+  int builders_placed = 0;
+  int builders_returned = 0;
+  int double_turns = 0;
+  for (const char* game_string : {kTradersBuildersGame, kAllExpansionsGame,
+                                  "carcassonne(traders_builders=tiles)"}) {
+    std::shared_ptr<const Game> random_game = LoadGame(game_string);
+    for (int sim = 0; sim < 20; ++sim) {
+      std::unique_ptr<State> state = random_game->NewInitialState();
+      const ::Carcassonne& core =
+          dynamic_cast<const CarcassonneState&>(*state).UnderlyingState();
+      while (true) {
+        if (!state->IsChanceNode()) {
+          CheckBuilders(*state);
+        }
+        if (state->IsTerminal()) break;
+        const std::vector<Action> legal = state->LegalActions();
+        const Action action =
+            state->IsChanceNode()
+                ? SampleAction(state->ChanceOutcomes(), rng).first
+                : legal[std::uniform_int_distribution<int>(0, legal.size() - 1)(rng)];
+        const bool meeple_phase = core.current_phase == PHASE_MEEPLE;
+        const bool extra_tile = core.builder_extra_tile;
+        const int mover = core.currentPlayer;
+        const int held[2] = {core.holding_builders[0], core.holding_builders[1]};
+        if (meeple_phase && isBuilderPos(DecodeMeepleActionForTest(action))) {
+          ++builders_placed;
+        }
+        state->ApplyAction(action);
+        for (Player player = 0; player < kNumPlayers; ++player) {
+          builders_returned += core.holding_builders[player] > held[player];
+        }
+        if (meeple_phase && !state->IsTerminal()) {
+          SPIEL_CHECK_EQ(core.currentPlayer, extra_tile ? mover : 1 - mover);
+          SPIEL_CHECK_EQ(core.builder_second_tile, extra_tile);
+          double_turns += extra_tile;
+        }
+      }
+    }
+  }
+  std::cout << "BuilderTest: " << builders_placed << " builders placed, "
+            << builders_returned << " returned, " << double_turns
+            << " double turns" << std::endl;
+  SPIEL_CHECK_GT(builders_placed, 0);
+  SPIEL_CHECK_GT(builders_returned, 0);
+  SPIEL_CHECK_GT(double_turns, 0);
+}
+
 void ReturnsMatchScoresTest() {
   absl::BitGen gen;
   std::shared_ptr<const Game> game = LoadGame("carcassonne");
@@ -1538,8 +1771,9 @@ int CheckRotatedTwin(absl::Span<const Action> history, int k,
       if (legal_action < kMeepleActionOffset) continue;
       const int full_pos = DecodeMeepleActionForTest(legal_action);
       const int rotated_pos = DecodeMeepleActionForTest(rotated_action);
-      // A big meeple move stays one, on the rotated spot.
+      // A big meeple or builder move stays one, on the rotated spot.
       SPIEL_CHECK_EQ(isBigMeeplePos(rotated_pos), isBigMeeplePos(full_pos));
+      SPIEL_CHECK_EQ(isBuilderPos(rotated_pos), isBuilderPos(full_pos));
       if (isBigMeeplePos(full_pos)) ++*big_meeple_moves;
       const int pos = meepleSpot(full_pos);
       const int rotated_spot = meepleSpot(rotated_pos);
@@ -1588,8 +1822,9 @@ void RotationEquivarianceTest() {
                                                &big_meeple_moves);
     }
     for (int game = 0; game < 3; ++game) {
-      for (const char* game_string :
-           {kAllExpansionsGame, kRiverGame, kInnsCathedralsGame}) {
+      for (const char* game_string : {kAllExpansionsGame, kRiverGame,
+                                      kInnsCathedralsGame,
+                                      kTradersBuildersGame}) {
         renamed_meeple_moves +=
             CheckRotatedTwin({}, k, &rng, &renamed_farmer_moves,
                              &big_meeple_moves, game_string);
@@ -1620,7 +1855,7 @@ void ExpansionOptionsTest() {
     if (expansion != EXP_RIVER) options.push_back({expansion, "tiles"});
     if (bit & RULED_EXPANSIONS) options.push_back({expansion, "on"});
   }
-  SPIEL_CHECK_EQ(static_cast<int>(options.size()), 1 + (EXPANSION_COUNT - 1) + 1);
+  SPIEL_CHECK_EQ(static_cast<int>(options.size()), 1 + (EXPANSION_COUNT - 1) + 2);
   for (const auto& [expansion, mode] : options) {
     uint32_t mask = BASE_ONLY;
     std::string game_string = "carcassonne";
@@ -1678,6 +1913,15 @@ void ExpansionOptionsTest() {
                    big ? 1.0f : 0.0f);
     SPIEL_CHECK_EQ(GlobalValue(obs, kGlobalMyBigFarmer), 0.0f);
     SPIEL_CHECK_EQ(GlobalValue(obs, kGlobalOpponentBigFarmer), 0.0f);
+    // Traders & Builders "on" gives each player a builder.
+    const bool builder = expansion == EXP_TRADERS_BUILDERS && on;
+    SPIEL_CHECK_EQ(core.builder_rules, builder);
+    for (Player player = 0; player < kNumPlayers; ++player) {
+      SPIEL_CHECK_EQ(core.holding_builders[player], builder ? 1 : 0);
+    }
+    SPIEL_CHECK_EQ(GlobalValue(obs, kGlobalMyBuilder), builder ? 1.0f : 0.0f);
+    SPIEL_CHECK_EQ(GlobalValue(obs, kGlobalOpponentBuilder),
+                   builder ? 1.0f : 0.0f);
   }
 }
 
@@ -1904,9 +2148,11 @@ void RiverRulesTest() {
             const bool dealt =
                 (core.expansions & expansionBit(static_cast<Expansion>(expansion))) != 0;
             SPIEL_CHECK_EQ(GlobalValue(obs, cell), dealt ? 1.0f : 0.0f);
-            // Both games deal the river and Inns & Cathedrals, if at all, "on".
+            // Both games deal the river, Inns & Cathedrals and Traders &
+            // Builders, if at all, "on".
             const bool ruled = dealt && (expansion == EXP_RIVER ||
-                                         expansion == EXP_INNS_CATHEDRALS);
+                                         expansion == EXP_INNS_CATHEDRALS ||
+                                         expansion == EXP_TRADERS_BUILDERS);
             SPIEL_CHECK_EQ(GlobalValue(obs, cell + 1), ruled ? 1.0f : 0.0f);
           }
           const int in_side = (core.river_heading + 2) % 4;
@@ -2091,13 +2337,16 @@ void BasicCarcassonneTests() {
   testing::LoadGameTest(kRiverGame);
   testing::LoadGameTest(kInnsCathedralsGame);
   testing::LoadGameTest("carcassonne(inns_cathedrals=tiles)");
+  testing::LoadGameTest(kTradersBuildersGame);
   testing::ChanceOutcomesTest(*LoadGame("carcassonne"));
   testing::ChanceOutcomesTest(*LoadGame(kAllExpansionsGame));
   testing::ChanceOutcomesTest(*LoadGame(kRiverGame));
   testing::ChanceOutcomesTest(*LoadGame(kInnsCathedralsGame));
+  testing::ChanceOutcomesTest(*LoadGame(kTradersBuildersGame));
   testing::RandomSimTest(*LoadGame("carcassonne"), 50);
   testing::RandomSimTest(*LoadGame(kRiverGame), 20);
   testing::RandomSimTest(*LoadGame(kInnsCathedralsGame), 20);
+  testing::RandomSimTest(*LoadGame(kTradersBuildersGame), 20);
   ObservationTensorSmokeTest();
   RelativePerspectiveTest();
   PendingScoreTest();
@@ -2113,6 +2362,7 @@ void BasicCarcassonneTests() {
   InnerFieldTest();
   BigMeepleTest();
   InnCathedralTest();
+  BuilderTest();
   ReturnsMatchScoresTest();
   ShortGameMaxTurnsTest();
   LastUnplaceableTileTest();

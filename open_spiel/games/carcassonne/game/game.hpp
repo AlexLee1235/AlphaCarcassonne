@@ -35,12 +35,17 @@ constexpr int MEEPLE_POS_FIELD = 5;                                        // 5.
 constexpr int MEEPLE_POS_INNER_FIELD = MEEPLE_POS_FIELD + HALF_EDGE_COUNT; // 13: on the tile's inner field
 // 14..27: the big meeple on spot pos - 14, one of 0..13 above.
 constexpr int MEEPLE_POS_BIG = MEEPLE_POS_INNER_FIELD + 1;
-constexpr int MEEPLE_POS_COUNT = MEEPLE_POS_BIG + MEEPLE_POS_BIG - MEEPLE_POS_SKIP; // positions -1 .. 27
+// 28..31: the builder on the feature on side pos - 28 (roads and cities only).
+constexpr int MEEPLE_POS_BUILDER = MEEPLE_POS_BIG + MEEPLE_POS_BIG;
+constexpr int MEEPLE_POS_COUNT = MEEPLE_POS_BUILDER + 4 - MEEPLE_POS_SKIP; // positions -1 .. 31
 using MeepleMoves = FixedVector<int, MEEPLE_POS_COUNT>;
 
-constexpr bool isBigMeeplePos(int pos) { return pos >= MEEPLE_POS_BIG; }
-// Where a meeple move puts its meeple, the big one or not: -1 .. 13.
-constexpr int meepleSpot(int pos) { return isBigMeeplePos(pos) ? pos - MEEPLE_POS_BIG : pos; }
+constexpr bool isBigMeeplePos(int pos) { return pos >= MEEPLE_POS_BIG && pos < MEEPLE_POS_BUILDER; }
+constexpr bool isBuilderPos(int pos) { return pos >= MEEPLE_POS_BUILDER; }
+// Where a meeple move puts its piece, whichever piece: -1 .. 13.
+constexpr int meepleSpot(int pos) {
+    return isBuilderPos(pos) ? pos - MEEPLE_POS_BUILDER : isBigMeeplePos(pos) ? pos - MEEPLE_POS_BIG : pos;
+}
 
 enum GamePhase { PHASE_CHANCE = 0, PHASE_TILE = 1, PHASE_MEEPLE = 2, PHASE_TERMINAL = 3 };
 
@@ -87,6 +92,9 @@ class Feature {
     uint8_t meeple_count[2] = {};
     // 1 if that player's big meeple is on the feature (it is in meeple_count too).
     uint8_t big_meeples[2] = {};
+    // 1 if that player's builder is on the feature. Not a follower: not in
+    // meeple_count, no part in the majority.
+    uint8_t builders[2] = {};
     // Shields on the city, one per city piece that carries MARK_SHIELD.
     uint8_t shields = 0;
     // With the Inns & Cathedrals rules: inns on the road (MARK_INN) and
@@ -126,7 +134,7 @@ long long OpensUnderflowCount();
 
 class FeatureModule {
     void settleCompletedFeatures(int tile_id, int side, int *player_scores, int *holding_meeples,
-                                 int *holding_big_meeples);
+                                 int *holding_big_meeples, int *holding_builders);
 
   public:
     DisjointSet<Feature, std::plus<Feature>, EDGE_SLOT_COUNT> featureMap;
@@ -140,10 +148,18 @@ class FeatureModule {
     // The sides (0..3) a meeple can go on: one per feature with no meeples.
     void getLegalMeepleMoves(MeepleMoves &ret, int x, int y, const BoardModule &board, const Tile &tile) const;
     void placeMeeple(int x, int y, int side, int player, bool big, const BoardModule &board);
+    // The sides (0..3) `player`'s builder can go on: one per feature that
+    // holds one of their followers, as MEEPLE_POS_BUILDER + side.
+    void getLegalBuilderMoves(MeepleMoves &ret, int x, int y, const BoardModule &board, const Tile &tile,
+                              int player) const;
+    void placeBuilder(int x, int y, int side, int player, const BoardModule &board);
+    // Whether a city or road of tile `tile_id` belongs to a feature that holds
+    // `player`'s builder.
+    bool hasBuilderOf(int tile_id, const Tile &tile, int player) const;
     // Scores the features of the tile at (x, y) that are complete and gives
-    // back their meeples, each to its own supply.
+    // back their meeples and builders, each to its own supply.
     void settleAfterPlaceMeeple(int x, int y, const BoardModule &board, int *player_scores, int *holding_meeples,
-                                int *holding_big_meeples);
+                                int *holding_big_meeples, int *holding_builders);
     // Adds each feature that holds meeples to its majority holders, as the
     // end-game scoring and turn-end settlement would.
     void accumulatePendingScore(int *pending) const;
@@ -299,6 +315,8 @@ class Carcassonne {
     int holding_meeples[2] = {MEEPLES_PER_PLAYER, MEEPLES_PER_PLAYER};
     // The big meeple in hand: 1 or 0 with the big meeple rules, else 0.
     int holding_big_meeples[2] = {0, 0};
+    // The builder in hand: 1 or 0 with the builder rules, else 0.
+    int holding_builders[2] = {0, 0};
     int currentPlayer = 0;
     int current_tile_in_hand = 0;
     int completed_turns = 0;
@@ -315,6 +333,16 @@ class Carcassonne {
     // inn scores 2 a tile once closed, a city with a cathedral 3 a tile and a
     // shield; left open at the end, either scores nothing (Feature::getScore).
     bool big_meeple_rules = false;
+
+    // Traders & Builders: each player also has a builder, placed instead of a
+    // meeple on a road or city of the tile just placed that already holds one
+    // of their followers. It is no follower: no part in the majority, and it
+    // comes back when that road or city is completed. Whenever the player
+    // places a tile that extends it, they place one more tile after it (always;
+    // never a third).
+    bool builder_rules = false;
+    bool builder_extra_tile = false;   // the tile just placed extends the current player's builder
+    bool builder_second_tile = false;  // the current player is on the second tile of a double turn
 
     // River rules (on whenever the river tiles are dealt). The river is laid
     // first, from the spring at the centre to the lake, each tile continuing it,
@@ -379,7 +407,8 @@ class Carcassonne {
     void getLegalTileMoves(TileMove *out, int &count) const;
     void placeTile(int x, int y, int rot);
     // Skip, then every free spot with a meeple if the player has one, then the
-    // same spots with the big meeple (spot + MEEPLE_POS_BIG) if they have it.
+    // same spots with the big meeple (spot + MEEPLE_POS_BIG) if they have it,
+    // then the builder's sides (MEEPLE_POS_BUILDER + side) if they have it.
     MeepleMoves getLegalMeepleMoves() const;
     // For each side of the last placed tile, the lowest side of that tile in the
     // same feature (-1 for grass, river or no tile). Meeple moves name a feature by that

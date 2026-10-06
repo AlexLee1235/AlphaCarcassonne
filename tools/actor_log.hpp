@@ -127,18 +127,22 @@ inline bool ApplyLoggedAction(Carcassonne &g, const std::string &a, std::string 
     }
     const std::string prefix = "place_meeple(";
     const std::string big_prefix = "place_big_meeple(";
+    const std::string builder_prefix = "place_builder(";
     const bool big = a.rfind(big_prefix, 0) == 0;
-    if ((big || a.rfind(prefix, 0) == 0) && a.back() == ')') {
-        const size_t start = (big ? big_prefix : prefix).size();
+    const bool builder = a.rfind(builder_prefix, 0) == 0;
+    if ((big || builder || a.rfind(prefix, 0) == 0) && a.back() == ')') {
+        const size_t start = (big ? big_prefix : builder ? builder_prefix : prefix).size();
         const std::string arg = a.substr(start, a.size() - start - 1);
         int pos;
-        if (arg == "skip" && !big) pos = MEEPLE_POS_SKIP;
+        if (arg == "skip" && !big && !builder) pos = MEEPLE_POS_SKIP;
+        else if (sscanf(arg.c_str(), "edge=%d", &k) == 1) pos = k;
+        else if (builder) return fail("看不懂的建築師位置");  // 建築師只放城、路
         else if (arg == "monastery") pos = MEEPLE_POS_MONASTERY;
         else if (arg == "inner_field") pos = MEEPLE_POS_INNER_FIELD;
         else if (sscanf(arg.c_str(), "field=%d", &k) == 1) pos = MEEPLE_POS_FIELD + k;
-        else if (sscanf(arg.c_str(), "edge=%d", &k) == 1) pos = k;
         else return fail("看不懂的 meeple 位置");
-        if (big) pos += MEEPLE_POS_BIG;  // 大米寶放在同樣的位置
+        if (big) pos += MEEPLE_POS_BIG;  // 大米寶、建築師放在同樣的位置
+        if (builder) pos += MEEPLE_POS_BUILDER;
         if (g.current_phase != PHASE_MEEPLE) return fail("不在放 meeple 階段");
         const MeepleMoves moves = g.getLegalMeepleMoves();
         bool legal = false;

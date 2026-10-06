@@ -306,7 +306,7 @@ constexpr TileBlueprint all_tiles[] = {
     {Tile(GRASS, ROAD, GRASS, ROAD, 0, 1, 2, 1, {{0, 0, 0, 1, 1, 1, 1, 0}, 2, {}}, {0, MARK_INN, 0, 0}), 1, 48,
      EXP_INNS_CATHEDRALS},
     // Type 23 (junction east, south, west) with an inn on the east road.
-    {Tile(GRASS, ROAD, ROAD, ROAD, 0, 1, 2, 3, {{0, 0, 0, 1, 1, 2, 2, 0}, 3, {}}, {0, MARK_INN, 0, 0}), 1, 49,
+    {Tile(GRASS, ROAD, ROAD, ROAD, 0, 1, 2, 3, {{0, 0, 0, 1, 1, 2, 2, 0}, 3, {}}, {0, MARK_INN, 0, MARK_INN}), 1, 49,
      EXP_INNS_CATHEDRALS},
     // Two road bends, north to west and east to south.
     {Tile(ROAD, ROAD, ROAD, ROAD, 0, 1, 1, 0, {{0, 1, 1, 2, 2, 1, 1, 0}, 3, {}}), 1, 50, EXP_INNS_CATHEDRALS},

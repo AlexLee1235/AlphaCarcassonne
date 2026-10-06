@@ -176,7 +176,7 @@ inline constexpr int kGlobalOpponentPig = kGlobalMyPig + 1;
 inline constexpr int kGlobalMyGoods = kGlobalOpponentPig + 1;
 inline constexpr int kGlobalOpponentGoods = kGlobalMyGoods + GOODS_KINDS;
 inline constexpr int kGlobalFeatures = kGlobalOpponentGoods + GOODS_KINDS;
-static_assert(kGlobalFeatures == 84 + 2 * CANONICAL_TILE_TYPE_COUNT);
+static_assert(kGlobalFeatures == 86 + 2 * CANONICAL_TILE_TYPE_COUNT);
 static_assert(kGlobalFeatures <= BOARD_SIZE * BOARD_SIZE);
 inline constexpr int kObservationTensorSize = kObservationPlanes * BOARD_SIZE * BOARD_SIZE;
 

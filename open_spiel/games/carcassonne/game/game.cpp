@@ -112,13 +112,15 @@ void Carcassonne::placeTileOnBoard(int tile_id, int x, int y, int rot) {
     logs.placeTileOnBoard(tile_id, x, y, rot);
     if (river_rules && riverEdgeCount(tile) > 0) {
         advanceRiver(x, y, tile);
+        river_tiles_placed++;
     }
 }
 
 Carcassonne::Carcassonne(int max_turns) : Carcassonne(max_turns, START_TILE_ROTATION) {}
 
-Carcassonne::Carcassonne(int max_turns, int start_rotation, uint32_t expansions) : max_turns(max_turns) {
-    deck.initializeTypeCounts(expansions | BASE_ONLY);
+Carcassonne::Carcassonne(int max_turns, int start_rotation, uint32_t expansions)
+    : max_turns(max_turns), expansions(expansions | BASE_ONLY) {
+    deck.initializeTypeCounts(this->expansions);
     river_rules = deck.river_first;
     // With the river the spring starts the game instead of the base start tile,
     // which the deck leaves out.

@@ -1,4 +1,4 @@
-// 正規化尺度的量測(CLAUDE.md §11)。diag_pending_scale、diag_plane_scale、
+// 正規化尺度的量測(CLAUDE.md §4)。diag_pending_scale、diag_plane_scale、
 // diag_replay_scale 共用這裡的取樣,保證三支工具量的是同一個東西,只差對局分佈。
 //
 // 用法:每個決策點(tile 期與 meeple 期)呼叫 Collector::Decision(),每局結束

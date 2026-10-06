@@ -239,8 +239,11 @@ void ObservationTensorSmokeTest() {
                 kGlobalCompletedTurns, kGlobalTilePhase, kGlobalMeeplePhase,
                 kGlobalLegalPlacements, kGlobalMyFieldPending,
                 kGlobalOpponentFieldPending, kGlobalMyFarmers,
-                kGlobalOpponentFarmers}) {
+                kGlobalOpponentFarmers, kGlobalRiverTiles}) {
     SPIEL_CHECK_EQ(GlobalValue(initial_obs, i), 0.0f);
+  }
+  for (int cell = 0; cell < kGlobalExpansionCells; ++cell) {
+    SPIEL_CHECK_EQ(GlobalValue(initial_obs, kGlobalExpansionModes + cell), 0.0f);
   }
   SPIEL_CHECK_EQ(GlobalValue(initial_obs, kGlobalMyMeeples), 1.0f);
   SPIEL_CHECK_EQ(GlobalValue(initial_obs, kGlobalOpponentMeeples), 1.0f);
@@ -1159,9 +1162,21 @@ void ExpansionOptionsTest() {
     }
     SPIEL_CHECK_TRUE(Near(total, 1.0));
     // Remaining tiles count against this game's deck.
-    SPIEL_CHECK_TRUE(Near(GlobalValue(state->ObservationTensor(0),
-                                      kGlobalRemainingTiles),
+    const std::vector<float> obs = state->ObservationTensor(0);
+    SPIEL_CHECK_TRUE(Near(GlobalValue(obs, kGlobalRemainingTiles),
                           (deckSizeOf(mask) - 1.0f) / deckSizeOf(mask)));
+    // Each expansion's mode: off (0, 0), tiles (1, 0) or on (1, 1); the river
+    // only comes on.
+    for (int other = 1; other < EXPANSION_COUNT; ++other) {
+      const int cell = kGlobalExpansionModes + 2 * (other - 1);
+      const bool dealt = other == expansion;
+      SPIEL_CHECK_EQ(GlobalValue(obs, cell), dealt ? 1.0f : 0.0f);
+      SPIEL_CHECK_EQ(GlobalValue(obs, cell + 1),
+                     dealt && other == EXP_RIVER ? 1.0f : 0.0f);
+    }
+    // The spring is on the board.
+    SPIEL_CHECK_TRUE(Near(GlobalValue(obs, kGlobalRiverTiles),
+                          expansion == EXP_RIVER ? 1.0f / 12 : 0.0f));
   }
 }
 
@@ -1378,6 +1393,19 @@ void RiverRulesTest() {
             legal[std::uniform_int_distribution<int>(0, legal.size() - 1)(rng)];
         if (core.current_phase == PHASE_TILE &&
             IsRiverType(core.currentTileType())) {
+          // The observation counts the river tiles on the board.
+          const std::vector<float> obs = state->ObservationTensor(0);
+          SPIEL_CHECK_EQ(core.river_tiles_placed, river_placed);
+          SPIEL_CHECK_TRUE(
+              Near(GlobalValue(obs, kGlobalRiverTiles), river_placed / 12.0f));
+          for (int expansion = 1; expansion < EXPANSION_COUNT; ++expansion) {
+            const int cell = kGlobalExpansionModes + 2 * (expansion - 1);
+            const bool dealt =
+                (core.expansions & expansionBit(static_cast<Expansion>(expansion))) != 0;
+            SPIEL_CHECK_EQ(GlobalValue(obs, cell), dealt ? 1.0f : 0.0f);
+            SPIEL_CHECK_EQ(GlobalValue(obs, cell + 1),
+                           expansion == EXP_RIVER ? 1.0f : 0.0f);
+          }
           const int in_side = (core.river_heading + 2) % 4;
           for (Action legal_action : legal) {
             int tile_x, tile_y, rot;
@@ -1428,6 +1456,10 @@ void RiverRulesTest() {
       }
       SPIEL_CHECK_EQ(last_type, RIVER_LAKE_TYPE);
       SPIEL_CHECK_EQ(walked, river_placed);
+      SPIEL_CHECK_EQ(core.river_tiles_placed, river_placed);
+      SPIEL_CHECK_TRUE(Near(GlobalValue(state->ObservationTensor(0),
+                                        kGlobalRiverTiles),
+                            river_placed / 12.0f));
       placed += river_placed;
     }
   }

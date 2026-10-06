@@ -18,11 +18,13 @@ namespace carcassonne {
 namespace {
 
 constexpr float kMeepleNormalization = 7.0f;
+// River tiles on the board count against the 12 river tiles.
+constexpr float kRiverTileNormalization = tileCountIn(expansionBit(EXP_RIVER));
 // The remaining tiles are counted against the deck this game deals, and the
 // completed turns against the tiles drawn after the start tile: completed_turns
 // counts the turns of both players, one per tile.
 // The measured scales below give the p99 at the last decision as random /
-// greedy / self-play games, and the largest value seen; section 11 of
+// greedy / self-play games, and the largest value seen; section 4 of
 // CLAUDE.md says how to measure them again. All are clipped.
 // Points a player has scored: 20 / 85 / 93, max 120 (tools/diag_pending_scale,
 // tools/diag_replay_scale).
@@ -544,6 +546,13 @@ void CarcassonneState::ObservationTensor(Player player, absl::Span<float> values
     global[kGlobalOpponentFieldPending] = Clip(field_pending[opponent] / kFieldPendingNormalization);
     global[kGlobalMyFarmers] = game_state_.farmersOnBoard(player) / kMeepleNormalization;
     global[kGlobalOpponentFarmers] = game_state_.farmersOnBoard(opponent) / kMeepleNormalization;
+    for (int expansion = 1; expansion < EXPANSION_COUNT; ++expansion) {
+        const uint32_t bit = expansionBit(static_cast<Expansion>(expansion));
+        global[kGlobalExpansionModes + 2 * (expansion - 1)] = (game_state_.expansions & bit) ? 1.0f : 0.0f;
+        global[kGlobalExpansionModes + 2 * (expansion - 1) + 1] =
+            (game_state_.expansions & RULED_EXPANSIONS & bit) ? 1.0f : 0.0f;
+    }
+    global[kGlobalRiverTiles] = game_state_.river_tiles_placed / kRiverTileNormalization;
 }
 
 std::unique_ptr<State> CarcassonneState::Clone() const { return std::unique_ptr<State>(new CarcassonneState(*this)); }
@@ -627,9 +636,10 @@ CarcassonneGame::CarcassonneGame(const GameParameters &params)
     SPIEL_CHECK_GE(max_turns_, 0);
     for (int expansion = 1; expansion < EXPANSION_COUNT; ++expansion) {
         const std::string mode = ParameterValue<std::string>(EXPANSION_NAMES[expansion]);
-        // The river's rules come with its tiles (game.hpp), so it has no
-        // tiles-only mode.
-        const std::string deal = expansion == EXP_RIVER ? "on" : "tiles";
+        // An expansion whose rules the engine plays comes with them: "on". The
+        // others deal their tiles alone: "tiles".
+        const bool ruled = (RULED_EXPANSIONS & expansionBit(static_cast<Expansion>(expansion))) != 0;
+        const std::string deal = ruled ? "on" : "tiles";
         if (mode == deal) {
             expansions_ |= expansionBit(static_cast<Expansion>(expansion));
         } else if (mode != "off") {

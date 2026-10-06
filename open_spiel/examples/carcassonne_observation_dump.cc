@@ -140,7 +140,7 @@ std::vector<std::string> GlobalFeatureNames() {
   names[kGlobalScoreDiff] = "score_diff";
   names[kGlobalMyPending] = "my_pending";
   names[kGlobalOpponentPending] = "opponent_pending";
-  const char* scales[kStaticDiffScales] = {"3", "10", "30"};
+  const char* scales[kStaticDiffScales] = {"3", "10", "60"};
   for (int scale = 0; scale < kStaticDiffScales; ++scale) {
     names[kGlobalStaticDiff + scale] = std::string("static_diff_/") + scales[scale];
   }
@@ -169,6 +169,12 @@ std::vector<std::string> GlobalFeatureNames() {
   names[kGlobalOpponentFieldPending] = "opponent_field_pending";
   names[kGlobalMyFarmers] = "my_farmers";
   names[kGlobalOpponentFarmers] = "opponent_farmers";
+  for (int expansion = 1; expansion < EXPANSION_COUNT; ++expansion) {
+    const int cell = kGlobalExpansionModes + 2 * (expansion - 1);
+    names[cell] = std::string(EXPANSION_NAMES[expansion]) + "_tiles";
+    names[cell + 1] = std::string(EXPANSION_NAMES[expansion]) + "_rules";
+  }
+  names[kGlobalRiverTiles] = "river_tiles_placed";
   return names;
 }
 

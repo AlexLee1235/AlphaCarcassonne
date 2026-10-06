@@ -264,6 +264,9 @@ class Carcassonne {
     int current_tile_in_hand = 0;
     int completed_turns = 0;
     int max_turns = 0;
+    // The expansionBit() mask of the expansions this game deals, the base
+    // included; those in RULED_EXPANSIONS also play their rules.
+    uint32_t expansions = BASE_ONLY;
 
     // River rules (on whenever the river tiles are dealt). The river is laid
     // first, from the spring at the centre to the lake, each tile continuing it,
@@ -274,6 +277,7 @@ class Carcassonne {
     int river_y = -1;
     int river_heading = -1;     // the side the river leaves its last tile by: 0 N, 1 E, 2 S, 3 W
     int river_last_turn = 0;    // its last bend, as (out - in heading) % 4: 1 clockwise, 3 anticlockwise; 0 none yet
+    int river_tiles_placed = 0; // river tiles on the board, the spring included
 
     explicit Carcassonne(int max_turns = 0);
     // Starts with the start tile turned by start_rotation quarter turns: the

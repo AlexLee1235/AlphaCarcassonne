@@ -101,7 +101,7 @@ head 有沒有在做空間求和（`cos(eff, 1)`）、每個位置的權重有�
     的正負號（有號求和需要「加分」與「扣分」兩種通道同時存在）。
   - `erf.py`：(2)(3) 改用 mean pooling 分支線性化（每格權重 1/(H·W)），max 分支
     不可線性化、沒有計入；棋盤邊長取自 `occupancy.csv`，沒有就用 15。
-    有號探針 (3) 的正號格數應該從 89/225 大幅上升（CLAUDE.md §8 第 4 項）。
+    有號探針 (3) 的正號格數應該從 89/225 大幅上升（docs/carcassonne_design_history.md §8 第 4 項）。
   - head 所在的 `layers.N.` 由 residual block 數推出，不再寫死 `layers.9.`
     （`nn_depth` ≠ 8 的 checkpoint 也能讀）。
 - **舊 checkpoint 不能載入新架構**：`VPNetModel::LoadCheckpoint` 會檢查形狀並直接報錯，

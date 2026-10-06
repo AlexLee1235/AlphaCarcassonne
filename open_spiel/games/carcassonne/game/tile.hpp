@@ -39,6 +39,9 @@ constexpr int OFFICIAL_TILE_COUNTS[EXPANSION_COUNT] = {72, 18, 24, 12, 30};
 constexpr uint32_t expansionBit(Expansion expansion) { return 1u << expansion; }
 constexpr uint32_t BASE_ONLY = 1u << EXP_BASE;
 constexpr uint32_t ALL_EXPANSIONS = (1u << EXPANSION_COUNT) - 1;
+// The expansions whose rules the engine plays: dealing one of these means
+// "on" (its tiles and its rules), dealing any other "tiles" (its tiles only).
+constexpr uint32_t RULED_EXPANSIONS = expansionBit(EXP_RIVER);
 
 // Fields (farms). Each side has two halves; half-edge e = 2 * side + h runs
 // clockwise round the tile: 0 N-west, 1 N-east, 2 E-north, 3 E-south,

@@ -114,8 +114,15 @@ inline constexpr int kGlobalOpponentFieldPending = kGlobalMyFieldPending + 1;
 // they also give how many are out on features and will return.
 inline constexpr int kGlobalMyFarmers = kGlobalOpponentFieldPending + 1;
 inline constexpr int kGlobalOpponentFarmers = kGlobalMyFarmers + 1;
-inline constexpr int kGlobalFeatures = kGlobalOpponentFarmers + 1;
-static_assert(kGlobalFeatures == 35 + 2 * CANONICAL_TILE_TYPE_COUNT);
+// Each expansion other than the base, in Expansion order (inns_cathedrals,
+// traders_builders, river, princess_dragon), as two cells: its tiles are dealt,
+// its rules are on. off = (0, 0), tiles = (1, 0), on = (1, 1).
+inline constexpr int kGlobalExpansionModes = kGlobalOpponentFarmers + 1;
+inline constexpr int kGlobalExpansionCells = 2 * (EXPANSION_COUNT - 1);
+// River tiles on the board, the spring included, / 12; 0 without the river.
+inline constexpr int kGlobalRiverTiles = kGlobalExpansionModes + kGlobalExpansionCells;
+inline constexpr int kGlobalFeatures = kGlobalRiverTiles + 1;
+static_assert(kGlobalFeatures == 44 + 2 * CANONICAL_TILE_TYPE_COUNT);
 static_assert(kGlobalFeatures <= BOARD_SIZE * BOARD_SIZE);
 inline constexpr int kObservationTensorSize = kObservationPlanes * BOARD_SIZE * BOARD_SIZE;
 

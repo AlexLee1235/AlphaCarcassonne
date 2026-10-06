@@ -28,7 +28,7 @@ checkpoint-193（舊架構）的實測：
       corr(占用率, 敏感度) = +0.613
   (3) plane15 - plane20 只有 89/225 格符號是正的，mean 還是負的
       -> 網路連「我的 meeple 多是好事」這個方向都沒學到
-換成 global pooling 之後，(3) 的正號格數應該大幅上升（CLAUDE.md §8 第 4 項）。
+換成 global pooling 之後，(3) 的正號格數應該大幅上升（docs/carcassonne_design_history.md §8 第 4 項）。
 
 用法:
     python3 readckpt.py checkpoint-193.pt ck.npz

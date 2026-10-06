@@ -59,10 +59,10 @@ inline constexpr int kLastPlacedPlane = kLegalPlacementPlane + kLegalPlacementPl
 // for each quantity. Summing them along a feature needs the whole feature in view,
 // which the convolutions cannot do, so they are computed here.
 inline constexpr int kFeatureOpensPlane = kLastPlacedPlane + 1;         // min(opens, 6) / 6
-inline constexpr int kFeatureScorePlane = kFeatureOpensPlane + 4;       // getScore() / 12
+inline constexpr int kFeatureScorePlane = kFeatureOpensPlane + 4;       // getScore() / 30
 inline constexpr int kFeatureMyMeeplesPlane = kFeatureScorePlane + 4;   // count / 7
 inline constexpr int kFeatureOpponentMeeplesPlane = kFeatureMyMeeplesPlane + 4;
-inline constexpr int kFeatureSignedScorePlane = kFeatureOpponentMeeplesPlane + 4; // +-getScore() / 12
+inline constexpr int kFeatureSignedScorePlane = kFeatureOpponentMeeplesPlane + 4; // +-getScore() / 30
 // Monasteries: tiles around it / 9, and +1 mine, -1 the opponent's.
 inline constexpr int kMonasteryCoveragePlane = kFeatureSignedScorePlane + 4;
 inline constexpr int kMonasteryOwnerPlane = kMonasteryCoveragePlane + 1;
@@ -71,7 +71,7 @@ inline constexpr int kMonasteryOwnerPlane = kMonasteryCoveragePlane + 1;
 inline constexpr int kFieldMyFarmersPlane = kMonasteryOwnerPlane + 1;                 // count / 7
 inline constexpr int kFieldOpponentFarmersPlane = kFieldMyFarmersPlane + HALF_EDGE_COUNT;
 inline constexpr int kFieldScorePlane = kFieldOpponentFarmersPlane + HALF_EDGE_COUNT; // 3 * completed cities / 30
-inline constexpr int kFieldSizePlane = kFieldScorePlane + HALF_EDGE_COUNT;            // tiles / 30
+inline constexpr int kFieldSizePlane = kFieldScorePlane + HALF_EDGE_COUNT;            // tiles / 60
 inline constexpr int kFieldOpenCitiesPlane = kFieldSizePlane + HALF_EDGE_COUNT;       // open cities next to it / 10
 // The same for a tile's inner field, which touches no half-edge.
 inline constexpr int kInnerFieldMyFarmersPlane = kFieldOpenCitiesPlane + HALF_EDGE_COUNT;
@@ -86,17 +86,17 @@ static_assert(kLastPlacedPlane == 33);
 static_assert(kSpatialPlanes == 101);
 
 // Offsets in the global vector, all from the observing player's side.
-inline constexpr int kGlobalMyScore = 0;           // / 40
+inline constexpr int kGlobalMyScore = 0;           // clip(/100)
 inline constexpr int kGlobalOpponentScore = 1;
-inline constexpr int kGlobalScoreDiff = 2;         // clip(diff / 20)
-inline constexpr int kGlobalMyPending = 3;         // / 20, see getPendingScore()
+inline constexpr int kGlobalScoreDiff = 2;         // clip(diff / 70)
+inline constexpr int kGlobalMyPending = 3;         // clip(/70), see getPendingScore()
 inline constexpr int kGlobalOpponentPending = 4;
-inline constexpr int kGlobalStaticDiff = 5;        // banked + pending diff: clip(/3), clip(/10), clip(/30)
+inline constexpr int kGlobalStaticDiff = 5;        // banked + pending diff: clip(/3), clip(/10), clip(/60)
 inline constexpr int kStaticDiffScales = 3;
 inline constexpr int kGlobalMyMeeples = kGlobalStaticDiff + kStaticDiffScales; // / 7
 inline constexpr int kGlobalOpponentMeeples = kGlobalMyMeeples + 1;
 inline constexpr int kGlobalRemainingTiles = kGlobalOpponentMeeples + 1;      // / deck size (72 in the base game)
-inline constexpr int kGlobalCompletedTurns = kGlobalRemainingTiles + 1;       // / (deck size / 2)
+inline constexpr int kGlobalCompletedTurns = kGlobalRemainingTiles + 1;       // / (deck size - 1)
 // Every type of every expansion has a slot, whether this game deals it or not.
 inline constexpr int kGlobalRemainingByType = kGlobalCompletedTurns + 1;      // left / count in the table; 0 if not dealt
 inline constexpr int kGlobalTileInHand = kGlobalRemainingByType + CANONICAL_TILE_TYPE_COUNT; // one-hot
@@ -107,11 +107,15 @@ inline constexpr int kGlobalMeeplePhase = kGlobalTilePhase + 1;
 inline constexpr int kGlobalLegalMeeple = kGlobalMeeplePhase + 1;
 inline constexpr int kGlobalLegalPlacements = kGlobalLegalMeeple + kMeepleActionCount; // / 100
 inline constexpr int kGlobalIsPlayer0 = kGlobalLegalPlacements + 1;
-// The part of the pending scores that fields score, / 40.
+// The part of the pending scores that fields score, clip(/40).
 inline constexpr int kGlobalMyFieldPending = kGlobalIsPlayer0 + 1;
 inline constexpr int kGlobalOpponentFieldPending = kGlobalMyFieldPending + 1;
-inline constexpr int kGlobalFeatures = kGlobalOpponentFieldPending + 1;
-static_assert(kGlobalFeatures == 33 + 2 * CANONICAL_TILE_TYPE_COUNT);
+// Farmers on the board, / 7. They never come back, so with the meeples held
+// they also give how many are out on features and will return.
+inline constexpr int kGlobalMyFarmers = kGlobalOpponentFieldPending + 1;
+inline constexpr int kGlobalOpponentFarmers = kGlobalMyFarmers + 1;
+inline constexpr int kGlobalFeatures = kGlobalOpponentFarmers + 1;
+static_assert(kGlobalFeatures == 35 + 2 * CANONICAL_TILE_TYPE_COUNT);
 static_assert(kGlobalFeatures <= BOARD_SIZE * BOARD_SIZE);
 inline constexpr int kObservationTensorSize = kObservationPlanes * BOARD_SIZE * BOARD_SIZE;
 
@@ -205,6 +209,13 @@ SideGroups RotateSideGroups(const SideGroups &groups, int k);
 // quarter turns. `groups` must come from the original position.
 void RotateObservation(absl::Span<const float> observation, int k, const SideGroups &groups,
                        absl::Span<float> rotated);
+
+// Every value of observation plane `plane` is n / ObservationPlaneDenominator(plane)
+// for an integer n in [-128, 127] (the denominator is 1 for the 0/1 planes), or
+// 0 for the global vector, whose values are not. Lets a replay buffer keep the
+// planes as int8 without losing anything (see alpha_zero_torch's
+// observation_codec.h).
+float ObservationPlaneDenominator(int plane);
 
 } // namespace carcassonne
 } // namespace open_spiel

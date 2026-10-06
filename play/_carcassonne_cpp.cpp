@@ -114,6 +114,9 @@ PYBIND11_MODULE(_carcassonne_cpp, m) {
     m.attr("PHASE_MEEPLE") = static_cast<int>(PHASE_MEEPLE);
     m.attr("PHASE_TERMINAL") = static_cast<int>(PHASE_TERMINAL);
     m.attr("PHYSICAL_TO_CANONICAL_TYPE") = PhysicalToCanonicalType();
+    m.attr("MEEPLE_POS_FIELD") = MEEPLE_POS_FIELD;
+    m.attr("MEEPLE_POS_INNER_FIELD") = MEEPLE_POS_INNER_FIELD;
+    m.attr("HALF_EDGE_COUNT") = HALF_EDGE_COUNT;
 
     py::class_<Carcassonne>(m, "Carcassonne")
         .def(py::init<>())

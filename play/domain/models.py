@@ -30,6 +30,20 @@ class MoveRecord:
     rotation: int
     meeple_pos: int
     score_deltas: Dict[int, int] = field(default_factory=dict)
+    # An AlphaZero move's estimate of the game from the mover's side, -1..1: the
+    # search's mean return and the network's raw value. None for other players.
+    value: Optional[float] = None
+    raw_value: Optional[float] = None
+
+
+@dataclass(frozen=True)
+class BotValue:
+    """What an AlphaZero player thought of the position when it placed its tile."""
+
+    player: int
+    value: float
+    raw_value: float
+    simulations: int
 
 
 @dataclass

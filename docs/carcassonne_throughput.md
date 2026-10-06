@@ -216,8 +216,11 @@ KL 0.075 → 0.32，而 eval 從 −1.0 升到 −0.21。原因有四個，都�
 2. **不要**加 actor；要動就往下調到約 1024，換取資料新鮮度。
 3. `max_simulations` 800 → **300**：一局約 20 分鐘，資料新鮮度約 3 倍、每小時局數
    約 2.7 倍。唯一同時改善兩個軸的槓桿，但會改變每局棋力，要先做對打實驗。
-4. 加 `buffer_save_freq`（現在沒有這個選項），把每步 140 s 的 buffer 寫入降下來；
-   或把 libnop 的逐元素序列化換成整塊寫入（約可省 40% 時間與檔案大小）。
+4. ~~加 `buffer_save_freq`，或把 libnop 的逐元素序列化換成整塊寫入。~~
+   **已用另一個方式解決（2026-10-05）**：觀測改存 int8 分子
+   （`alpha_zero_torch/observation_codec.h`，逐位元無損），libnop 對整數 vector 本來就整塊寫入。
+   262,144 筆的 `replay_buffer.data` 54.9 GB → 11 GB，存檔約 240 s → 約 5 s
+   （筆電 page cache 實測外推，`examples/observation_codec_benchmark`）。
 5. （可選，小改動）讓 actor 錯開起跑，打散「一波 2048 局」的叢聚。
 6. ~~加 held-out loss，讓平原期也有可讀的指標。~~ 已完成，見 §5.1。
 

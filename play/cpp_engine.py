@@ -4,6 +4,9 @@ try:
     from engine.adapter import (
         BOARD_SIZE,
         ENGINE_BOARD_SIZE,
+    HALF_EDGE_COUNT,
+    MEEPLE_POS_FIELD,
+    MEEPLE_POS_INNER_FIELD,
         PHASE_CHANCE,
         PHASE_MEEPLE,
         PHASE_TERMINAL,
@@ -19,6 +22,9 @@ except ImportError:  # pragma: no cover - package import fallback
     from .engine.adapter import (
         BOARD_SIZE,
         ENGINE_BOARD_SIZE,
+    HALF_EDGE_COUNT,
+    MEEPLE_POS_FIELD,
+    MEEPLE_POS_INNER_FIELD,
         PHASE_CHANCE,
         PHASE_MEEPLE,
         PHASE_TERMINAL,
@@ -34,6 +40,9 @@ except ImportError:  # pragma: no cover - package import fallback
 __all__ = [
     "BOARD_SIZE",
     "ENGINE_BOARD_SIZE",
+    "HALF_EDGE_COUNT",
+    "MEEPLE_POS_FIELD",
+    "MEEPLE_POS_INNER_FIELD",
     "PHASE_CHANCE",
     "PHASE_MEEPLE",
     "PHASE_TERMINAL",

@@ -9,8 +9,10 @@ add_executable(carcassonne_observation_dump
   ${OPEN_SPIEL_OBJECTS})
 
 if (OPEN_SPIEL_BUILD_WITH_LIBNOP)
+  # The codec needs libnop but not libtorch, so it is compiled in directly.
   add_executable(observation_codec_benchmark
     observation_codec_benchmark.cc
+    ../algorithms/alpha_zero_torch/observation_codec.cc
     ${OPEN_SPIEL_OBJECTS})
 endif()
 

@@ -205,7 +205,7 @@ void ObservationTensorSmokeTest() {
   SPIEL_CHECK_EQ(PlaneValue(initial_obs, kFeatureOpensPlane + 2, c, c), 0.0f);
   for (int side : {0, 1, 3}) {
     SPIEL_CHECK_TRUE(Near(PlaneValue(initial_obs, kFeatureScorePlane + side, c, c),
-                          1.0f / 12));
+                          1.0f / 30));
   }
   SPIEL_CHECK_EQ(PlaneValue(initial_obs, kFeatureScorePlane + 2, c, c), 0.0f);
   CheckZeroPlanes(initial_obs, kFeatureMyMeeplesPlane, 12);
@@ -220,9 +220,9 @@ void ObservationTensorSmokeTest() {
     const bool on_field = half_edge >= 2;
     const bool north = half_edge == 2 || half_edge == 7;
     SPIEL_CHECK_TRUE(Near(PlaneSum(initial_obs, kFieldSizePlane + half_edge),
-                          on_field ? 1.0f / 30 : 0.0f));
+                          on_field ? 1.0f / 60 : 0.0f));
     SPIEL_CHECK_TRUE(Near(PlaneValue(initial_obs, kFieldSizePlane + half_edge, c, c),
-                          on_field ? 1.0f / 30 : 0.0f));
+                          on_field ? 1.0f / 60 : 0.0f));
     SPIEL_CHECK_TRUE(Near(PlaneSum(initial_obs, kFieldOpenCitiesPlane + half_edge),
                           north ? 1.0f / 10 : 0.0f));
     SPIEL_CHECK_TRUE(
@@ -237,7 +237,8 @@ void ObservationTensorSmokeTest() {
                 kGlobalStaticDiff + 1, kGlobalStaticDiff + 2,
                 kGlobalCompletedTurns, kGlobalTilePhase, kGlobalMeeplePhase,
                 kGlobalLegalPlacements, kGlobalMyFieldPending,
-                kGlobalOpponentFieldPending}) {
+                kGlobalOpponentFieldPending, kGlobalMyFarmers,
+                kGlobalOpponentFarmers}) {
     SPIEL_CHECK_EQ(GlobalValue(initial_obs, i), 0.0f);
   }
   SPIEL_CHECK_EQ(GlobalValue(initial_obs, kGlobalMyMeeples), 1.0f);
@@ -306,7 +307,7 @@ void ObservationTensorSmokeTest() {
   std::vector<float> player1_chance_obs = state->ObservationTensor(1);
   SPIEL_CHECK_EQ(GlobalValue(player1_chance_obs, kGlobalIsPlayer0), 0.0f);
   SPIEL_CHECK_TRUE(Near(GlobalValue(player1_chance_obs, kGlobalCompletedTurns),
-                        1.0f / 36.0f));
+                        1.0f / 71.0f));
 }
 
 void RelativePerspectiveTest() {
@@ -364,13 +365,13 @@ void RelativePerspectiveTest() {
     const std::vector<float>& obs = *views[player];
     const int opponent = 1 - player;
     SPIEL_CHECK_TRUE(Near(GlobalValue(obs, kGlobalMyScore),
-                          core.player_scores[player] / 40.0f));
+                          std::min(1.0f, core.player_scores[player] / 100.0f)));
     SPIEL_CHECK_TRUE(Near(GlobalValue(obs, kGlobalOpponentScore),
-                          core.player_scores[opponent] / 40.0f));
+                          std::min(1.0f, core.player_scores[opponent] / 100.0f)));
     SPIEL_CHECK_TRUE(Near(GlobalValue(obs, kGlobalMyPending),
-                          std::min(1.0f, pending[player] / 40.0f)));
+                          std::min(1.0f, pending[player] / 70.0f)));
     SPIEL_CHECK_TRUE(Near(GlobalValue(obs, kGlobalOpponentPending),
-                          std::min(1.0f, pending[opponent] / 40.0f)));
+                          std::min(1.0f, pending[opponent] / 70.0f)));
     SPIEL_CHECK_TRUE(Near(GlobalValue(obs, kGlobalMyFieldPending),
                           std::min(1.0f, field_pending[player] / 40.0f)));
     SPIEL_CHECK_TRUE(Near(GlobalValue(obs, kGlobalOpponentFieldPending),
@@ -379,6 +380,10 @@ void RelativePerspectiveTest() {
                           core.holding_meeples[player] / 7.0f));
     SPIEL_CHECK_TRUE(Near(GlobalValue(obs, kGlobalOpponentMeeples),
                           core.holding_meeples[opponent] / 7.0f));
+    SPIEL_CHECK_TRUE(Near(GlobalValue(obs, kGlobalMyFarmers),
+                          core.farmersOnBoard(player) / 7.0f));
+    SPIEL_CHECK_TRUE(Near(GlobalValue(obs, kGlobalOpponentFarmers),
+                          core.farmersOnBoard(opponent) / 7.0f));
     const int diff = core.player_scores[player] - core.player_scores[opponent] +
                      pending[player] - pending[opponent];
     SPIEL_CHECK_TRUE(Near(GlobalValue(obs, kGlobalStaticDiff),
@@ -794,9 +799,11 @@ void FieldScoringTest() {
     // Ten pieces on six tiles: the start tile, its neighbour and the junction
     // each have pieces on both sides of the road.
     CheckField(game, c, c, 0, 6, 0, 3);
-    // Farmers never come back.
+    // Farmers never come back: two each, and nothing else is out.
     SPIEL_CHECK_EQ(game.holding_meeples[0], 5);
     SPIEL_CHECK_EQ(game.holding_meeples[1], 5);
+    SPIEL_CHECK_EQ(game.farmersOnBoard(0), 2);
+    SPIEL_CHECK_EQ(game.farmersOnBoard(1), 2);
   }
   // A field next to two separate cities on one tile scores each of them.
   {
@@ -1282,6 +1289,49 @@ void ExpansionGamesTest() {
   SPIEL_CHECK_EQ(OpensUnderflowCount(), 0);
 }
 
+// Every spatial observation value is n / ObservationPlaneDenominator(plane)
+// for an int8 n, and the global plane is 0 past the global vector: what lets
+// alpha_zero_torch keep observations as int8 (observation_codec.h).
+void ObservationDenominatorTest() {
+  constexpr int kPlaneSize = BOARD_SIZE * BOARD_SIZE;
+  for (int plane = 0; plane < kSpatialPlanes; ++plane) {
+    SPIEL_CHECK_GT(ObservationPlaneDenominator(plane), 0.0f);
+  }
+  SPIEL_CHECK_EQ(ObservationPlaneDenominator(kGlobalFeaturePlane), 0.0f);
+
+  std::shared_ptr<const Game> game = LoadGame("carcassonne");
+  std::mt19937 rng(20261005);
+  for (int g = 0; g < 10; ++g) {
+    std::unique_ptr<State> state = game->NewInitialState();
+    while (!state->IsTerminal()) {
+      if (state->IsChanceNode()) {
+        state->ApplyAction(SampleAction(state->ChanceOutcomes(), rng).first);
+        continue;
+      }
+      for (Player player = 0; player < kNumPlayers; ++player) {
+        const std::vector<float> observation = state->ObservationTensor(player);
+        for (int plane = 0; plane < kSpatialPlanes; ++plane) {
+          const float denominator = ObservationPlaneDenominator(plane);
+          for (int cell = 0; cell < kPlaneSize; ++cell) {
+            const float value = observation[plane * kPlaneSize + cell];
+            const long n = std::lround(value * denominator);
+            SPIEL_CHECK_GE(n, -128);
+            SPIEL_CHECK_LE(n, 127);
+            SPIEL_CHECK_EQ(static_cast<float>(n) / denominator, value);
+          }
+        }
+        for (int cell = kGlobalFeatures; cell < kPlaneSize; ++cell) {
+          SPIEL_CHECK_EQ(observation[kGlobalFeaturePlane * kPlaneSize + cell],
+                         0.0f);
+        }
+      }
+      const std::vector<Action> legal = state->LegalActions();
+      state->ApplyAction(
+          legal[std::uniform_int_distribution<int>(0, legal.size() - 1)(rng)]);
+    }
+  }
+}
+
 void BasicCarcassonneTests() {
   testing::LoadGameTest("carcassonne");
   testing::LoadGameTest("carcassonne(max_turns=10)");
@@ -1305,6 +1355,7 @@ void BasicCarcassonneTests() {
   ShortGameMaxTurnsTest();
   LastUnplaceableTileTest();
   RotationEquivarianceTest();
+  ObservationDenominatorTest();
 }
 
 }  // namespace

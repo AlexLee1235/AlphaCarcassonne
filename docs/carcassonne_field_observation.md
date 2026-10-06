@@ -18,18 +18,20 @@
 | `kFieldMyFarmersPlane` + 半邊 0..7 | 該半邊所屬農田（元件）的我方農夫數 | `/7` |
 | `kFieldOpponentFarmersPlane` + 半邊 | 同上，對手 | `/7` |
 | `kFieldScorePlane` + 半邊 | `3 × 已完成相鄰城數` | `/30` clip |
-| `kFieldSizePlane` + 半邊 | 田的大小（涵蓋的磚數） | `/30` clip |
+| `kFieldSizePlane` + 半邊 | 田的大小（涵蓋的磚數） | `/60` clip |
 | `kFieldOpenCitiesPlane` + 半邊 | 相鄰的未完成城數 | `/10` clip |
 | `kInnerFieldMyFarmersPlane` … `OpenCities` | 同上五項，對象是該格的 inner field | 同上 |
 
 大小與未完成城數在 2026-10-03 加入：這兩個量要沿田與城的元件走才算得出來，卷積算不了。
 隨機對局每半邊的分佈：大小 p99 28 磚（最後一手 32、max 41），相鄰未完成城 p99 9–10 座（max 16）。
+大小在強玩家下大得多（最後一手 p99：greedy 56、自我對弈 60），所以 2026-10-06 從 `/30` 改成 `/60`（CLAUDE.md §11）。
 
 半邊編號：`e = 2*side + h`，順時針 `0 N西 1 N東 2 E北 3 E南 4 S東 5 S西 6 W南 7 W北`。
 城市邊的半邊一律為 0。
 
 **global vector**：
-- 我方 / 對手的農田 pending，`clip(/40)`；它們也包含在總 pending 裡。
+- 我方 / 對手的農田 pending，`clip(/40)`；它們也包含在總 pending（`clip(/70)`）裡。
+- 我方 / 對手的農夫數 `/7`。農夫不會回收，配上手上的 meeple 數，就分得出「在城路上、會回來」與「鎖成農夫」。
 - 合法 meeple 遮罩 15 維，其中 `5..12` 是農夫（以該田在本磚的最小半邊指名），`13` 是 inner field。
 
 **手上的磚**：

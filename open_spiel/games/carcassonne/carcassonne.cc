@@ -18,22 +18,36 @@ namespace carcassonne {
 namespace {
 
 constexpr float kMeepleNormalization = 7.0f;
-// The remaining tiles are counted against the deck this game deals, the
-// completed turns against half of it.
-constexpr float kScoreNormalization = 40.0f;
-constexpr float kScoreDiffNormalization = 20.0f;
-// With farmers, random games end at p99 33 / max 46 pending points a player
-// (tools/diag_pending_scale); clipped.
-constexpr float kPendingNormalization = 40.0f;
-constexpr std::array<float, kStaticDiffScales> kStaticDiffNormalizations = {3.0f, 10.0f, 30.0f};
+// The remaining tiles are counted against the deck this game deals, and the
+// completed turns against the tiles drawn after the start tile: completed_turns
+// counts the turns of both players, one per tile.
+// The measured scales below give the p99 at the last decision as random /
+// greedy / self-play games, and the largest value seen; section 11 of
+// CLAUDE.md says how to measure them again. All are clipped.
+// Points a player has scored: 20 / 85 / 93, max 120 (tools/diag_pending_scale,
+// tools/diag_replay_scale).
+constexpr float kScoreNormalization = 100.0f;
+// The difference in them: 18 / 66 / 54, max 85.
+constexpr float kScoreDiffNormalization = 70.0f;
+// Pending points of a player: 33 / 62 / 69, max 76.
+constexpr float kPendingNormalization = 70.0f;
+// The fields' part of it: 15 / 36 / 36, max 45.
+constexpr float kFieldPendingNormalization = 40.0f;
+// Banked plus pending difference: 28 / 60 / 49, max 75. The /3 and /10 scales
+// tell close games apart.
+constexpr std::array<float, kStaticDiffScales> kStaticDiffNormalizations = {3.0f, 10.0f, 60.0f};
 constexpr float kLegalPlacementNormalization = 100.0f;
 constexpr int kMaxOpens = 6;
-constexpr float kFeatureScoreNormalization = 12.0f;
+// The spatial planes, per side or half-edge (tools/diag_plane_scale). The
+// observation codec needs their denominators to be integers up to 127.
+// A feature's getScore(): 12 / 26 / 26, max 52.
+constexpr float kFeatureScoreNormalization = 30.0f;
 constexpr float kMonasteryCoverageNormalization = 9.0f;
+// 3 x the completed cities next to a field: 9 / 30 / 30, max 36.
 constexpr float kFieldScoreNormalization = 30.0f;
-// Per half-edge in random games: size p99 28 tiles (32 at the last move, max
-// 41), open cities next to it p99 9-10 (max 16). Both clipped.
-constexpr float kFieldSizeNormalization = 30.0f;
+// Tiles in a field: 30 / 56 / 60, max 65.
+constexpr float kFieldSizeNormalization = 60.0f;
+// Open cities next to a field: 10 / 9 / 8, max 19.
 constexpr float kFieldOpenCitiesNormalization = 10.0f;
 
 // The planes one field is written to: a half-edge's or an inner field's.
@@ -298,6 +312,8 @@ Player CarcassonneState::CurrentPlayer() const {
     return game_state_.currentPlayer;
 }
 
+// The actor logs record games with these strings; tools/actor_log.hpp parses
+// them to replay self-play games.
 std::string CarcassonneState::ActionToString(Player player, Action action) const {
     if (player == kChancePlayerId) {
         return absl::StrCat("draw_type(", DecodeChanceAction(action), ")");
@@ -488,8 +504,8 @@ void CarcassonneState::ObservationTensor(Player player, absl::Span<float> values
     game_state_.getPendingScore(pending);
     const float score_diff = static_cast<float>(scores[player] - scores[opponent]);
     const float static_diff = score_diff + static_cast<float>(pending[player] - pending[opponent]);
-    global[kGlobalMyScore] = scores[player] / kScoreNormalization;
-    global[kGlobalOpponentScore] = scores[opponent] / kScoreNormalization;
+    global[kGlobalMyScore] = Clip(scores[player] / kScoreNormalization);
+    global[kGlobalOpponentScore] = Clip(scores[opponent] / kScoreNormalization);
     global[kGlobalScoreDiff] = Clip(score_diff / kScoreDiffNormalization);
     global[kGlobalMyPending] = Clip(pending[player] / kPendingNormalization);
     global[kGlobalOpponentPending] = Clip(pending[opponent] / kPendingNormalization);
@@ -500,7 +516,7 @@ void CarcassonneState::ObservationTensor(Player player, absl::Span<float> values
     global[kGlobalOpponentMeeples] = game_state_.holding_meeples[opponent] / kMeepleNormalization;
     const float deck_size = static_cast<float>(game_state_.getDeckSize());
     global[kGlobalRemainingTiles] = game_state_.getTotalRemaining() / deck_size;
-    global[kGlobalCompletedTurns] = game_state_.completed_turns / (deck_size / 2.0f);
+    global[kGlobalCompletedTurns] = game_state_.completed_turns / (deck_size - 1.0f);
     // Types this game does not deal have nothing left: 0.
     for (int type_id = 1; type_id <= CANONICAL_TILE_TYPE_COUNT; ++type_id) {
         const int initial_count = tile_type_tables.draw_count_by_type[type_id];
@@ -523,8 +539,10 @@ void CarcassonneState::ObservationTensor(Player player, absl::Span<float> values
     global[kGlobalIsPlayer0] = game_state_.currentPlayer == 0 ? 1.0f : 0.0f;
     int field_pending[2];
     game_state_.getPendingFieldScore(field_pending);
-    global[kGlobalMyFieldPending] = Clip(field_pending[player] / kPendingNormalization);
-    global[kGlobalOpponentFieldPending] = Clip(field_pending[opponent] / kPendingNormalization);
+    global[kGlobalMyFieldPending] = Clip(field_pending[player] / kFieldPendingNormalization);
+    global[kGlobalOpponentFieldPending] = Clip(field_pending[opponent] / kFieldPendingNormalization);
+    global[kGlobalMyFarmers] = game_state_.farmersOnBoard(player) / kMeepleNormalization;
+    global[kGlobalOpponentFarmers] = game_state_.farmersOnBoard(opponent) / kMeepleNormalization;
 }
 
 std::unique_ptr<State> CarcassonneState::Clone() const { return std::unique_ptr<State>(new CarcassonneState(*this)); }
@@ -694,6 +712,44 @@ void RotateObservation(absl::Span<const float> observation, int k, const SideGro
             rotated[legal_half_edges + RotateFieldHalfEdge(half_edge, k, groups)] = 1.0f;
         }
     }
+}
+
+float ObservationPlaneDenominator(int plane) {
+    SPIEL_CHECK_GE(plane, 0);
+    SPIEL_CHECK_LT(plane, kObservationPlanes);
+    auto in = [plane](int first, int count) { return plane >= first && plane < first + count; };
+    // Each is the normalization ObservationTensor writes the plane with.
+    // Everything up to the last-placed plane is 0/1, and the owner is +-1.
+    if (plane <= kLastPlacedPlane || plane == kMonasteryOwnerPlane) {
+        return 1.0f;
+    }
+    if (in(kFeatureOpensPlane, 4)) {
+        return static_cast<float>(kMaxOpens);
+    }
+    if (in(kFeatureScorePlane, 4) || in(kFeatureSignedScorePlane, 4)) {
+        return kFeatureScoreNormalization;
+    }
+    if (in(kFeatureMyMeeplesPlane, 4) || in(kFeatureOpponentMeeplesPlane, 4) ||
+        in(kFieldMyFarmersPlane, HALF_EDGE_COUNT) || in(kFieldOpponentFarmersPlane, HALF_EDGE_COUNT) ||
+        plane == kInnerFieldMyFarmersPlane || plane == kInnerFieldOpponentFarmersPlane) {
+        return kMeepleNormalization;
+    }
+    if (plane == kMonasteryCoveragePlane) {
+        return kMonasteryCoverageNormalization;
+    }
+    if (in(kFieldScorePlane, HALF_EDGE_COUNT) || plane == kInnerFieldScorePlane) {
+        return kFieldScoreNormalization;
+    }
+    if (in(kFieldSizePlane, HALF_EDGE_COUNT) || plane == kInnerFieldSizePlane) {
+        return kFieldSizeNormalization;
+    }
+    if (in(kFieldOpenCitiesPlane, HALF_EDGE_COUNT) || plane == kInnerFieldOpenCitiesPlane) {
+        return kFieldOpenCitiesNormalization;
+    }
+    if (plane == kGlobalFeaturePlane) {
+        return 0.0f;
+    }
+    SpielFatalError(absl::StrCat("No denominator for observation plane ", plane, "."));
 }
 
 } // namespace carcassonne

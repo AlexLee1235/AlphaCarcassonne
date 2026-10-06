@@ -23,6 +23,7 @@
 #include <string>
 #include <vector>
 
+#include "open_spiel/algorithms/alpha_zero_torch/observation_codec.h"
 #include "open_spiel/algorithms/mcts.h"
 #include "open_spiel/utils/file.h"
 #include "open_spiel/utils/json.h"
@@ -35,7 +36,7 @@ namespace torch_az {
 
 struct Trajectory {
   struct State {
-    std::vector<float> observation;
+    CompactObservation observation;  // See ObservationCodec.
     open_spiel::Player current_player;
     std::vector<open_spiel::Action> legal_actions;
     open_spiel::Action action;

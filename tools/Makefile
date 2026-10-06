@@ -24,7 +24,7 @@ SRCS31   := $(subst $(G25),$(G31),$(SRCS25))
 # 副本要跟著引擎更新（牌表 tile.hpp 常常在改）
 ENGINE   := $(wildcard $(GAME)/*.hpp $(GAME)/*.cpp)
 
-TOOLS    := diag_value_gap diag_local_decomp diag_board diag_opens diag_occupancy diag_branching diag_luck diag_value_gap_strong diag_pending_scale
+TOOLS    := diag_value_gap diag_local_decomp diag_board diag_opens diag_occupancy diag_branching diag_luck diag_value_gap_strong diag_pending_scale diag_plane_scale diag_replay_scale
 BINS     := $(addprefix build/,$(TOOLS)) build/diag_board25 build/diag_board31 build/dump_tiles
 PYTHON   ?= python3
 
@@ -62,7 +62,7 @@ build/diag_board25: diag_board.cpp common.hpp $(G25)/game.hpp
 build/diag_board31: diag_board.cpp common.hpp $(G31)/game.hpp
 	$(CXX) $(CXXFLAGS) -I$(G31) $< $(SRCS31) -o $@
 
-build/%: %.cpp common.hpp $(ENGINE) | build
+build/%: %.cpp common.hpp scale_stats.hpp actor_log.hpp $(ENGINE) | build
 	$(CXX) $(CXXFLAGS) -I$(GAME) $< $(SRCS) -o $@
 
 run: all

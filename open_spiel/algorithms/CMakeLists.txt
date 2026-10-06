@@ -79,6 +79,8 @@ if (OPEN_SPIEL_BUILD_WITH_LIBTORCH)
     alpha_zero_torch/device_manager.h
     alpha_zero_torch/model.h
     alpha_zero_torch/model.cc
+    alpha_zero_torch/observation_codec.h
+    alpha_zero_torch/observation_codec.cc
     alpha_zero_torch/vpevaluator.h
     alpha_zero_torch/vpevaluator.cc
     alpha_zero_torch/vpnet.h
@@ -91,6 +93,12 @@ if (OPEN_SPIEL_BUILD_WITH_LIBTORCH)
     ${OPEN_SPIEL_OBJECTS} $<TARGET_OBJECTS:alpha_zero_torch>)
   target_link_libraries(torch_play_test ${TORCH_LIBRARIES})
   add_test(torch_play_test torch_play_test)
+
+  add_executable(torch_observation_codec_test
+    alpha_zero_torch/observation_codec_test.cc
+    ${OPEN_SPIEL_OBJECTS} $<TARGET_OBJECTS:alpha_zero_torch>)
+  target_link_libraries(torch_observation_codec_test ${TORCH_LIBRARIES})
+  add_test(torch_observation_codec_test torch_observation_codec_test)
 endif()
 
 if (${OPEN_SPIEL_BUILD_WITH_ORTOOLS})

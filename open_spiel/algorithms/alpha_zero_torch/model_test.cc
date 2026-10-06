@@ -291,7 +291,7 @@ void TestConvPolicyHead() {
   std::cout << "Per-cell logits follow the cell, meeple logits follow the "
                "last-placed plane." << std::endl;
 
-  // A real Carcassonne model: 4 * 21 * 21 placements + 33 meeple moves, and a
+  // A real Carcassonne model: 4 * 21 * 21 placements + 41 meeple moves, and a
   // policy head that no longer holds most of the network's parameters.
   std::shared_ptr<const Game> game = LoadGame("carcassonne");
   ModelConfig net_config = {
@@ -316,17 +316,17 @@ void TestConvPolicyHead() {
   }
   // conv 32*32+32, gpool conv 32*32+32, gpool FC (64+G)*32+32, BN 2*32,
   // placement conv 4*32+4, meeple conv M*32+M. The G global features (which
-  // grow with the tile table) join the pooled branch; M = 33 meeple moves.
+  // grow with the tile table) join the pooled branch; M = 41 meeple moves.
   const int64_t carcassonne_globals = GlobalObservationFeatures(*game);
   const int64_t carcassonne_cells = game->ObservationTensorShape()[1] *
                                     game->ObservationTensorShape()[2];
   const int64_t meeple_moves =
       game->NumDistinctActions() - 4 * carcassonne_cells;
-  SPIEL_CHECK_EQ(meeple_moves, 33);
+  SPIEL_CHECK_EQ(meeple_moves, 41);
   SPIEL_CHECK_EQ(policy_parameters,
                  2 * (32 * 32 + 32) + (64 + carcassonne_globals) * 32 + 32 +
                      2 * 32 + (4 * 32 + 4) + (meeple_moves * 32 + meeple_moves));
-  // A dense head would be Linear(2*21*21 -> 1797), 1,586,751 on its own.
+  // A dense head would be Linear(2*21*21 -> 1805), 1,593,815 on its own.
   SPIEL_CHECK_LT(largest_tensor, 50000);
 
   // A game whose actions do not factor per cell keeps the dense head.

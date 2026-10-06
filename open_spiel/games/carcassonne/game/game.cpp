@@ -130,8 +130,10 @@ Carcassonne::Carcassonne(int max_turns, int start_rotation, uint32_t expansions,
     }
     features.inns_cathedrals = big_meeple_rules;
     builder_rules = (this->rules & expansionBit(EXP_TRADERS_BUILDERS)) != 0;
+    pig_rules = builder_rules;
     if (builder_rules) {
         holding_builders[0] = holding_builders[1] = 1;
+        holding_pigs[0] = holding_pigs[1] = 1;
     }
     // With the river the spring starts the game instead of the base start tile,
     // which the deck leaves out.
@@ -206,7 +208,8 @@ MeepleMoves Carcassonne::getLegalMeepleMoves() const {
     const bool meeple = holding_meeples[currentPlayer] > 0;
     const bool big = holding_big_meeples[currentPlayer] > 0;
     const bool builder = holding_builders[currentPlayer] > 0;
-    if (!meeple && !big && !builder) {
+    const bool pig = holding_pigs[currentPlayer] > 0;
+    if (!meeple && !big && !builder && !pig) {
         return ret;
     }
     int x = last_x;
@@ -227,6 +230,9 @@ MeepleMoves Carcassonne::getLegalMeepleMoves() const {
     }
     if (builder) {
         features.getLegalBuilderMoves(ret, x, y, board, tile, currentPlayer);
+    }
+    if (pig) {
+        fields.getLegalPigMoves(ret, placement.id, tile, currentPlayer);
     }
     return ret;
 }
@@ -309,6 +315,11 @@ void Carcassonne::placeMeeple(int pos) {
     if (isBuilderPos(pos)) {
         holding_builders[currentPlayer]--;
         features.placeBuilder(x, y, meepleSpot(pos), currentPlayer, board);
+    } else if (isPigPos(pos)) {
+        // Like a farmer, a pig is never settled or returned.
+        holding_pigs[currentPlayer]--;
+        const Placement &placement = board.board[y][x];
+        fields.placePig(placement.id, full_deck[placement.id][placement.rotation], pos - MEEPLE_POS_PIG, currentPlayer);
     } else if (pos != MEEPLE_POS_SKIP) {
         const bool big = isBigMeeplePos(pos);
         const int spot = meepleSpot(pos);

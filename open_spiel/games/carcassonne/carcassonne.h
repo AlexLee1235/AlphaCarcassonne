@@ -22,8 +22,8 @@ inline constexpr int kNumPlayers = 2;
 inline constexpr int kChanceActionCount = CANONICAL_TILE_TYPE_COUNT;
 inline constexpr int kTileActionCount = BOARD_SIZE * BOARD_SIZE * 4;
 // One action per meeple position, -1 (skip) to MEEPLE_POS_COUNT - 2: skip,
-// the 14 spots with a meeple, the same 14 with the big meeple, then the
-// builder on sides 0-3.
+// the 14 spots with a meeple, the same 14 with the big meeple, the builder on
+// sides 0-3, then the pig on the fields of half-edges 0-7.
 inline constexpr int kMeepleActionCount = MEEPLE_POS_COUNT;
 inline constexpr int kMeepleActionOffset = kTileActionCount;
 inline constexpr int kNumDistinctPlayerActions = kTileActionCount + kMeepleActionCount;
@@ -97,11 +97,16 @@ inline constexpr int kFeatureInnCathedralPlane = kMonasteryBigMeeplePlane + 1;
 // on that side holds my / the opponent's builder, one plane per side.
 inline constexpr int kFeatureMyBuilderPlane = kFeatureInnCathedralPlane + 4;
 inline constexpr int kFeatureOpponentBuilderPlane = kFeatureMyBuilderPlane + 4;
-inline constexpr int kSpatialPlanes = kFeatureOpponentBuilderPlane + 4;
+// The pig (Traders & Builders), which is no farmer: 1 where the field of that
+// half-edge holds my / the opponent's pig, one plane per half-edge. Never on an
+// inner field.
+inline constexpr int kFieldMyPigPlane = kFeatureOpponentBuilderPlane + 4;
+inline constexpr int kFieldOpponentPigPlane = kFieldMyPigPlane + HALF_EDGE_COUNT;
+inline constexpr int kSpatialPlanes = kFieldOpponentPigPlane + HALF_EDGE_COUNT;
 inline constexpr int kGlobalFeaturePlane = kSpatialPlanes;
 inline constexpr int kObservationPlanes = kGlobalFeaturePlane + 1;
 static_assert(kLastPlacedPlane == 33);
-static_assert(kSpatialPlanes == 122);
+static_assert(kSpatialPlanes == 138);
 
 // Offsets in the global vector, all from the observing player's side.
 inline constexpr int kGlobalMyScore = 0;           // clip(/100)
@@ -122,7 +127,7 @@ inline constexpr int kGlobalTilePhase = kGlobalTileInHand + CANONICAL_TILE_TYPE_
 inline constexpr int kGlobalMeeplePhase = kGlobalTilePhase + 1;
 // Legal meeple moves in action order: skip, sides 0-3, monastery, half-edges
 // 0-7, inner field, then those 14 with the big meeple, then the builder on
-// sides 0-3.
+// sides 0-3, then the pig on half-edges 0-7.
 inline constexpr int kGlobalLegalMeeple = kGlobalMeeplePhase + 1;
 inline constexpr int kGlobalLegalPlacements = kGlobalLegalMeeple + kMeepleActionCount; // / 100
 inline constexpr int kGlobalIsPlayer0 = kGlobalLegalPlacements + 1;
@@ -157,8 +162,12 @@ inline constexpr int kGlobalOpponentBuilder = kGlobalMyBuilder + 1;
 // other tile, after which there is no third.
 inline constexpr int kGlobalBuilderExtraTile = kGlobalOpponentBuilder + 1;
 inline constexpr int kGlobalBuilderSecondTile = kGlobalBuilderExtraTile + 1;
-inline constexpr int kGlobalFeatures = kGlobalBuilderSecondTile + 1;
-static_assert(kGlobalFeatures == 70 + 2 * CANONICAL_TILE_TYPE_COUNT);
+// The pig in hand, 1 or 0; 0 without its rules. Not in hand, the pig planes
+// show its field.
+inline constexpr int kGlobalMyPig = kGlobalBuilderSecondTile + 1;
+inline constexpr int kGlobalOpponentPig = kGlobalMyPig + 1;
+inline constexpr int kGlobalFeatures = kGlobalOpponentPig + 1;
+static_assert(kGlobalFeatures == 78 + 2 * CANONICAL_TILE_TYPE_COUNT);
 static_assert(kGlobalFeatures <= BOARD_SIZE * BOARD_SIZE);
 inline constexpr int kObservationTensorSize = kObservationPlanes * BOARD_SIZE * BOARD_SIZE;
 

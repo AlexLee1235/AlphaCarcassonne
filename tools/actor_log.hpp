@@ -128,13 +128,20 @@ inline bool ApplyLoggedAction(Carcassonne &g, const std::string &a, std::string 
     const std::string prefix = "place_meeple(";
     const std::string big_prefix = "place_big_meeple(";
     const std::string builder_prefix = "place_builder(";
+    const std::string pig_prefix = "place_pig(";
     const bool big = a.rfind(big_prefix, 0) == 0;
     const bool builder = a.rfind(builder_prefix, 0) == 0;
-    if ((big || builder || a.rfind(prefix, 0) == 0) && a.back() == ')') {
-        const size_t start = (big ? big_prefix : builder ? builder_prefix : prefix).size();
+    const bool pig = a.rfind(pig_prefix, 0) == 0;
+    if ((big || builder || pig || a.rfind(prefix, 0) == 0) && a.back() == ')') {
+        const size_t start = (big ? big_prefix : builder ? builder_prefix : pig ? pig_prefix : prefix).size();
         const std::string arg = a.substr(start, a.size() - start - 1);
         int pos;
-        if (arg == "skip" && !big && !builder) pos = MEEPLE_POS_SKIP;
+        if (pig) {
+            // 小豬只放半邊所屬的田
+            if (sscanf(arg.c_str(), "field=%d", &k) != 1) return fail("看不懂的小豬位置");
+            pos = MEEPLE_POS_PIG + k;
+        }
+        else if (arg == "skip" && !big && !builder) pos = MEEPLE_POS_SKIP;
         else if (sscanf(arg.c_str(), "edge=%d", &k) == 1) pos = k;
         else if (builder) return fail("看不懂的建築師位置");  // 建築師只放城、路
         else if (arg == "monastery") pos = MEEPLE_POS_MONASTERY;

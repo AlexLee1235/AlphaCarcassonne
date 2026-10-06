@@ -21,6 +21,8 @@ constexpr int EDGE_SLOT_COUNT = TOTAL_TILE_COUNT * 4;
 constexpr int FIELD_SLOT_COUNT = TOTAL_TILE_COUNT * MAX_TILE_FIELDS;
 // A field scores this for every completed city it borders.
 constexpr int FIELD_POINTS_PER_CITY = 3;
+// ... and this for a majority holder whose pig is on it (Traders & Builders).
+constexpr int PIG_FIELD_POINTS_PER_CITY = 4;
 // Each player has 7 meeples, and with the Inns & Cathedrals rules a big meeple.
 constexpr int MEEPLES_PER_PLAYER = 7;
 // Farmers are never returned, so a game has at most every meeple as one.
@@ -37,14 +39,22 @@ constexpr int MEEPLE_POS_INNER_FIELD = MEEPLE_POS_FIELD + HALF_EDGE_COUNT; // 13
 constexpr int MEEPLE_POS_BIG = MEEPLE_POS_INNER_FIELD + 1;
 // 28..31: the builder on the feature on side pos - 28 (roads and cities only).
 constexpr int MEEPLE_POS_BUILDER = MEEPLE_POS_BIG + MEEPLE_POS_BIG;
-constexpr int MEEPLE_POS_COUNT = MEEPLE_POS_BUILDER + 4 - MEEPLE_POS_SKIP; // positions -1 .. 31
+// 32..39: the pig on the field of half-edge pos - 32. Never on an inner field:
+// that field is new with its tile, so it cannot hold a farmer of the player yet.
+constexpr int MEEPLE_POS_PIG = MEEPLE_POS_BUILDER + 4;
+constexpr int MEEPLE_POS_COUNT = MEEPLE_POS_PIG + HALF_EDGE_COUNT - MEEPLE_POS_SKIP; // positions -1 .. 39
 using MeepleMoves = FixedVector<int, MEEPLE_POS_COUNT>;
 
 constexpr bool isBigMeeplePos(int pos) { return pos >= MEEPLE_POS_BIG && pos < MEEPLE_POS_BUILDER; }
-constexpr bool isBuilderPos(int pos) { return pos >= MEEPLE_POS_BUILDER; }
-// Where a meeple move puts its piece, whichever piece: -1 .. 13.
+constexpr bool isBuilderPos(int pos) { return pos >= MEEPLE_POS_BUILDER && pos < MEEPLE_POS_PIG; }
+constexpr bool isPigPos(int pos) { return pos >= MEEPLE_POS_PIG; }
+// Where a meeple move puts its piece, whichever piece: -1 .. 13 (a pig's is
+// the farmer spot of its field).
 constexpr int meepleSpot(int pos) {
-    return isBuilderPos(pos) ? pos - MEEPLE_POS_BUILDER : isBigMeeplePos(pos) ? pos - MEEPLE_POS_BIG : pos;
+    return isPigPos(pos)         ? MEEPLE_POS_FIELD + pos - MEEPLE_POS_PIG
+           : isBuilderPos(pos)   ? pos - MEEPLE_POS_BUILDER
+           : isBigMeeplePos(pos) ? pos - MEEPLE_POS_BIG
+                                 : pos;
 }
 
 enum GamePhase { PHASE_CHANCE = 0, PHASE_TILE = 1, PHASE_MEEPLE = 2, PHASE_TERMINAL = 3 };
@@ -173,6 +183,9 @@ class Field {
     TileMask tile_mask;
     // Each player's strength for the majority, as Feature::meeple_count.
     uint8_t farmer_count[2] = {};
+    // 1 if that player's pig is on the field. Not a farmer: not in
+    // farmer_count, no part in the majority.
+    uint8_t pigs[2] = {};
 
     Field operator+(const Field &other) const;
 
@@ -204,12 +217,19 @@ class FieldModule {
                           const FeatureModule &features);
     void getLegalFarmerMoves(MeepleMoves &ret, int tile_id, const Tile &tile) const;
     void placeFarmer(int tile_id, const Tile &tile, int pos, int player, bool big = false);
+    // The fields `player`'s pig can go on: one per field of a half-edge of the
+    // tile that holds one of their farmers, as MEEPLE_POS_PIG + half-edge.
+    void getLegalPigMoves(MeepleMoves &ret, int tile_id, const Tile &tile, int player) const;
+    // On the field of half-edge `half_edge`, which already holds a farmer of
+    // `player`, so its slot is in farmed_slots. Pigs stay till the end.
+    void placePig(int tile_id, const Tile &tile, int half_edge, int player);
     // For each half-edge of the tile, the lowest half-edge of the tile in the
     // same field (-1 on city sides).
     void getHalfEdgeGroups(int tile_id, const Tile &tile, int8_t groups[HALF_EDGE_COUNT]) const;
     CityCounts adjacentCities(const Field &field, const FeatureModule &features) const;
     // Adds each field that holds farmers to its majority holders, as the
-    // end-game scoring would.
+    // end-game scoring would: 3 a completed city it borders, 4 with the
+    // holder's pig on it.
     void accumulateScore(int *scores, const FeatureModule &features) const;
 };
 
@@ -317,6 +337,8 @@ class Carcassonne {
     int holding_big_meeples[2] = {0, 0};
     // The builder in hand: 1 or 0 with the builder rules, else 0.
     int holding_builders[2] = {0, 0};
+    // The pig in hand: 1 or 0 with the pig rules, else 0.
+    int holding_pigs[2] = {0, 0};
     int currentPlayer = 0;
     int current_tile_in_hand = 0;
     int completed_turns = 0;
@@ -343,6 +365,12 @@ class Carcassonne {
     bool builder_rules = false;
     bool builder_extra_tile = false;   // the tile just placed extends the current player's builder
     bool builder_second_tile = false;  // the current player is on the second tile of a double turn
+    // Traders & Builders: each player also has a pig, placed instead of a
+    // meeple on a field of the tile just placed that already holds one of
+    // their farmers. It is no farmer: no part in the majority. With it on the
+    // field, a majority holder scores 4 a completed city instead of 3. It
+    // stays till the end, as farmers do.
+    bool pig_rules = false;
 
     // River rules (on whenever the river tiles are dealt). The river is laid
     // first, from the spring at the centre to the lake, each tile continuing it,
@@ -408,7 +436,8 @@ class Carcassonne {
     void placeTile(int x, int y, int rot);
     // Skip, then every free spot with a meeple if the player has one, then the
     // same spots with the big meeple (spot + MEEPLE_POS_BIG) if they have it,
-    // then the builder's sides (MEEPLE_POS_BUILDER + side) if they have it.
+    // then the builder's sides (MEEPLE_POS_BUILDER + side) and the pig's
+    // half-edges (MEEPLE_POS_PIG + half-edge) if they have them.
     MeepleMoves getLegalMeepleMoves() const;
     // For each side of the last placed tile, the lowest side of that tile in the
     // same feature (-1 for grass, river or no tile). Meeple moves name a feature by that

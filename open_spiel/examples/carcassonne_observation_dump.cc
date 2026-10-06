@@ -124,6 +124,11 @@ std::vector<std::string> PlaneNames() {
     names[kFieldSizePlane + half_edge] = "field_size" + suffix;
     names[kFieldOpenCitiesPlane + half_edge] = "field_open_cities" + suffix;
   }
+  for (int half_edge = 0; half_edge < HALF_EDGE_COUNT; ++half_edge) {
+    const std::string suffix = "_half_edge_" + std::to_string(half_edge);
+    names[kFieldMyPigPlane + half_edge] = "field_my_pig" + suffix;
+    names[kFieldOpponentPigPlane + half_edge] = "field_opponent_pig" + suffix;
+  }
   names[kInnerFieldMyFarmersPlane] = "inner_field_my_farmers";
   names[kInnerFieldOpponentFarmersPlane] = "inner_field_opponent_farmers";
   names[kInnerFieldScorePlane] = "inner_field_score";
@@ -170,7 +175,7 @@ std::vector<std::string> GlobalFeatureNames() {
   names[kGlobalTilePhase] = "is_tile_phase";
   names[kGlobalMeeplePhase] = "is_meeple_phase";
   // Skip, then the spots with the meeple and with the big meeple, then the
-  // builder's sides.
+  // builder's sides and the pig's half-edges.
   const char* spots[MEEPLE_POS_BIG] = {
       "edge_0",  "edge_1",  "edge_2",  "edge_3",  "monastery",
       "field_0", "field_1", "field_2", "field_3", "field_4",
@@ -185,6 +190,10 @@ std::vector<std::string> GlobalFeatureNames() {
   for (int side = 0; side < 4; ++side) {
     names[kGlobalLegalMeeple + 1 + MEEPLE_POS_BUILDER + side] =
         std::string("legal_builder_") + spots[side];
+  }
+  for (int half_edge = 0; half_edge < HALF_EDGE_COUNT; ++half_edge) {
+    names[kGlobalLegalMeeple + 1 + MEEPLE_POS_PIG + half_edge] =
+        std::string("legal_pig_") + spots[MEEPLE_POS_FIELD + half_edge];
   }
   names[kGlobalLegalPlacements] = "legal_placements";
   names[kGlobalIsPlayer0] = "current_player_is_player0";
@@ -206,6 +215,8 @@ std::vector<std::string> GlobalFeatureNames() {
   names[kGlobalOpponentBuilder] = "opponent_holding_builder";
   names[kGlobalBuilderExtraTile] = "builder_extra_tile";
   names[kGlobalBuilderSecondTile] = "builder_second_tile";
+  names[kGlobalMyPig] = "my_holding_pig";
+  names[kGlobalOpponentPig] = "opponent_holding_pig";
   return names;
 }
 

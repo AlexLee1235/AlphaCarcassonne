@@ -23,6 +23,8 @@ Field Field::operator+(const Field &other) const {
     res.tile_mask = tile_mask | other.tile_mask;
     res.farmer_count[0] = farmer_count[0] + other.farmer_count[0];
     res.farmer_count[1] = farmer_count[1] + other.farmer_count[1];
+    res.pigs[0] = pigs[0] + other.pigs[0];
+    res.pigs[1] = pigs[1] + other.pigs[1];
     return res;
 }
 
@@ -116,6 +118,34 @@ void FieldModule::placeFarmer(int tile_id, const Tile &tile, int pos, int player
     }
 }
 
+void FieldModule::getLegalPigMoves(MeepleMoves &ret, int tile_id, const Tile &tile, int player) const {
+    int seen_roots[HALF_EDGE_COUNT];
+    int root_count = 0;
+    for (int e = 0; e < HALF_EDGE_COUNT; ++e) {
+        if (tile.field[e] == -1) {
+            continue;
+        }
+        int root = fieldMap.find(fieldIndex(tile_id, tile.field[e]));
+        bool seen = false;
+        for (int j = 0; j < root_count; ++j) {
+            seen = seen || seen_roots[j] == root;
+        }
+        if (seen) {
+            continue;
+        }
+        seen_roots[root_count++] = root;
+        // Other players' farmers and pigs may be there too.
+        if (fieldMap.getSetData(root).farmer_count[player] > 0) {
+            ret.push_back(MEEPLE_POS_PIG + e);
+        }
+    }
+}
+
+void FieldModule::placePig(int tile_id, const Tile &tile, int half_edge, int player) {
+    assert(tile.field[half_edge] != -1);
+    fieldMap.getSetData(fieldIndex(tile_id, tile.field[half_edge])).pigs[player]++;
+}
+
 void FieldModule::getHalfEdgeGroups(int tile_id, const Tile &tile, int8_t groups[HALF_EDGE_COUNT]) const {
     int roots[HALF_EDGE_COUNT];
     for (int e = 0; e < HALF_EDGE_COUNT; ++e) {
@@ -192,12 +222,14 @@ void FieldModule::accumulateScore(int *scores, const FeatureModule &features) co
         if (m0 == 0 && m1 == 0) {
             continue;
         }
-        int score = FIELD_POINTS_PER_CITY * adjacentCities(field, features).completed;
-        if (m0 >= m1) {
-            scores[0] += score;
-        }
-        if (m1 >= m0) {
-            scores[1] += score;
+        const int cities = adjacentCities(field, features).completed;
+        // A majority holder with their pig on the field scores 4 a city.
+        const bool majority[2] = {m0 >= m1, m1 >= m0};
+        for (int player = 0; player < 2; ++player) {
+            if (majority[player]) {
+                scores[player] +=
+                    (field.pigs[player] > 0 ? PIG_FIELD_POINTS_PER_CITY : FIELD_POINTS_PER_CITY) * cities;
+            }
         }
     }
 }

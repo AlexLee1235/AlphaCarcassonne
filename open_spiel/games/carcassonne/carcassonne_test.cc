@@ -166,11 +166,11 @@ void ObservationTensorSmokeTest() {
   const std::vector<int> shape = game->ObservationTensorShape();
 
   SPIEL_CHECK_EQ(shape.size(), 3);
-  SPIEL_CHECK_EQ(shape[0], 123);
+  SPIEL_CHECK_EQ(shape[0], 139);
   SPIEL_CHECK_EQ(shape[0], kObservationPlanes);
   SPIEL_CHECK_EQ(shape[1], BOARD_SIZE);
   SPIEL_CHECK_EQ(shape[2], BOARD_SIZE);
-  SPIEL_CHECK_EQ(game->NumDistinctActions(), 4 * BOARD_SIZE * BOARD_SIZE + 33);
+  SPIEL_CHECK_EQ(game->NumDistinctActions(), 4 * BOARD_SIZE * BOARD_SIZE + 41);
 
   SPIEL_CHECK_EQ(state->ObservationTensor(0).size(), kObservationTensorSize);
   SPIEL_CHECK_EQ(state->ObservationTensor(1).size(), kObservationTensorSize);
@@ -235,7 +235,7 @@ void ObservationTensorSmokeTest() {
   }
   CheckZeroPlanes(initial_obs, kInnerFieldMyFarmersPlane,
                   kInnerFieldOpenCitiesPlane + 1 - kInnerFieldMyFarmersPlane);
-  // No big meeple, inn, cathedral or builder in the base game.
+  // No big meeple, inn, cathedral, builder or pig in the base game.
   CheckZeroPlanes(initial_obs, kFeatureMyBigMeeplePlane,
                   kSpatialPlanes - kFeatureMyBigMeeplePlane);
   CheckRemainingByType(initial_obs, initial_state->UnderlyingState());
@@ -249,7 +249,7 @@ void ObservationTensorSmokeTest() {
                 kGlobalOpponentBigMeeple, kGlobalMyBigFarmer,
                 kGlobalOpponentBigFarmer, kGlobalMyBuilder,
                 kGlobalOpponentBuilder, kGlobalBuilderExtraTile,
-                kGlobalBuilderSecondTile}) {
+                kGlobalBuilderSecondTile, kGlobalMyPig, kGlobalOpponentPig}) {
     SPIEL_CHECK_EQ(GlobalValue(initial_obs, i), 0.0f);
   }
   for (int cell = 0; cell < kGlobalExpansionCells; ++cell) {
@@ -940,7 +940,7 @@ void CheckBigMeepleMoves(const ::Carcassonne& core) {
   std::vector<int> spots;
   std::vector<int> big_spots;
   for (int i = 1; i < moves.size(); ++i) {
-    if (isBuilderPos(moves[i])) continue;  // see CheckBuilders
+    if (isBuilderPos(moves[i]) || isPigPos(moves[i])) continue;  // CheckBuilders, CheckPigs
     (isBigMeeplePos(moves[i]) ? big_spots : spots).push_back(meepleSpot(moves[i]));
   }
   const int player = core.currentPlayer;
@@ -1603,6 +1603,260 @@ void BuilderTest() {
   SPIEL_CHECK_GT(double_turns, 0);
 }
 
+// Every pig is in hand or on a field that holds one of its owner's farmers,
+// never on an inner field; the observation shows which field, and the pig is
+// offered exactly on the fields of the tile just placed that hold such a
+// farmer. At the end, counts the fields where a pig earns its owner 4 a city.
+void CheckPigs(const State& state, int* pig_bonuses) {
+  const ::Carcassonne& core =
+      dynamic_cast<const CarcassonneState&>(state).UnderlyingState();
+  const std::vector<float> obs0 = state.ObservationTensor(0);
+  const std::vector<float> obs1 = state.ObservationTensor(1);
+  int pigs[2] = {core.holding_pigs[0], core.holding_pigs[1]};
+  std::vector<int> seen_roots;
+  // SPIEL_CHECK_EQ's own locals are called x and y.
+  for (int ty = 0; ty < BOARD_SIZE; ++ty) {
+    for (int tx = 0; tx < BOARD_SIZE; ++tx) {
+      const Placement placement = core.getPlacement(tx, ty);
+      if (placement.id == 0) continue;
+      const Tile& tile = full_deck[placement.id][placement.rotation];
+      for (int half_edge = 0; half_edge < HALF_EDGE_COUNT; ++half_edge) {
+        if (tile.field[half_edge] == -1) {
+          SPIEL_CHECK_EQ(PlaneValue(obs0, kFieldMyPigPlane + half_edge, tx, ty), 0.0f);
+          SPIEL_CHECK_EQ(
+              PlaneValue(obs0, kFieldOpponentPigPlane + half_edge, tx, ty), 0.0f);
+          continue;
+        }
+        const int root = core.fieldRoot(placement.id, tile.field[half_edge]);
+        const Field& field = core.fieldAtRoot(root);
+        for (Player player = 0; player < kNumPlayers; ++player) {
+          const std::vector<float>& obs = player == 0 ? obs0 : obs1;
+          SPIEL_CHECK_EQ(PlaneValue(obs, kFieldMyPigPlane + half_edge, tx, ty),
+                         static_cast<float>(field.pigs[player]));
+          SPIEL_CHECK_EQ(
+              PlaneValue(obs, kFieldOpponentPigPlane + half_edge, tx, ty),
+              static_cast<float>(field.pigs[1 - player]));
+        }
+        if (std::find(seen_roots.begin(), seen_roots.end(), root) !=
+            seen_roots.end()) {
+          continue;
+        }
+        seen_roots.push_back(root);
+        for (Player player = 0; player < kNumPlayers; ++player) {
+          const int on_field = field.pigs[player];
+          SPIEL_CHECK_LE(on_field, 1);
+          if (on_field == 0) continue;
+          // It stays only with one of its owner's farmers.
+          SPIEL_CHECK_GT(static_cast<int>(field.farmer_count[player]), 0);
+          pigs[player] += on_field;
+          if (state.IsTerminal() &&
+              field.farmer_count[player] >= field.farmer_count[1 - player] &&
+              core.citiesNextTo(field).completed > 0) {
+            ++*pig_bonuses;
+          }
+        }
+      }
+      const int inner_field = tile.innerField();
+      if (inner_field != -1) {
+        const Field& inner = core.fieldAtRoot(core.fieldRoot(placement.id, inner_field));
+        SPIEL_CHECK_EQ(inner.pigs[0] + inner.pigs[1], 0);
+      }
+    }
+  }
+  for (Player player = 0; player < kNumPlayers; ++player) {
+    SPIEL_CHECK_EQ(pigs[player], core.pig_rules ? 1 : 0);
+    const std::vector<float>& obs = player == 0 ? obs0 : obs1;
+    SPIEL_CHECK_EQ(GlobalValue(obs, kGlobalMyPig),
+                   static_cast<float>(core.holding_pigs[player]));
+    SPIEL_CHECK_EQ(GlobalValue(obs, kGlobalOpponentPig),
+                   static_cast<float>(core.holding_pigs[1 - player]));
+  }
+  if (core.current_phase != PHASE_MEEPLE) return;
+  const int player = core.currentPlayer;
+  const Placement last = core.getPlacement(core.last_x, core.last_y);
+  const Tile& last_tile = full_deck[last.id][last.rotation];
+  std::vector<int> expected;
+  std::vector<int> last_roots;
+  for (int half_edge = 0; half_edge < HALF_EDGE_COUNT; ++half_edge) {
+    if (last_tile.field[half_edge] == -1) continue;
+    const int root = core.fieldRoot(last.id, last_tile.field[half_edge]);
+    if (std::find(last_roots.begin(), last_roots.end(), root) != last_roots.end()) {
+      continue;  // named by its lowest half-edge
+    }
+    last_roots.push_back(root);
+    if (core.holding_pigs[player] > 0 &&
+        core.fieldAtRoot(root).farmer_count[player] > 0) {
+      expected.push_back(MEEPLE_POS_PIG + half_edge);
+    }
+  }
+  std::vector<int> offered;
+  for (int move : core.getLegalMeepleMoves()) {
+    if (isPigPos(move)) offered.push_back(move);
+  }
+  SPIEL_CHECK_TRUE(offered == expected);
+}
+
+// Traders & Builders' pig: it joins one of its owner's farmers and stays till
+// the end. A majority holder with their pig on the field scores 4 a completed
+// city instead of 3; the pig takes no part in the majority.
+void PigTest() {
+  const int c = BOARD_SIZE / 2;
+
+  // Scoring, through the modules: a CGGG (type 16) at the centre, its city
+  // closed by another turned to face it, so its field borders one completed
+  // city.
+  {
+    const auto& cggg = tile_type_tables.draw_physical_ids_by_type[16];
+    auto board = std::make_unique<BoardModule>();
+    auto features = std::make_unique<FeatureModule>();
+    auto fields = std::make_unique<FieldModule>();
+    auto place = [&](int tile_id, int tile_x, int tile_y, int rot) {
+      const Tile& tile = full_deck[tile_id][rot];
+      SPIEL_CHECK_TRUE(board->canPlaceTileAt(tile_x, tile_y, tile));
+      board->placeTileOnBoard(tile_id, tile_x, tile_y, rot, tile);
+      features->placeTileOnBoard(tile_id, tile_x, tile_y, rot, tile, *board);
+      fields->placeTileOnBoard(tile_id, tile_x, tile_y, tile, *board, *features);
+    };
+    auto check_scores = [&](int player0, int player1) {
+      int scores[2] = {0, 0};
+      fields->accumulateScore(scores, *features);
+      SPIEL_CHECK_EQ(scores[0], player0);
+      SPIEL_CHECK_EQ(scores[1], player1);
+    };
+    place(cggg[0], c, c, 0);
+    place(cggg[1], c, c - 1, 2);
+    const int id = cggg[0];
+    const Tile& tile = full_deck[id][0];
+    // Its field runs from half-edge 2 (east, north half) round to 7.
+    fields->placeFarmer(id, tile, MEEPLE_POS_FIELD + 2, 0);
+    check_scores(3, 0);
+    MeepleMoves mine;
+    fields->getLegalPigMoves(mine, id, tile, 0);
+    SPIEL_CHECK_EQ(mine.size(), 1);
+    SPIEL_CHECK_EQ(mine[0], MEEPLE_POS_PIG + 2);
+    MeepleMoves theirs;
+    fields->getLegalPigMoves(theirs, id, tile, 1);
+    SPIEL_CHECK_EQ(theirs.size(), 0);
+    fields->placePig(id, tile, 2, 0);
+    check_scores(4, 0);
+    // Tied: both score, each by their own pig.
+    fields->placeFarmer(id, tile, MEEPLE_POS_FIELD + 2, 1);
+    check_scores(4, 3);
+    fields->placePig(id, tile, 2, 1);
+    check_scores(4, 4);
+    // P1 has the majority; P0's pig earns nothing.
+    fields->placeFarmer(id, tile, MEEPLE_POS_FIELD + 2, 1);
+    check_scores(0, 4);
+  }
+
+  // A game with the Traders & Builders rules, five turns. The start tile (type
+  // 20) at the centre has a road east-west; type 21 turned once too, with a
+  // field north of the road (half-edges 7, 0-2) and one south (3-6).
+  const uint32_t traders = BASE_ONLY | expansionBit(EXP_TRADERS_BUILDERS);
+  std::shared_ptr<const Game> traders_game = LoadGame(kTradersBuildersGame);
+  ::Carcassonne game(/*max_turns=*/5, START_TILE_ROTATION, traders);
+  SPIEL_CHECK_TRUE(game.pig_rules);
+  SPIEL_CHECK_FALSE(::Carcassonne(0, START_TILE_ROTATION, traders, /*rules=*/0u)
+                        .pig_rules);
+  SPIEL_CHECK_EQ(game.holding_pigs[0], 1);
+  SPIEL_CHECK_EQ(game.holding_pigs[1], 1);
+  auto pig_moves = [](const ::Carcassonne& core) {
+    std::vector<int> moves;
+    for (int move : core.getLegalMeepleMoves()) {
+      if (isPigPos(move)) moves.push_back(move);
+    }
+    return moves;
+  };
+  auto play_meeple = [](::Carcassonne* core, int pos) {
+    const MeepleMoves moves = core->getLegalMeepleMoves();
+    SPIEL_CHECK_TRUE(std::find(moves.begin(), moves.end(), pos) != moves.end());
+    core->placeMeeple(pos);
+  };
+  // P0: a farmer south of the road, east of the start tile. No farmer of
+  // P0's yet, so no pig.
+  PlaceTile(&game, 21, c + 1, c, 1);
+  SPIEL_CHECK_TRUE(pig_moves(game).empty());
+  play_meeple(&game, MEEPLE_POS_FIELD + 3);
+  // P1 closes the start tile's city, which borders the north field.
+  PlayTurn(&game, 16, c, c - 1, 2, MEEPLE_POS_SKIP);
+  // P0 extends both fields: the pig can go on the south one only.
+  PlaceTile(&game, 21, c + 2, c, 1);
+  SPIEL_CHECK_TRUE((pig_moves(game) == std::vector<int>{MEEPLE_POS_PIG + 3}));
+  play_meeple(&game, MEEPLE_POS_PIG + 3);
+  SPIEL_CHECK_EQ(game.holding_pigs[0], 0);
+  {
+    CarcassonneState view(traders_game, game);
+    const State& state = view;
+    const std::vector<float> obs0 = state.ObservationTensor(0);
+    const std::vector<float> obs1 = state.ObservationTensor(1);
+    for (int tile_x : {c + 1, c + 2}) {
+      for (int half_edge = 0; half_edge < HALF_EDGE_COUNT; ++half_edge) {
+        const float south = half_edge >= 3 && half_edge <= 6 ? 1.0f : 0.0f;
+        SPIEL_CHECK_EQ(PlaneValue(obs0, kFieldMyPigPlane + half_edge, tile_x, c),
+                       south);
+        SPIEL_CHECK_EQ(
+            PlaneValue(obs1, kFieldOpponentPigPlane + half_edge, tile_x, c),
+            south);
+        SPIEL_CHECK_EQ(
+            PlaneValue(obs0, kFieldOpponentPigPlane + half_edge, tile_x, c),
+            0.0f);
+      }
+    }
+    SPIEL_CHECK_EQ(GlobalValue(obs0, kGlobalMyPig), 0.0f);
+    SPIEL_CHECK_EQ(GlobalValue(obs0, kGlobalOpponentPig), 1.0f);
+    SPIEL_CHECK_TRUE(state.ToString().find("pigs=[0, 1]") != std::string::npos);
+    int unused = 0;
+    CheckPigs(state, &unused);
+  }
+  // P1: a CGGG south of the first road tile, its city facing south; its field
+  // joins P0's. P0 closes that city: one completed city next to the field,
+  // 4 points with the pig.
+  PlayTurn(&game, 16, c + 1, c + 1, 2, MEEPLE_POS_SKIP);
+  PlaceTile(&game, 16, c + 1, c + 2, 0);
+  SPIEL_CHECK_TRUE(pig_moves(game).empty());
+  int field_pending[2];
+  game.getPendingFieldScore(field_pending);
+  SPIEL_CHECK_EQ(field_pending[0], 4);
+  SPIEL_CHECK_EQ(field_pending[1], 0);
+  play_meeple(&game, MEEPLE_POS_SKIP);
+  SPIEL_CHECK_EQ(game.current_phase, PHASE_TERMINAL);
+  SPIEL_CHECK_EQ(game.player_scores[0], 4);
+  SPIEL_CHECK_EQ(game.player_scores[1], 0);
+
+  // Random games: every state checked. Dealt as "tiles" there is no pig.
+  std::mt19937 rng(20261010);
+  int pigs_placed = 0;
+  int pig_bonuses = 0;
+  for (const char* game_string : {kTradersBuildersGame, kAllExpansionsGame,
+                                  "carcassonne(traders_builders=tiles)"}) {
+    std::shared_ptr<const Game> random_game = LoadGame(game_string);
+    for (int sim = 0; sim < 20; ++sim) {
+      std::unique_ptr<State> state = random_game->NewInitialState();
+      const ::Carcassonne& core =
+          dynamic_cast<const CarcassonneState&>(*state).UnderlyingState();
+      while (true) {
+        if (!state->IsChanceNode()) {
+          CheckPigs(*state, &pig_bonuses);
+        }
+        if (state->IsTerminal()) break;
+        const std::vector<Action> legal = state->LegalActions();
+        const Action action =
+            state->IsChanceNode()
+                ? SampleAction(state->ChanceOutcomes(), rng).first
+                : legal[std::uniform_int_distribution<int>(0, legal.size() - 1)(rng)];
+        if (core.current_phase == PHASE_MEEPLE &&
+            isPigPos(DecodeMeepleActionForTest(action))) {
+          ++pigs_placed;
+        }
+        state->ApplyAction(action);
+      }
+    }
+  }
+  std::cout << "PigTest: " << pigs_placed << " pigs placed, " << pig_bonuses
+            << " fields scored 4 a city at the end" << std::endl;
+  SPIEL_CHECK_GT(pigs_placed, 0);
+}
+
 void ReturnsMatchScoresTest() {
   absl::BitGen gen;
   std::shared_ptr<const Game> game = LoadGame("carcassonne");
@@ -1771,9 +2025,10 @@ int CheckRotatedTwin(absl::Span<const Action> history, int k,
       if (legal_action < kMeepleActionOffset) continue;
       const int full_pos = DecodeMeepleActionForTest(legal_action);
       const int rotated_pos = DecodeMeepleActionForTest(rotated_action);
-      // A big meeple or builder move stays one, on the rotated spot.
+      // A big meeple, builder or pig move stays one, on the rotated spot.
       SPIEL_CHECK_EQ(isBigMeeplePos(rotated_pos), isBigMeeplePos(full_pos));
       SPIEL_CHECK_EQ(isBuilderPos(rotated_pos), isBuilderPos(full_pos));
+      SPIEL_CHECK_EQ(isPigPos(rotated_pos), isPigPos(full_pos));
       if (isBigMeeplePos(full_pos)) ++*big_meeple_moves;
       const int pos = meepleSpot(full_pos);
       const int rotated_spot = meepleSpot(rotated_pos);
@@ -1922,6 +2177,13 @@ void ExpansionOptionsTest() {
     SPIEL_CHECK_EQ(GlobalValue(obs, kGlobalMyBuilder), builder ? 1.0f : 0.0f);
     SPIEL_CHECK_EQ(GlobalValue(obs, kGlobalOpponentBuilder),
                    builder ? 1.0f : 0.0f);
+    // ... and a pig.
+    SPIEL_CHECK_EQ(core.pig_rules, builder);
+    for (Player player = 0; player < kNumPlayers; ++player) {
+      SPIEL_CHECK_EQ(core.holding_pigs[player], builder ? 1 : 0);
+    }
+    SPIEL_CHECK_EQ(GlobalValue(obs, kGlobalMyPig), builder ? 1.0f : 0.0f);
+    SPIEL_CHECK_EQ(GlobalValue(obs, kGlobalOpponentPig), builder ? 1.0f : 0.0f);
   }
 }
 
@@ -2363,6 +2625,7 @@ void BasicCarcassonneTests() {
   BigMeepleTest();
   InnCathedralTest();
   BuilderTest();
+  PigTest();
   ReturnsMatchScoresTest();
   ShortGameMaxTurnsTest();
   LastUnplaceableTileTest();

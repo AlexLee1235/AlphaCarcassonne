@@ -84,7 +84,8 @@ const GameType kGameType{/*short_name=*/"carcassonne",
                          // without its rules, or, for those whose rules are
                          // played (RULED_EXPANSIONS), "on": tiles and rules.
                          // inns_cathedrals "on" brings the big meeple, inns
-                         // and cathedrals; traders_builders "on" the builder.
+                         // and cathedrals; traders_builders "on" the builder
+                         // and the pig.
                          // The river is "off" or "on".
                          /*parameter_specification=*/
                          {{"max_turns", GameParameter(0)},
@@ -243,7 +244,7 @@ int RotatePlane(int plane, int k) {
     }
     // A quarter turn moves each half-edge two places on.
     for (int first : {kFieldMyFarmersPlane, kFieldOpponentFarmersPlane, kFieldScorePlane, kFieldSizePlane,
-                      kFieldOpenCitiesPlane}) {
+                      kFieldOpenCitiesPlane, kFieldMyPigPlane, kFieldOpponentPigPlane}) {
         if (plane >= first && plane < first + HALF_EDGE_COUNT) {
             return first + (plane - first + 2 * k) % HALF_EDGE_COUNT;
         }
@@ -343,7 +344,8 @@ std::string CarcassonneState::ActionToString(Player player, Action action) const
     if (meeple_pos == MEEPLE_POS_SKIP) {
         return "place_meeple(skip)";
     }
-    const char *verb = isBuilderPos(meeple_pos)     ? "place_builder("
+    const char *verb = isPigPos(meeple_pos)         ? "place_pig("
+                       : isBuilderPos(meeple_pos)   ? "place_builder("
                        : isBigMeeplePos(meeple_pos) ? "place_big_meeple("
                                                     : "place_meeple(";
     const int spot = meepleSpot(meeple_pos);
@@ -386,6 +388,10 @@ std::string CarcassonneState::ToString() const {
                         game_state_.holding_builders[1], "]",
                         game_state_.builder_extra_tile ? " builder_extra_tile" : "",
                         game_state_.builder_second_tile ? " builder_second_tile" : "");
+    }
+    if (game_state_.pig_rules) {
+        absl::StrAppend(&expansion_pieces, " pigs=[", game_state_.holding_pigs[0], ", ", game_state_.holding_pigs[1],
+                        "]");
     }
     return absl::StrCat("phase=", PhaseToString(game_state_.current_phase), " current_player=", game_state_.currentPlayer,
                         " current_tile_type=", game_state_.currentTileType(), " remaining=", game_state_.getTotalRemaining(),
@@ -515,11 +521,15 @@ void CarcassonneState::ObservationTensor(Player player, absl::Span<float> values
                 if (tile.field[half_edge] == -1) {
                     continue;
                 }
-                set_field_planes(game_state_.fieldRoot(placement.id, tile.field[half_edge]),
+                const int root = game_state_.fieldRoot(placement.id, tile.field[half_edge]);
+                set_field_planes(root,
                                  {kFieldMyFarmersPlane + half_edge, kFieldOpponentFarmersPlane + half_edge,
                                   kFieldScorePlane + half_edge, kFieldSizePlane + half_edge,
                                   kFieldOpenCitiesPlane + half_edge},
                                  x, y);
+                const Field &field = game_state_.fieldAtRoot(root);
+                SetPlaneValue(values, kFieldMyPigPlane + half_edge, x, y, field.pigs[player]);
+                SetPlaneValue(values, kFieldOpponentPigPlane + half_edge, x, y, field.pigs[opponent]);
             }
             const int inner_field = tile.innerField();
             if (inner_field != -1) {
@@ -601,6 +611,8 @@ void CarcassonneState::ObservationTensor(Player player, absl::Span<float> values
     global[kGlobalOpponentBuilder] = game_state_.holding_builders[opponent];
     global[kGlobalBuilderExtraTile] = game_state_.builder_extra_tile ? 1.0f : 0.0f;
     global[kGlobalBuilderSecondTile] = game_state_.builder_second_tile ? 1.0f : 0.0f;
+    global[kGlobalMyPig] = game_state_.holding_pigs[player];
+    global[kGlobalOpponentPig] = game_state_.holding_pigs[opponent];
 }
 
 std::unique_ptr<State> CarcassonneState::Clone() const { return std::unique_ptr<State>(new CarcassonneState(*this)); }
@@ -723,8 +735,8 @@ Action RotateAction(Action action, int k, const SideGroups &groups) {
         return EncodeTileAction(x, y, (rot + k) % 4);
     }
     const int pos = DecodeMeepleAction(action);
-    // The big meeple and the builder go on the same spots, MEEPLE_POS_BIG and
-    // MEEPLE_POS_BUILDER further on.
+    // The big meeple, the builder and the pig go on the same spots further on
+    // (MEEPLE_POS_BIG, MEEPLE_POS_BUILDER, MEEPLE_POS_PIG for the half-edges).
     const int spot = meepleSpot(pos);
     const int offset = pos - spot;
     if (spot >= 0 && spot < 4) {
@@ -763,10 +775,12 @@ void RotateObservation(absl::Span<const float> observation, int k, const SideGro
         rotated[i] = observation[source[i]];
     }
     // The legal meeple sides and half-edges sit in the global vector, which the
-    // table leaves in place; rename each legal one instead, for the meeple,
-    // the big meeple and the builder (sides only).
-    for (int offset : {0, MEEPLE_POS_BIG, MEEPLE_POS_BUILDER}) {
-        const int legal_sides = kGlobalFeaturePlane * BOARD_SIZE * BOARD_SIZE + kGlobalLegalMeeple + 1 + offset;
+    // table leaves in place; rename each legal one instead: the sides of the
+    // meeple, the big meeple and the builder, and the half-edges of the
+    // meeple, the big meeple and the pig.
+    const int legal_moves = kGlobalFeaturePlane * BOARD_SIZE * BOARD_SIZE + kGlobalLegalMeeple + 1;
+    for (int first_side : {0, MEEPLE_POS_BIG, MEEPLE_POS_BUILDER}) {
+        const int legal_sides = legal_moves + first_side;
         for (int side = 0; side < 4; ++side) {
             rotated[legal_sides + side] = 0.0f;
         }
@@ -775,10 +789,9 @@ void RotateObservation(absl::Span<const float> observation, int k, const SideGro
                 rotated[legal_sides + RotateMeepleSide(side, k, groups)] = 1.0f;
             }
         }
-        if (offset == MEEPLE_POS_BUILDER) {
-            continue;
-        }
-        const int legal_half_edges = legal_sides + MEEPLE_POS_FIELD;
+    }
+    for (int first_half_edge : {MEEPLE_POS_FIELD, MEEPLE_POS_BIG + MEEPLE_POS_FIELD, MEEPLE_POS_PIG}) {
+        const int legal_half_edges = legal_moves + first_half_edge;
         for (int half_edge = 0; half_edge < HALF_EDGE_COUNT; ++half_edge) {
             rotated[legal_half_edges + half_edge] = 0.0f;
         }
@@ -796,10 +809,11 @@ float ObservationPlaneDenominator(int plane) {
     auto in = [plane](int first, int count) { return plane >= first && plane < first + count; };
     // Each is the normalization ObservationTensor writes the plane with.
     // Everything up to the last-placed plane is 0/1, and so are the big meeple,
-    // inn / cathedral and builder planes; the monastery owners are +-1.
+    // inn / cathedral, builder and pig planes; the monastery owners are +-1.
     if (plane <= kLastPlacedPlane || plane == kMonasteryOwnerPlane || in(kFeatureMyBigMeeplePlane, 4) ||
         in(kFeatureOpponentBigMeeplePlane, 4) || plane == kMonasteryBigMeeplePlane ||
-        in(kFeatureInnCathedralPlane, 4) || in(kFeatureMyBuilderPlane, 4) || in(kFeatureOpponentBuilderPlane, 4)) {
+        in(kFeatureInnCathedralPlane, 4) || in(kFeatureMyBuilderPlane, 4) || in(kFeatureOpponentBuilderPlane, 4) ||
+        in(kFieldMyPigPlane, HALF_EDGE_COUNT) || in(kFieldOpponentPigPlane, HALF_EDGE_COUNT)) {
         return 1.0f;
     }
     if (in(kFeatureOpensPlane, 4)) {

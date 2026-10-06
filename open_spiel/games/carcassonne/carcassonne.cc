@@ -76,7 +76,8 @@ const GameType kGameType{/*short_name=*/"carcassonne",
                          /*provides_observation_string=*/true,
                          /*provides_observation_tensor=*/true,
                          // Each expansion: "off", or "tiles" to deal its tiles
-                         // without its rules.
+                         // without its rules. The river is "off" or "on": its
+                         // tiles with its rules.
                          /*parameter_specification=*/
                          {{"max_turns", GameParameter(0)},
                           {EXPANSION_NAMES[EXP_INNS_CATHEDRALS], GameParameter(std::string("off"))},
@@ -626,11 +627,14 @@ CarcassonneGame::CarcassonneGame(const GameParameters &params)
     SPIEL_CHECK_GE(max_turns_, 0);
     for (int expansion = 1; expansion < EXPANSION_COUNT; ++expansion) {
         const std::string mode = ParameterValue<std::string>(EXPANSION_NAMES[expansion]);
-        if (mode == "tiles") {
+        // The river's rules come with its tiles (game.hpp), so it has no
+        // tiles-only mode.
+        const std::string deal = expansion == EXP_RIVER ? "on" : "tiles";
+        if (mode == deal) {
             expansions_ |= expansionBit(static_cast<Expansion>(expansion));
         } else if (mode != "off") {
-            SpielFatalError(absl::StrCat("carcassonne: ", EXPANSION_NAMES[expansion], "=", mode,
-                                         "; expected off or tiles"));
+            SpielFatalError(absl::StrCat("carcassonne: ", EXPANSION_NAMES[expansion], "=", mode, "; expected off or ",
+                                         deal));
         }
     }
 }

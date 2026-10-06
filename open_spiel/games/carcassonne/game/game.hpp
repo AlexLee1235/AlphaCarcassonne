@@ -191,6 +191,8 @@ class DeckModule {
     // The size of this game's deck, the start tile included.
     int initial_total = 0;
     int type_counts[CANONICAL_TILE_TYPE_COUNT + 1] = {};
+    // River rules: every river tile is drawn before the others, the lake last.
+    bool river_first = false;
     int consumeType(int type_id);
     // Deals every tile of the expansions in `expansions` (expansionBit() mask);
     // the other types are never drawn.
@@ -244,6 +246,9 @@ class Carcassonne {
     LogModule logs;
 
     void placeTileOnBoard(int tile_id, int x, int y, int rot);
+    // Follows the river onto a river tile just placed.
+    void advanceRiver(int x, int y, const Tile &tile);
+    bool isLegalPlacement(int tile_id, int x, int y, int rot) const;
     bool hasValidMove(int tile_id) const;
     void resolveEndGameScore();
     void resolveNoMoreDraws();
@@ -259,11 +264,21 @@ class Carcassonne {
     int completed_turns = 0;
     int max_turns = 0;
 
+    // River rules (on whenever the river tiles are dealt). The river is laid
+    // first, from the spring at the centre to the lake, each tile continuing it,
+    // and it may not turn the same way twice in a row, straights in between or
+    // not: it flows in at most two directions and never back past itself.
+    bool river_rules = false;
+    int river_x = -1;           // the empty cell the river flows into; -1 once the lake closes it
+    int river_y = -1;
+    int river_heading = -1;     // the side the river leaves its last tile by: 0 N, 1 E, 2 S, 3 W
+    int river_last_turn = 0;    // its last bend, as (out - in heading) % 4: 1 clockwise, 3 anticlockwise; 0 none yet
+
     explicit Carcassonne(int max_turns = 0);
     // Starts with the start tile turned by start_rotation quarter turns: the
     // whole game rotated about the centre. Used to test board-rotation symmetry.
     // The deck holds the base tiles and those of the expansions in
-    // `expansions` (an expansionBit() mask).
+    // `expansions` (an expansionBit() mask); with the river in, its rules apply.
     Carcassonne(int max_turns, int start_rotation, uint32_t expansions = BASE_ONLY);
     int currentTileType() const;
     Carcassonne clone() const;

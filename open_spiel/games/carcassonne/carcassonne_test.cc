@@ -35,10 +35,11 @@ float GlobalValue(const std::vector<float>& tensor, int index) {
 
 bool Near(float left, float right) { return std::abs(left - right) < 1e-6f; }
 
-// Every expansion's tiles, without their rules.
+// Every expansion's tiles: the river with its rules, the others without.
 constexpr const char* kAllExpansionsGame =
-    "carcassonne(inns_cathedrals=tiles,traders_builders=tiles,river=tiles,"
+    "carcassonne(inns_cathedrals=tiles,traders_builders=tiles,river=on,"
     "princess_dragon=tiles)";
+constexpr const char* kRiverGame = "carcassonne(river=on)";
 
 int TestTerrainIndex(EdgeType edge_type) {
   switch (edge_type) {
@@ -1110,6 +1111,8 @@ void RotationEquivarianceTest() {
     for (int game = 0; game < 3; ++game) {
       renamed_meeple_moves += CheckRotatedTwin(
           {}, k, &rng, &renamed_farmer_moves, kAllExpansionsGame);
+      renamed_meeple_moves +=
+          CheckRotatedTwin({}, k, &rng, &renamed_farmer_moves, kRiverGame);
     }
   }
   std::cout << "RotationEquivarianceTest: " << renamed_meeple_moves
@@ -1132,7 +1135,7 @@ void ExpansionOptionsTest() {
     if (expansion != EXP_BASE) {
       mask |= expansionBit(static_cast<Expansion>(expansion));
       game_string = absl::StrCat("carcassonne(", EXPANSION_NAMES[expansion],
-                                 "=tiles)");
+                                 expansion == EXP_RIVER ? "=on)" : "=tiles)");
     }
     std::shared_ptr<const Game> game = LoadGame(game_string);
     SPIEL_CHECK_EQ(dynamic_cast<const CarcassonneGame&>(*game).Expansions(),
@@ -1222,6 +1225,216 @@ void RiverTileTest() {
   features->resolveEndGameScore(scores);
   SPIEL_CHECK_EQ(scores[0], 0);
   SPIEL_CHECK_EQ(scores[1], 0);
+}
+
+bool IsRiverType(int type) {
+  return all_tiles[type - 1].expansion == EXP_RIVER;
+}
+
+std::vector<TileMove> LegalTileMoves(const ::Carcassonne& game) {
+  std::array<TileMove, kTileActionCount> moves{};
+  int count = 0;
+  game.getLegalTileMoves(moves.data(), count);
+  return std::vector<TileMove>(moves.begin(), moves.begin() + count);
+}
+
+// The turn the river makes on `tile` (as turned) flowing in from where it
+// ends now, counted as Carcassonne::river_last_turn counts it; 0 straight on.
+int RiverTurn(const ::Carcassonne& game, const Tile& tile) {
+  for (int side = 0; side < 4; ++side) {
+    if (tile.edge[side] == RIVER && side != (game.river_heading + 2) % 4) {
+      return (side - game.river_heading + 4) % 4;
+    }
+  }
+  return 0;
+}
+
+// Draws river tile `type` and returns the turn the river makes on each legal
+// placement, by rotation (-1 where it may not go), checking they are all at
+// the river's end.
+std::array<int, 4> DrawRiverTile(::Carcassonne* game, int type) {
+  const int end_x = game->river_x;
+  const int end_y = game->river_y;
+  game->drawTile(type);
+  SPIEL_CHECK_EQ(game->current_phase, PHASE_TILE);
+  std::array<int, 4> turns = {-1, -1, -1, -1};
+  for (const TileMove& move : LegalTileMoves(*game)) {
+    SPIEL_CHECK_EQ(static_cast<int>(move.x), end_x);
+    SPIEL_CHECK_EQ(static_cast<int>(move.y), end_y);
+    turns[move.rot] =
+        RiverTurn(*game, full_deck[game->current_tile_in_hand][move.rot]);
+  }
+  return turns;
+}
+
+// With the river on, the spring starts the game, the river tiles are drawn
+// first and the lake last, each continuing the river without turning the same
+// way twice in a row.
+void RiverRulesTest() {
+  const int c = BOARD_SIZE / 2;
+  const int dx[4] = {0, 1, 0, -1};
+  const int dy[4] = {-1, 0, 1, 0};
+
+  // The spring flows south from the centre; the base start tile is dealt.
+  std::shared_ptr<const Game> game = LoadGame(kRiverGame);
+  std::unique_ptr<State> initial = game->NewInitialState();
+  const ::Carcassonne& start =
+      dynamic_cast<const CarcassonneState&>(*initial).UnderlyingState();
+  SPIEL_CHECK_TRUE(start.river_rules);
+  SPIEL_CHECK_EQ(PHYSICAL_TO_CANONICAL_TYPE[start.getPlacement(c, c).id],
+                 RIVER_SPRING_TYPE);
+  SPIEL_CHECK_EQ(start.river_heading, 2);
+  SPIEL_CHECK_EQ(start.river_x, c);
+  SPIEL_CHECK_EQ(start.river_y, c + 1);
+  SPIEL_CHECK_EQ(start.getDeckSize(), 84);
+  SPIEL_CHECK_EQ(start.getTotalRemaining(), 83);
+  SPIEL_CHECK_EQ(start.getRemainingTypeCount(START_TILE_TYPE),
+                 all_tiles[START_TILE_TYPE - 1].count);
+  // First come the river tiles other than the spring and the lake.
+  const ActionsAndProbs first_draws = initial->ChanceOutcomes();
+  SPIEL_CHECK_EQ(first_draws.size(), 8);
+  for (const auto& [action, probability] : first_draws) {
+    const int type = action + 1;
+    SPIEL_CHECK_TRUE(IsRiverType(type));
+    SPIEL_CHECK_NE(type, RIVER_LAKE_TYPE);
+    SPIEL_CHECK_TRUE(Near(probability, all_tiles[type - 1].count / 10.0));
+  }
+  SPIEL_CHECK_FALSE(::Carcassonne().river_rules);
+
+  // Bends: types 27, 30 (two of them) and 32. Turned rot 2 a type 30 flows in
+  // from the north and out west (clockwise), turned rot 3 out east.
+  ::Carcassonne river(/*max_turns=*/0, START_TILE_ROTATION,
+                      BASE_ONLY | expansionBit(EXP_RIVER));
+  SPIEL_CHECK_TRUE((DrawRiverTile(&river, 30) ==
+                    std::array<int, 4>{-1, -1, 1, 3}));
+  river.placeTile(c, c + 1, 2);
+  river.placeMeeple(MEEPLE_POS_SKIP);
+  SPIEL_CHECK_EQ(river.river_last_turn, 1);
+  SPIEL_CHECK_EQ(river.river_heading, 3);
+  // Type 27 could take it north (rot 1, clockwise again) or south (rot 2);
+  // only south is left.
+  SPIEL_CHECK_TRUE((DrawRiverTile(&river, 27) ==
+                    std::array<int, 4>{-1, -1, 3, -1}));
+  river.placeTile(c - 1, c + 1, 2);
+  river.placeMeeple(MEEPLE_POS_SKIP);
+  SPIEL_CHECK_EQ(river.river_last_turn, 3);
+  SPIEL_CHECK_EQ(river.river_heading, 2);
+  // A straight goes either way round and does not reset the last turn...
+  SPIEL_CHECK_TRUE((DrawRiverTile(&river, 34) ==
+                    std::array<int, 4>{0, -1, 0, -1}));
+  river.placeTile(c - 1, c + 2, 0);
+  river.placeMeeple(MEEPLE_POS_SKIP);
+  SPIEL_CHECK_EQ(river.river_last_turn, 3);
+  // ... so the next bend has to turn clockwise.
+  SPIEL_CHECK_TRUE((DrawRiverTile(&river, 30) ==
+                    std::array<int, 4>{-1, -1, 1, -1}));
+
+  // Random games, the river alone and with every other expansion's tiles.
+  std::mt19937 rng(20261006);
+  int same_way_bends = 0;  // placements only the turn rule ruled out
+  int discarded = 0;       // river tiles with nowhere to go
+  int placed = 0;          // river tiles placed, the springs included
+  int games = 0;
+  for (const char* game_string : {kRiverGame, kAllExpansionsGame}) {
+    std::shared_ptr<const Game> river_game = LoadGame(game_string);
+    for (int sim = 0; sim < 100; ++sim, ++games) {
+      std::unique_ptr<State> state = river_game->NewInitialState();
+      const ::Carcassonne& core =
+          dynamic_cast<const CarcassonneState&>(*state).UnderlyingState();
+      int river_placed = 1;  // the spring
+      while (!state->IsTerminal()) {
+        if (state->IsChanceNode()) {
+          int river_left = 0;  // other than the lake
+          for (int type = 1; type <= CANONICAL_TILE_TYPE_COUNT; ++type) {
+            if (IsRiverType(type) && type != RIVER_LAKE_TYPE) {
+              river_left += core.getRemainingTypeCount(type);
+            }
+          }
+          const bool lake_left =
+              core.getRemainingTypeCount(RIVER_LAKE_TYPE) > 0;
+          const ActionsAndProbs outcomes = state->ChanceOutcomes();
+          for (const auto& [action, probability] : outcomes) {
+            const int type = action + 1;
+            if (river_left > 0) {
+              SPIEL_CHECK_TRUE(IsRiverType(type));
+              SPIEL_CHECK_NE(type, RIVER_LAKE_TYPE);
+            } else if (lake_left) {
+              SPIEL_CHECK_EQ(type, RIVER_LAKE_TYPE);
+            } else {
+              SPIEL_CHECK_FALSE(IsRiverType(type));
+            }
+          }
+          const Action draw = SampleAction(outcomes, rng).first;
+          state->ApplyAction(draw);
+          if (IsRiverType(draw + 1) && core.current_phase != PHASE_TILE) {
+            ++discarded;
+          }
+          continue;
+        }
+        const std::vector<Action> legal = state->LegalActions();
+        const Action action =
+            legal[std::uniform_int_distribution<int>(0, legal.size() - 1)(rng)];
+        if (core.current_phase == PHASE_TILE &&
+            IsRiverType(core.currentTileType())) {
+          const int in_side = (core.river_heading + 2) % 4;
+          for (Action legal_action : legal) {
+            int tile_x, tile_y, rot;
+            DecodeTileActionForTest(legal_action, &tile_x, &tile_y, &rot);
+            SPIEL_CHECK_EQ(tile_x, core.river_x);
+            SPIEL_CHECK_EQ(tile_y, core.river_y);
+            const int turn =
+                RiverTurn(core, full_deck[core.current_tile_in_hand][rot]);
+            SPIEL_CHECK_TRUE(turn == 0 || turn != core.river_last_turn);
+          }
+          for (int rot = 0; rot < 4; ++rot) {
+            const Tile& tile = full_deck[core.current_tile_in_hand][rot];
+            if (tile.edge[in_side] == RIVER && core.river_last_turn != 0 &&
+                RiverTurn(core, tile) == core.river_last_turn) {
+              ++same_way_bends;
+            }
+          }
+          ++river_placed;
+        }
+        state->ApplyAction(action);
+      }
+
+      // The river is one path from the spring to the lake, through every
+      // river tile placed.
+      SPIEL_CHECK_EQ(core.river_x, -1);
+      int walk_x = c;
+      int walk_y = c;
+      int heading = -1;
+      int walked = 0;
+      int last_type = 0;
+      while (true) {
+        const Placement placement = core.getPlacement(walk_x, walk_y);
+        SPIEL_CHECK_NE(static_cast<int>(placement.id), 0);
+        ++walked;
+        last_type = PHYSICAL_TO_CANONICAL_TYPE[placement.id];
+        const Tile& tile = full_deck[placement.id][placement.rotation];
+        int out = -1;
+        for (int side = 0; side < 4; ++side) {
+          if (tile.edge[side] == RIVER &&
+              (heading < 0 || side != (heading + 2) % 4)) {
+            out = side;
+          }
+        }
+        if (out < 0) break;
+        heading = out;
+        walk_x += dx[out];
+        walk_y += dy[out];
+      }
+      SPIEL_CHECK_EQ(last_type, RIVER_LAKE_TYPE);
+      SPIEL_CHECK_EQ(walked, river_placed);
+      placed += river_placed;
+    }
+  }
+  std::cout << "RiverRulesTest: " << games << " games, " << same_way_bends
+            << " same-way bends ruled out, " << discarded
+            << " river tiles discarded" << std::endl;
+  SPIEL_CHECK_GT(same_way_bends, 0);
+  SPIEL_CHECK_EQ(placed + discarded,
+                 games * tileCountIn(expansionBit(EXP_RIVER)));
 }
 
 // Random games dealing every expansion that is in the table: legal play, the
@@ -1336,9 +1549,12 @@ void BasicCarcassonneTests() {
   testing::LoadGameTest("carcassonne");
   testing::LoadGameTest("carcassonne(max_turns=10)");
   testing::LoadGameTest(kAllExpansionsGame);
+  testing::LoadGameTest(kRiverGame);
   testing::ChanceOutcomesTest(*LoadGame("carcassonne"));
   testing::ChanceOutcomesTest(*LoadGame(kAllExpansionsGame));
+  testing::ChanceOutcomesTest(*LoadGame(kRiverGame));
   testing::RandomSimTest(*LoadGame("carcassonne"), 50);
+  testing::RandomSimTest(*LoadGame(kRiverGame), 20);
   ObservationTensorSmokeTest();
   RelativePerspectiveTest();
   PendingScoreTest();
@@ -1348,6 +1564,7 @@ void BasicCarcassonneTests() {
   ShieldPerCityTest();
   ExpansionOptionsTest();
   RiverTileTest();
+  RiverRulesTest();
   ExpansionGamesTest();
   FieldScoringTest();
   InnerFieldTest();

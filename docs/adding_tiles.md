@@ -12,7 +12,7 @@
 
 `tiles/` 裡的圖已經照這個順序編好號，填表時照著 type 順序一列一列往下填即可。
 
-目前**只做牌的形狀**，擴充的規則一律不算：旅館、大教堂、貨物、龍、公主、魔法門、火山都還沒有效果。
+目前除了河流（§8）之外**只做牌的形狀**，擴充的規則一律不算：旅館、大教堂、貨物、龍、公主、魔法門、火山都還沒有效果。
 
 ---
 
@@ -255,13 +255,15 @@ cd /mnt/c/achieve/Carcassonne/AlphaCarcassonne/build && make carcassonne_test -j
 ## 8. 開擴充來玩或訓練
 
 ```
-carcassonne(inns_cathedrals=tiles,traders_builders=tiles,river=tiles,princess_dragon=tiles)
+carcassonne(inns_cathedrals=tiles,traders_builders=tiles,river=on,princess_dragon=tiles)
 ```
 
-- 每個參數是 `off`（預設）或 `tiles`。基本版的牌一定都在。
+- 每個參數是 `off`（預設）或 `tiles`（只發牌、不算規則）；**河流是 `off` 或 `on`**（發牌並套用河流規則，沒有只發牌的選項）。基本版的牌一定都在。
 - **觀測和動作的維度不隨參數改變**：global vector 為牌表裡的每一種牌都留了位置（35 + 2 × 牌種數），沒發的牌種一律是 0。
   所以**牌表每加一種牌，維度就變一次**。等牌表定案再開始訓練；舊的 checkpoint 也不能載入，`carcassonne_bot_cli` 會直接報錯。
-- 河流牌直接混在牌堆裡，沒有「先鋪河」的抽牌順序。抽到放不下的牌會被丟掉；河口旁的空格只能接河，多半會一直空著。
+- 河流規則（`river=on`）：河源取代起始牌放在中央，基本版的起始牌洗進一般牌堆；先抽完河流牌，湖一定最後，之後才抽一般牌。
+  每張河流牌都要接在河的出口上，而且連續兩個彎不能往同一邊轉（中間隔著直流也算），所以河只會在兩個方向間交替、不會流回自己旁邊。
+  河不能流出盤面；放不下的河流牌（只會在盤面邊緣發生）跟一般牌一樣丟掉。規則寫在 `game/game.cpp` 的 `isLegalPlacement` / `advanceRiver`。
 - 盤面：牌變多，對局也變大。填完後用下面的指令量全開時的跨度，再決定 `BOARD_SIZE`（目前 21）要不要加大：
   ```bash
   cd tools && make build/diag_board31 && ./build/diag_board31 3000 all

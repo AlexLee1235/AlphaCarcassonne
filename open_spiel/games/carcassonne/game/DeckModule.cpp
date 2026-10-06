@@ -25,11 +25,34 @@ void DeckModule::initializeTypeCounts(uint32_t expansions) {
         total_remaining += type_counts[type_id];
     }
     initial_total = total_remaining;
+    river_first = (expansions & expansionBit(EXP_RIVER)) != 0;
 }
 
 void DeckModule::getAvailableDraws(ChanceBranch *out, int &count) const {
     if (total_remaining == 0)
         return;
+    if (river_first) {
+        // The river tiles other than the lake, then the lake, then the rest.
+        int river_left = 0;
+        for (int type_id = 1; type_id <= CANONICAL_TILE_TYPE_COUNT; ++type_id) {
+            if (all_tiles[type_id - 1].expansion == EXP_RIVER && type_id != RIVER_LAKE_TYPE) {
+                river_left += type_counts[type_id];
+            }
+        }
+        if (river_left > 0) {
+            for (int type_id = 1; type_id <= CANONICAL_TILE_TYPE_COUNT; ++type_id) {
+                if (all_tiles[type_id - 1].expansion == EXP_RIVER && type_id != RIVER_LAKE_TYPE &&
+                    type_counts[type_id] > 0) {
+                    out[count++] = {type_id, static_cast<double>(type_counts[type_id]) / river_left};
+                }
+            }
+            return;
+        }
+        if (type_counts[RIVER_LAKE_TYPE] > 0) {
+            out[count++] = {RIVER_LAKE_TYPE, 1.0};
+            return;
+        }
+    }
     for (int type_id = 1; type_id <= CANONICAL_TILE_TYPE_COUNT; ++type_id) {
         if (type_counts[type_id] > 0) {
             out[count++] = {type_id, static_cast<double>(type_counts[type_id]) / total_remaining};

@@ -20,12 +20,67 @@ constexpr std::array<int, 4> op = {D, L, U, R};
 
 } // namespace
 
+bool Carcassonne::isLegalPlacement(int tile_id, int x, int y, int rot) const {
+    const Tile &tile = full_deck[tile_id][rot];
+    if (!board.canPlaceTileAt(x, y, tile)) {
+        return false;
+    }
+    if (!river_rules || riverEdgeCount(tile) == 0) {
+        return true;
+    }
+    // A river tile continues the river: it goes where the river flows, whose
+    // last tile has a river side facing it, so canPlaceTileAt has already
+    // matched this tile's river side on that side.
+    if (x != river_x || y != river_y) {
+        return false;
+    }
+    for (int side = 0; side < 4; ++side) {
+        if (tile.edge[side] != RIVER || side == op[river_heading]) {
+            continue;
+        }
+        // Where it flows out: on the board, and not turning the way the last
+        // bend turned.
+        if (!isInside(x + dx[side], y + dy[side])) {
+            return false;
+        }
+        const int turn = (side - river_heading + 4) % 4;
+        if (turn != 0 && turn == river_last_turn) {
+            return false;
+        }
+    }
+    return true;
+}
+
+void Carcassonne::advanceRiver(int x, int y, const Tile &tile) {
+    // The spring has no river flowing in; the lake none flowing out.
+    const int in_side = river_heading < 0 ? -1 : op[river_heading];
+    int out_side = -1;
+    for (int side = 0; side < 4; ++side) {
+        if (tile.edge[side] == RIVER && side != in_side) {
+            out_side = side;
+        }
+    }
+    if (out_side < 0) {
+        river_x = river_y = -1;
+        return;
+    }
+    if (river_heading >= 0) {
+        const int turn = (out_side - river_heading + 4) % 4;
+        if (turn != 0) {
+            river_last_turn = turn;
+        }
+    }
+    river_heading = out_side;
+    river_x = x + dx[out_side];
+    river_y = y + dy[out_side];
+}
+
 bool Carcassonne::hasValidMove(int tile_id) const {
     for (int i = 0; i < frontier.frontier_cells.size(); ++i) {
         int x = frontier.frontier_cells[i].first;
         int y = frontier.frontier_cells[i].second;
         for (int rot = 0; rot < 4; ++rot) {
-            if (board.canPlaceTileAt(x, y, full_deck[tile_id][rot])) {
+            if (isLegalPlacement(tile_id, x, y, rot)) {
                 return true;
             }
         }
@@ -55,13 +110,19 @@ void Carcassonne::placeTileOnBoard(int tile_id, int x, int y, int rot) {
     fields.placeTileOnBoard(tile_id, x, y, tile, board, features);
     monasteries.placeTileOnBoard(tile_id, x, y, rot);
     logs.placeTileOnBoard(tile_id, x, y, rot);
+    if (river_rules && riverEdgeCount(tile) > 0) {
+        advanceRiver(x, y, tile);
+    }
 }
 
 Carcassonne::Carcassonne(int max_turns) : Carcassonne(max_turns, START_TILE_ROTATION) {}
 
 Carcassonne::Carcassonne(int max_turns, int start_rotation, uint32_t expansions) : max_turns(max_turns) {
     deck.initializeTypeCounts(expansions | BASE_ONLY);
-    int start_tile_id = deck.consumeType(START_TILE_TYPE);
+    river_rules = deck.river_first;
+    // With the river the spring starts the game and the base start tile is
+    // dealt like any other.
+    int start_tile_id = deck.consumeType(river_rules ? RIVER_SPRING_TYPE : START_TILE_TYPE);
     placeTileOnBoard(start_tile_id, BOARD_SIZE / 2, BOARD_SIZE / 2, start_rotation);
     current_phase = PHASE_CHANCE;
 }
@@ -104,7 +165,7 @@ void Carcassonne::getLegalTileMoves(TileMove *out, int &count) const {
         int x = frontier.frontier_cells[i].first;
         int y = frontier.frontier_cells[i].second;
         for (int rot = 0; rot < 4; ++rot) {
-            if (board.canPlaceTileAt(x, y, full_deck[current_tile_in_hand][rot])) {
+            if (isLegalPlacement(current_tile_in_hand, x, y, rot)) {
                 out[count++] = {static_cast<uint8_t>(x), static_cast<uint8_t>(y), static_cast<uint8_t>(rot)};
             }
         }

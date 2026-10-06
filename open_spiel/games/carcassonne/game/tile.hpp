@@ -9,6 +9,10 @@ using namespace std;
 
 constexpr int START_TILE_TYPE = 20;
 constexpr int START_TILE_ROTATION = 0;
+// With the river on, the spring is the start tile (the base start tile is
+// dealt like any other) and the lake is the last river tile drawn.
+constexpr int RIVER_SPRING_TYPE = 25;
+constexpr int RIVER_LAKE_TYPE = 26;
 
 // RIVER only meets RIVER. It splits fields like a road, but it is no feature:
 // it never scores and takes no meeple.
@@ -219,7 +223,9 @@ constexpr TileBlueprint all_tiles[] = {
 
     // The expansion sections follow the images in tiles/: type N is tiles/N.png.
 
-    // ---- River: 12 tiles, types 25-34 (25 is the spring), rows end with EXP_RIVER. ----
+    // ---- River: 12 tiles, types 25-34, rows end with EXP_RIVER. ----
+    // The river is laid first: the spring (25) at the centre, the others in a
+    // random order each continuing it, the lake (26) last.
     {Tile(GRASS, GRASS, RIVER, GRASS, 0, 1, 2, 3, {{0, 0, 0, 0, 0, 0, 0, 0}, 1, {}}), 1, 25, EXP_RIVER}, //source
     {Tile(RIVER, GRASS, GRASS, GRASS, 0, 1, 2, 3, {{0, 0, 0, 0, 0, 0, 0, 0}, 1, {}}), 1, 26, EXP_RIVER}, //end
     {Tile(RIVER, CITY, CITY, RIVER, 0, 1, 1, 0, {{0, 1, -1, -1, -1, -1, 1, 0}, 2, {0, SIDE_E | SIDE_S}}), 1, 27, EXP_RIVER},
@@ -524,6 +530,28 @@ constexpr bool tileTableIsNumbered() {
     return true;
 }
 
+constexpr int riverEdgeCount(const Tile &tile) {
+    int count = 0;
+    for (EdgeType edge : tile.edge) {
+        count += edge == RIVER ? 1 : 0;
+    }
+    return count;
+}
+
+// The river is one path: the spring and the lake are single tiles with one
+// river side each, every other river tile carries it through two sides, and
+// only river tiles have river sides.
+constexpr bool riverTableIsAPath() {
+    for (const TileBlueprint &bp : all_tiles) {
+        const bool end = bp.canonical_type == RIVER_SPRING_TYPE || bp.canonical_type == RIVER_LAKE_TYPE;
+        const int expected = bp.expansion != EXP_RIVER ? 0 : end ? 1 : 2;
+        if (riverEdgeCount(bp.tile) != expected || (end && (bp.expansion != EXP_RIVER || bp.count != 1))) {
+            return false;
+        }
+    }
+    return true;
+}
+
 // Every tile of every expansion: the most a game can deal. Physical ids run
 // 1..PHYSICAL_TILE_COUNT in table order, so the base tiles keep ids 1-72.
 constexpr int PHYSICAL_TILE_COUNT = tileCountIn(ALL_EXPANSIONS);
@@ -534,6 +562,7 @@ static_assert(tileTableIsNumbered(), "all_tiles: row i must be canonical type i 
 static_assert(tileCountIn(BASE_ONLY) == 72, "the base rows must hold the 72 base tiles");
 static_assert(PHYSICAL_TILE_COUNT <= 255, "Placement::id is a uint8_t");
 static_assert(all_tiles[START_TILE_TYPE - 1].expansion == EXP_BASE, "the start tile is a base tile");
+static_assert(riverTableIsAPath(), "the spring and the lake need one river side, other river tiles two");
 
 // A set of physical tiles, indexed by physical id.
 using TileMask = std::bitset<PHYSICAL_TILE_COUNT + 1>;

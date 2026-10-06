@@ -1144,13 +1144,13 @@ void ExpansionOptionsTest() {
                    base->ObservationTensorShape());
     SPIEL_CHECK_EQ(game->NumDistinctActions(), base->NumDistinctActions());
     SPIEL_CHECK_EQ(game->MaxChanceOutcomes(), CANONICAL_TILE_TYPE_COUNT);
-    SPIEL_CHECK_EQ(game->MaxChanceNodesInHistory(), tileCountIn(mask) - 1);
+    SPIEL_CHECK_EQ(game->MaxChanceNodesInHistory(), deckSizeOf(mask) - 1);
 
     std::unique_ptr<State> state = game->NewInitialState();
     const ::Carcassonne& core =
         dynamic_cast<const CarcassonneState&>(*state).UnderlyingState();
-    SPIEL_CHECK_EQ(core.getDeckSize(), tileCountIn(mask));
-    SPIEL_CHECK_EQ(core.getTotalRemaining(), tileCountIn(mask) - 1);
+    SPIEL_CHECK_EQ(core.getDeckSize(), deckSizeOf(mask));
+    SPIEL_CHECK_EQ(core.getTotalRemaining(), deckSizeOf(mask) - 1);
     double total = 0.0;
     for (const auto& [action, probability] : state->ChanceOutcomes()) {
       const TileBlueprint& blueprint = all_tiles[action];  // type action + 1
@@ -1161,7 +1161,7 @@ void ExpansionOptionsTest() {
     // Remaining tiles count against this game's deck.
     SPIEL_CHECK_TRUE(Near(GlobalValue(state->ObservationTensor(0),
                                       kGlobalRemainingTiles),
-                          (tileCountIn(mask) - 1.0f) / tileCountIn(mask)));
+                          (deckSizeOf(mask) - 1.0f) / deckSizeOf(mask)));
   }
 }
 
@@ -1275,7 +1275,7 @@ void RiverRulesTest() {
   const int dx[4] = {0, 1, 0, -1};
   const int dy[4] = {-1, 0, 1, 0};
 
-  // The spring flows south from the centre; the base start tile is dealt.
+  // The spring flows south from the centre; the base start tile is left out.
   std::shared_ptr<const Game> game = LoadGame(kRiverGame);
   std::unique_ptr<State> initial = game->NewInitialState();
   const ::Carcassonne& start =
@@ -1286,10 +1286,12 @@ void RiverRulesTest() {
   SPIEL_CHECK_EQ(start.river_heading, 2);
   SPIEL_CHECK_EQ(start.river_x, c);
   SPIEL_CHECK_EQ(start.river_y, c + 1);
-  SPIEL_CHECK_EQ(start.getDeckSize(), 84);
-  SPIEL_CHECK_EQ(start.getTotalRemaining(), 83);
+  SPIEL_CHECK_EQ(start.getDeckSize(), 72 + 12 - 1);
+  SPIEL_CHECK_EQ(start.getDeckSize(), deckSizeOf(expansionBit(EXP_RIVER)));
+  SPIEL_CHECK_EQ(start.getTotalRemaining(), start.getDeckSize() - 1);
   SPIEL_CHECK_EQ(start.getRemainingTypeCount(START_TILE_TYPE),
-                 all_tiles[START_TILE_TYPE - 1].count);
+                 all_tiles[START_TILE_TYPE - 1].count - 1);
+  SPIEL_CHECK_EQ(game->MaxChanceNodesInHistory(), start.getDeckSize() - 1);
   // First come the river tiles other than the spring and the lake.
   const ActionsAndProbs first_draws = initial->ChanceOutcomes();
   SPIEL_CHECK_EQ(first_draws.size(), 8);
@@ -1488,10 +1490,10 @@ void ExpansionGamesTest() {
     }
     const ::Carcassonne& core =
         dynamic_cast<const CarcassonneState&>(*state).UnderlyingState();
-    SPIEL_CHECK_EQ(core.getDeckSize(), tileCountIn(ALL_EXPANSIONS));
+    SPIEL_CHECK_EQ(core.getDeckSize(), deckSizeOf(ALL_EXPANSIONS));
     SPIEL_CHECK_LE(tiles_drawn, core.getDeckSize());
   }
-  std::cout << "ExpansionGamesTest: " << tileCountIn(ALL_EXPANSIONS)
+  std::cout << "ExpansionGamesTest: " << deckSizeOf(ALL_EXPANSIONS)
             << " tiles in the deck, " << river_sides << " river sides, "
             << shield_sides << " shielded city sides seen; opens underflows so far: "
             << OpensUnderflowCount() << std::endl;

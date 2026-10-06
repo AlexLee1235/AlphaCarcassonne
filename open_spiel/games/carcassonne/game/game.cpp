@@ -120,8 +120,8 @@ Carcassonne::Carcassonne(int max_turns) : Carcassonne(max_turns, START_TILE_ROTA
 Carcassonne::Carcassonne(int max_turns, int start_rotation, uint32_t expansions) : max_turns(max_turns) {
     deck.initializeTypeCounts(expansions | BASE_ONLY);
     river_rules = deck.river_first;
-    // With the river the spring starts the game and the base start tile is
-    // dealt like any other.
+    // With the river the spring starts the game instead of the base start tile,
+    // which the deck leaves out.
     int start_tile_id = deck.consumeType(river_rules ? RIVER_SPRING_TYPE : START_TILE_TYPE);
     placeTileOnBoard(start_tile_id, BOARD_SIZE / 2, BOARD_SIZE / 2, start_rotation);
     current_phase = PHASE_CHANCE;

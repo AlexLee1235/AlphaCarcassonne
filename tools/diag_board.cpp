@@ -85,7 +85,7 @@ int main(int argc, char **argv) {
         sumOpenCity += oc; sumOpenRoad += orr; sumMon += mo;
     }
 
-    printf("BOARD_SIZE = %d,  games = %lld,  牌組 %d 張%s\n", BOARD_SIZE, games, tileCountIn(expansions),
+    printf("BOARD_SIZE = %d,  games = %lld,  牌組 %d 張%s\n", BOARD_SIZE, games, deckSizeOf(expansions),
            all ? "（全部擴充）" : "（基本版）");
     printf("  avg bounding box = %.1f x %.1f    碰到盤面邊界的對局 = %.1f%%\n",
            sumW / games, sumH / games, 100.0 * borderGames / games);

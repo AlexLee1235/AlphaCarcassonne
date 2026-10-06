@@ -24,8 +24,13 @@ void DeckModule::initializeTypeCounts(uint32_t expansions) {
         type_counts[type_id] = dealt ? tile_type_tables.draw_count_by_type[type_id] : 0;
         total_remaining += type_counts[type_id];
     }
-    initial_total = total_remaining;
     river_first = (expansions & expansionBit(EXP_RIVER)) != 0;
+    if (river_first) {
+        // The spring starts the game; the base start tile is left out.
+        type_counts[START_TILE_TYPE]--;
+        total_remaining--;
+    }
+    initial_total = total_remaining;
 }
 
 void DeckModule::getAvailableDraws(ChanceBranch *out, int &count) const {

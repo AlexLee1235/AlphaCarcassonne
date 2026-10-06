@@ -191,7 +191,8 @@ class DeckModule {
     // The size of this game's deck, the start tile included.
     int initial_total = 0;
     int type_counts[CANONICAL_TILE_TYPE_COUNT + 1] = {};
-    // River rules: every river tile is drawn before the others, the lake last.
+    // River rules: every river tile is drawn before the others, the lake last,
+    // and the base start tile is left out (the spring replaces it).
     bool river_first = false;
     int consumeType(int type_id);
     // Deals every tile of the expansions in `expansions` (expansionBit() mask);

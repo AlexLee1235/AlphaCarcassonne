@@ -165,10 +165,10 @@ class CarcassonneGame : public Game {
     double MaxUtility() const override { return 1; }
     std::vector<int> ObservationTensorShape() const override { return {kObservationPlanes, BOARD_SIZE, BOARD_SIZE}; }
     int MaxGameLength() const override {
-        const int deck_size = tileCountIn(expansions_);
+        const int deck_size = deckSizeOf(expansions_);
         return max_turns_ > 0 ? (deck_size - 1) + 2 * max_turns_ : (deck_size - 1) * 3;
     }
-    int MaxChanceNodesInHistory() const override { return tileCountIn(expansions_) - 1; }
+    int MaxChanceNodesInHistory() const override { return deckSizeOf(expansions_) - 1; }
 
     // The expansionBit() mask of the expansions whose tiles this game deals,
     // the base game included.

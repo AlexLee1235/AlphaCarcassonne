@@ -10,7 +10,7 @@ using namespace std;
 constexpr int START_TILE_TYPE = 20;
 constexpr int START_TILE_ROTATION = 0;
 // With the river on, the spring is the start tile (the base start tile is
-// dealt like any other) and the lake is the last river tile drawn.
+// left out) and the lake is the last river tile drawn.
 constexpr int RIVER_SPRING_TYPE = 25;
 constexpr int RIVER_LAKE_TYPE = 26;
 
@@ -501,6 +501,13 @@ constexpr int tileCountIn(uint32_t expansions) {
         }
     }
     return total;
+}
+
+// The tiles a game with the expansions in `expansions` deals, its start tile
+// included: all of theirs, less the base start tile when the spring starts
+// the game instead.
+constexpr int deckSizeOf(uint32_t expansions) {
+    return tileCountIn(expansions | BASE_ONLY) - ((expansions & expansionBit(EXP_RIVER)) != 0 ? 1 : 0);
 }
 
 constexpr int maxCopiesOfAType() {

@@ -13,6 +13,8 @@ constexpr int START_TILE_ROTATION = 0;
 // left out) and the lake is the last river tile drawn.
 constexpr int RIVER_SPRING_TYPE = 25;
 constexpr int RIVER_LAKE_TYPE = 26;
+// Inns & Cathedrals: the cathedral, a city on every side, all one city.
+constexpr int CATHEDRAL_TYPE = 36;
 
 // RIVER only meets RIVER. It splits fields like a road, but it is no feature:
 // it never scores and takes no meeple.
@@ -39,9 +41,12 @@ constexpr int OFFICIAL_TILE_COUNTS[EXPANSION_COUNT] = {72, 18, 24, 12, 30};
 constexpr uint32_t expansionBit(Expansion expansion) { return 1u << expansion; }
 constexpr uint32_t BASE_ONLY = 1u << EXP_BASE;
 constexpr uint32_t ALL_EXPANSIONS = (1u << EXPANSION_COUNT) - 1;
-// The expansions whose rules the engine plays: dealing one of these means
-// "on" (its tiles and its rules), dealing any other "tiles" (its tiles only).
-constexpr uint32_t RULED_EXPANSIONS = expansionBit(EXP_RIVER);
+// The expansions whose rules the engine plays: these can be dealt "on" (their
+// tiles and their rules) as well as "tiles" (their tiles only). Inns &
+// Cathedrals: the big meeple, inns and cathedrals.
+constexpr uint32_t RULED_EXPANSIONS = expansionBit(EXP_INNS_CATHEDRALS) | expansionBit(EXP_RIVER);
+// Those whose tiles make no sense without their rules: dealt, they are "on".
+constexpr uint32_t RULES_REQUIRED_EXPANSIONS = expansionBit(EXP_RIVER);
 
 // Fields (farms). Each side has two halves; half-edge e = 2 * side + h runs
 // clockwise round the tile: 0 N-west, 1 N-east, 2 E-north, 3 E-south,
@@ -66,18 +71,20 @@ struct FieldLayout {
 };
 
 // Marks on one city or road of a tile. Written on any side of that city or
-// road (Tile::featureMarks() joins its sides); only the shield has a rule yet.
+// road (Tile::featureMarks() joins its sides); the shield and the inn have
+// rules so far.
 constexpr uint8_t MARK_SHIELD = 1 << 0;    // city: one more point, two once closed
 constexpr uint8_t MARK_PRINCESS = 1 << 1;  // city (The Princess & the Dragon)
 constexpr uint8_t MARK_WINE = 1 << 2;      // city goods (Traders & Builders)
 constexpr uint8_t MARK_CLOTH = 1 << 3;
 constexpr uint8_t MARK_WHEAT = 1 << 4;
-constexpr uint8_t MARK_INN = 1 << 5;       // road (Inns & Cathedrals)
+constexpr uint8_t MARK_INN = 1 << 5;       // road (Inns & Cathedrals): 2 a tile once closed, 0 left open
 constexpr uint8_t GOODS_MARKS = MARK_WINE | MARK_CLOTH | MARK_WHEAT;
 constexpr uint8_t CITY_MARKS = MARK_SHIELD | MARK_PRINCESS | GOODS_MARKS;
 constexpr uint8_t ROAD_MARKS = MARK_INN;
 
-// Marks on the whole tile. The cathedral needs none: it is one tile type.
+// Marks on the whole tile. The cathedral needs none: it is one tile type,
+// CATHEDRAL_TYPE.
 constexpr uint8_t TILE_MONASTERY = 1 << 0;
 constexpr uint8_t TILE_DRAGON = 1 << 1;   // The Princess & the Dragon; no rule yet
 constexpr uint8_t TILE_VOLCANO = 1 << 2;
@@ -573,6 +580,20 @@ static_assert(tileCountIn(BASE_ONLY) == 72, "the base rows must hold the 72 base
 static_assert(PHYSICAL_TILE_COUNT <= 255, "Placement::id is a uint8_t");
 static_assert(all_tiles[START_TILE_TYPE - 1].expansion == EXP_BASE, "the start tile is a base tile");
 static_assert(riverTableIsAPath(), "the spring and the lake need one river side, other river tiles two");
+
+constexpr bool cathedralRowIsOneCity() {
+    const TileBlueprint &bp = all_tiles[CATHEDRAL_TYPE - 1];
+    if (bp.expansion != EXP_INNS_CATHEDRALS) {
+        return false;
+    }
+    for (int side = 0; side < 4; ++side) {
+        if (bp.tile.edge[side] != CITY || bp.tile.link[side] != bp.tile.link[0]) {
+            return false;
+        }
+    }
+    return true;
+}
+static_assert(cathedralRowIsOneCity(), "CATHEDRAL_TYPE must be the Inns & Cathedrals tile that is one city");
 
 // A set of physical tiles, indexed by physical id.
 using TileMask = std::bitset<PHYSICAL_TILE_COUNT + 1>;

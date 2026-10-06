@@ -34,8 +34,12 @@ Feature Feature::operator+(const Feature &other) const {
     res.tile_mask = tile_mask | other.tile_mask;
     res.meeple_count[0] = meeple_count[0] + other.meeple_count[0];
     res.meeple_count[1] = meeple_count[1] + other.meeple_count[1];
+    res.big_meeples[0] = big_meeples[0] + other.big_meeples[0];
+    res.big_meeples[1] = big_meeples[1] + other.big_meeples[1];
     res.opens = opens + other.opens;
     res.shields = shields + other.shields;
+    res.inns = inns + other.inns;
+    res.cathedrals = cathedrals + other.cathedrals;
     return res;
 }
 
@@ -45,6 +49,17 @@ bool Feature::hasMeeples() const { return meeple_count[0] != 0 || meeple_count[1
 int Feature::getTileCount() const { return static_cast<int>(tile_mask.count()); }
 
 int Feature::getScore() const {
+    // Inns & Cathedrals: one inn or cathedral is enough, more change nothing.
+    if (type == CITY && cathedrals > 0) {
+        return opens == 0 ? 3 * (getTileCount() + shields) : 0;
+    }
+    if (type == ROAD && inns > 0) {
+        return opens == 0 ? 2 * getTileCount() : 0;
+    }
+    return getBaseScore();
+}
+
+int Feature::getBaseScore() const {
     int tile_count = getTileCount();
     if (type == CITY) {
         if (opens == 0) {

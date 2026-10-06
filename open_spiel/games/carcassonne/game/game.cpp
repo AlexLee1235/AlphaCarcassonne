@@ -118,10 +118,16 @@ void Carcassonne::placeTileOnBoard(int tile_id, int x, int y, int rot) {
 
 Carcassonne::Carcassonne(int max_turns) : Carcassonne(max_turns, START_TILE_ROTATION) {}
 
-Carcassonne::Carcassonne(int max_turns, int start_rotation, uint32_t expansions)
+Carcassonne::Carcassonne(int max_turns, int start_rotation, uint32_t expansions, uint32_t rules)
     : max_turns(max_turns), expansions(expansions | BASE_ONLY) {
+    this->rules = (rules & RULED_EXPANSIONS & this->expansions) | (this->expansions & RULES_REQUIRED_EXPANSIONS);
     deck.initializeTypeCounts(this->expansions);
     river_rules = deck.river_first;
+    big_meeple_rules = (this->rules & expansionBit(EXP_INNS_CATHEDRALS)) != 0;
+    if (big_meeple_rules) {
+        holding_big_meeples[0] = holding_big_meeples[1] = 1;
+    }
+    features.inns_cathedrals = big_meeple_rules;
     // With the river the spring starts the game instead of the base start tile,
     // which the deck leaves out.
     int start_tile_id = deck.consumeType(river_rules ? RIVER_SPRING_TYPE : START_TILE_TYPE);
@@ -187,18 +193,27 @@ MeepleMoves Carcassonne::getLegalMeepleMoves() const {
         return ret;
     }
     ret.push_back(MEEPLE_POS_SKIP);
-    if (holding_meeples[currentPlayer] == 0) {
+    const bool meeple = holding_meeples[currentPlayer] > 0;
+    const bool big = holding_big_meeples[currentPlayer] > 0;
+    if (!meeple && !big) {
         return ret;
     }
     int x = last_x;
     int y = last_y;
     const Placement &placement = board.board[y][x];
     const Tile &tile = full_deck[placement.id][placement.rotation];
-    features.getLegalMeepleMoves(ret, x, y, board, tile);
+    MeepleMoves spots;
+    features.getLegalMeepleMoves(spots, x, y, board, tile);
     if (tile.monastery) {
-        ret.push_back(MEEPLE_POS_MONASTERY);
+        spots.push_back(MEEPLE_POS_MONASTERY);
     }
-    fields.getLegalFarmerMoves(ret, placement.id, tile);
+    fields.getLegalFarmerMoves(spots, placement.id, tile);
+    for (int i = 0; meeple && i < spots.size(); ++i) {
+        ret.push_back(spots[i]);
+    }
+    for (int i = 0; big && i < spots.size(); ++i) {
+        ret.push_back(spots[i] + MEEPLE_POS_BIG);
+    }
     return ret;
 }
 
@@ -264,8 +279,10 @@ void Carcassonne::getPendingScoreByResolving(int pending[2]) const {
     Carcassonne copy = *this;
     if (copy.current_phase == PHASE_MEEPLE) {
         // What placeMeeple settles whatever the move is.
-        copy.features.settleAfterPlaceMeeple(last_x, last_y, copy.board, copy.player_scores, copy.holding_meeples);
-        copy.monasteries.settleCompletedMonasteries(copy.player_scores, copy.holding_meeples);
+        copy.features.settleAfterPlaceMeeple(last_x, last_y, copy.board, copy.player_scores, copy.holding_meeples,
+                                             copy.holding_big_meeples);
+        copy.monasteries.settleCompletedMonasteries(copy.player_scores, copy.holding_meeples,
+                                                    copy.holding_big_meeples);
     }
     copy.resolveEndGameScore();
     pending[0] = copy.player_scores[0] - player_scores[0];
@@ -276,19 +293,21 @@ void Carcassonne::placeMeeple(int pos) {
     int x = last_x;
     int y = last_y;
     if (pos != MEEPLE_POS_SKIP) {
-        holding_meeples[currentPlayer]--;
-        if (pos == MEEPLE_POS_MONASTERY) {
-            monasteries.placeMeeple(x, y, pos, currentPlayer, board, player_scores, holding_meeples);
-        } else if (pos >= MEEPLE_POS_FIELD) {
+        const bool big = isBigMeeplePos(pos);
+        const int spot = meepleSpot(pos);
+        (big ? holding_big_meeples : holding_meeples)[currentPlayer]--;
+        if (spot == MEEPLE_POS_MONASTERY) {
+            monasteries.placeMeeple(x, y, currentPlayer, big, board);
+        } else if (spot >= MEEPLE_POS_FIELD) {
             // A farmer is never settled or returned.
             const Placement &placement = board.board[y][x];
-            fields.placeFarmer(placement.id, full_deck[placement.id][placement.rotation], pos, currentPlayer);
+            fields.placeFarmer(placement.id, full_deck[placement.id][placement.rotation], spot, currentPlayer, big);
         } else {
-            features.placeMeeple(x, y, pos, currentPlayer, board, player_scores, holding_meeples);
+            features.placeMeeple(x, y, spot, currentPlayer, big, board);
         }
     }
-    features.settleAfterPlaceMeeple(x, y, board, player_scores, holding_meeples);
-    monasteries.settleCompletedMonasteries(player_scores, holding_meeples);
+    features.settleAfterPlaceMeeple(x, y, board, player_scores, holding_meeples, holding_big_meeples);
+    monasteries.settleCompletedMonasteries(player_scores, holding_meeples, holding_big_meeples);
 
     completed_turns++;
     currentPlayer = 1 - currentPlayer;

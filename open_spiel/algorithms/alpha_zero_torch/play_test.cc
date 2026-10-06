@@ -78,7 +78,8 @@ void PlayerTerminalAndCutoffTest() {
         if (group != -1) SPIEL_CHECK_EQ(groups[kFields + group], group);
       }
       for (Action action : sample.legal_actions) {
-        const int pos = action - carcassonne::kMeepleActionOffset - 1;
+        // The big meeple names the same spots.
+        const int pos = meepleSpot(action - carcassonne::kMeepleActionOffset - 1);
         if (action < carcassonne::kMeepleActionOffset) {
           SPIEL_CHECK_TRUE(groups == carcassonne::kNoSideGroups);
         } else if (pos >= 0 && pos < 4) {

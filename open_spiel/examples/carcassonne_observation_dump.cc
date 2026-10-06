@@ -129,6 +129,17 @@ std::vector<std::string> PlaneNames() {
   names[kInnerFieldScorePlane] = "inner_field_score";
   names[kInnerFieldSizePlane] = "inner_field_size";
   names[kInnerFieldOpenCitiesPlane] = "inner_field_open_cities";
+  for (int side = 0; side < 4; ++side) {
+    const std::string suffix = "_side_" + std::to_string(side);
+    names[kFeatureMyBigMeeplePlane + side] = "feature_my_big_meeple" + suffix;
+    names[kFeatureOpponentBigMeeplePlane + side] =
+        "feature_opponent_big_meeple" + suffix;
+  }
+  names[kMonasteryBigMeeplePlane] = "monastery_big_meeple";
+  for (int side = 0; side < 4; ++side) {
+    names[kFeatureInnCathedralPlane + side] =
+        "feature_inn_or_cathedral_side_" + std::to_string(side);
+  }
   names[kGlobalFeaturePlane] = "global_vector";
   return names;
 }
@@ -156,12 +167,17 @@ std::vector<std::string> GlobalFeatureNames() {
   }
   names[kGlobalTilePhase] = "is_tile_phase";
   names[kGlobalMeeplePhase] = "is_meeple_phase";
-  const char* meeple_moves[kMeepleActionCount] = {
-      "skip",    "edge_0",  "edge_1",  "edge_2",  "edge_3",
-      "monastery", "field_0", "field_1", "field_2", "field_3",
-      "field_4", "field_5", "field_6", "field_7", "inner_field"};
-  for (int i = 0; i < kMeepleActionCount; ++i) {
-    names[kGlobalLegalMeeple + i] = std::string("legal_meeple_") + meeple_moves[i];
+  // Skip, then the spots with the meeple and with the big meeple.
+  const char* spots[MEEPLE_POS_BIG] = {
+      "edge_0",  "edge_1",  "edge_2",  "edge_3",  "monastery",
+      "field_0", "field_1", "field_2", "field_3", "field_4",
+      "field_5", "field_6", "field_7", "inner_field"};
+  names[kGlobalLegalMeeple] = "legal_meeple_skip";
+  for (int spot = 0; spot < MEEPLE_POS_BIG; ++spot) {
+    names[kGlobalLegalMeeple + 1 + spot] =
+        std::string("legal_meeple_") + spots[spot];
+    names[kGlobalLegalMeeple + 1 + MEEPLE_POS_BIG + spot] =
+        std::string("legal_big_meeple_") + spots[spot];
   }
   names[kGlobalLegalPlacements] = "legal_placements";
   names[kGlobalIsPlayer0] = "current_player_is_player0";
@@ -175,6 +191,10 @@ std::vector<std::string> GlobalFeatureNames() {
     names[cell + 1] = std::string(EXPANSION_NAMES[expansion]) + "_rules";
   }
   names[kGlobalRiverTiles] = "river_tiles_placed";
+  names[kGlobalMyBigMeeple] = "my_holding_big_meeple";
+  names[kGlobalOpponentBigMeeple] = "opponent_holding_big_meeple";
+  names[kGlobalMyBigFarmer] = "my_big_farmer";
+  names[kGlobalOpponentBigFarmer] = "opponent_big_farmer";
   return names;
 }
 

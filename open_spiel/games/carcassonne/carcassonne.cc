@@ -17,7 +17,9 @@ namespace open_spiel {
 namespace carcassonne {
 namespace {
 
-constexpr float kMeepleNormalization = 7.0f;
+// Meeples in hand and on the board. A feature's strength (the big meeple counts
+// 2) can reach 9 / 7.
+constexpr float kMeepleNormalization = MEEPLES_PER_PLAYER;
 // River tiles on the board count against the 12 river tiles.
 constexpr float kRiverTileNormalization = tileCountIn(expansionBit(EXP_RIVER));
 // The remaining tiles are counted against the deck this game deals, and the
@@ -42,7 +44,8 @@ constexpr float kLegalPlacementNormalization = 100.0f;
 constexpr int kMaxOpens = 6;
 // The spatial planes, per side or half-edge (tools/diag_plane_scale). The
 // observation codec needs their denominators to be integers up to 127.
-// A feature's getScore(): 12 / 26 / 26, max 52.
+// A feature's getScore(): 12 / 26 / 26, max 52 (the base game, where it is
+// getBaseScore(); a cathedral's city scores 3x, not measured yet).
 constexpr float kFeatureScoreNormalization = 30.0f;
 constexpr float kMonasteryCoverageNormalization = 9.0f;
 // 3 x the completed cities next to a field: 9 / 30 / 30, max 36.
@@ -77,9 +80,11 @@ const GameType kGameType{/*short_name=*/"carcassonne",
                          /*provides_information_state_tensor=*/false,
                          /*provides_observation_string=*/true,
                          /*provides_observation_tensor=*/true,
-                         // Each expansion: "off", or "tiles" to deal its tiles
-                         // without its rules. The river is "off" or "on": its
-                         // tiles with its rules.
+                         // Each expansion: "off", "tiles" to deal its tiles
+                         // without its rules, or, for those whose rules are
+                         // played (RULED_EXPANSIONS), "on": tiles and rules.
+                         // inns_cathedrals "on" brings the big meeple. The
+                         // river is "off" or "on".
                          /*parameter_specification=*/
                          {{"max_turns", GameParameter(0)},
                           {EXPANSION_NAMES[EXP_INNS_CATHEDRALS], GameParameter(std::string("off"))},
@@ -228,7 +233,8 @@ int RotatePlane(int plane, int k) {
         return kSideLinkPlane + SidePairIndex((pair[0] + k) % 4, (pair[1] + k) % 4);
     }
     for (int first : {kShieldPlane, kLegalPlacementPlane, kFeatureOpensPlane, kFeatureScorePlane, kFeatureMyMeeplesPlane,
-                      kFeatureOpponentMeeplesPlane, kFeatureSignedScorePlane}) {
+                      kFeatureOpponentMeeplesPlane, kFeatureSignedScorePlane, kFeatureMyBigMeeplePlane,
+                      kFeatureOpponentBigMeeplePlane, kFeatureInnCathedralPlane}) {
         if (plane >= first && plane < first + 4) {
             return first + (plane - first + k) % 4;
         }
@@ -299,8 +305,9 @@ int RotateFieldHalfEdge(int half_edge, int k, const SideGroups &groups) {
 
 CarcassonneState::CarcassonneState(std::shared_ptr<const Game> game) : State(std::move(game)), game_state_() {}
 
-CarcassonneState::CarcassonneState(std::shared_ptr<const Game> game, int max_turns, uint32_t expansions)
-    : State(std::move(game)), game_state_(max_turns, START_TILE_ROTATION, expansions) {}
+CarcassonneState::CarcassonneState(std::shared_ptr<const Game> game, int max_turns, uint32_t expansions,
+                                   uint32_t rules)
+    : State(std::move(game)), game_state_(max_turns, START_TILE_ROTATION, expansions, rules) {}
 
 CarcassonneState::CarcassonneState(std::shared_ptr<const Game> game, const ::Carcassonne &game_state)
     : State(std::move(game)), game_state_(game_state) {}
@@ -334,16 +341,18 @@ std::string CarcassonneState::ActionToString(Player player, Action action) const
     if (meeple_pos == MEEPLE_POS_SKIP) {
         return "place_meeple(skip)";
     }
-    if (meeple_pos == MEEPLE_POS_MONASTERY) {
-        return "place_meeple(monastery)";
+    const char *verb = isBigMeeplePos(meeple_pos) ? "place_big_meeple(" : "place_meeple(";
+    const int spot = meepleSpot(meeple_pos);
+    if (spot == MEEPLE_POS_MONASTERY) {
+        return absl::StrCat(verb, "monastery)");
     }
-    if (meeple_pos == MEEPLE_POS_INNER_FIELD) {
-        return "place_meeple(inner_field)";
+    if (spot == MEEPLE_POS_INNER_FIELD) {
+        return absl::StrCat(verb, "inner_field)");
     }
-    if (meeple_pos >= MEEPLE_POS_FIELD) {
-        return absl::StrCat("place_meeple(field=", meeple_pos - MEEPLE_POS_FIELD, ")");
+    if (spot >= MEEPLE_POS_FIELD) {
+        return absl::StrCat(verb, "field=", spot - MEEPLE_POS_FIELD, ")");
     }
-    return absl::StrCat("place_meeple(edge=", meeple_pos, ")");
+    return absl::StrCat(verb, "edge=", spot, ")");
 }
 
 std::string CarcassonneState::ToString() const {
@@ -363,10 +372,14 @@ std::string CarcassonneState::ToString() const {
         board_rows.push_back(absl::StrJoin(row, " "));
     }
 
+    const std::string big_meeples =
+        game_state_.big_meeple_rules ? absl::StrCat(" big=[", game_state_.holding_big_meeples[0], ", ",
+                                                    game_state_.holding_big_meeples[1], "]")
+                                     : "";
     return absl::StrCat("phase=", PhaseToString(game_state_.current_phase), " current_player=", game_state_.currentPlayer,
                         " current_tile_type=", game_state_.currentTileType(), " remaining=", game_state_.getTotalRemaining(),
                         " scores=[", game_state_.player_scores[0], ", ", game_state_.player_scores[1], "] holding=[",
-                        game_state_.holding_meeples[0], ", ", game_state_.holding_meeples[1], "]\n",
+                        game_state_.holding_meeples[0], ", ", game_state_.holding_meeples[1], "]", big_meeples, "\n",
                         absl::StrJoin(board_rows, "\n"));
 }
 
@@ -443,6 +456,10 @@ void CarcassonneState::ObservationTensor(Player player, absl::Span<float> values
                 if (owner != -1) {
                     SetPlaneValue(values, kMonasteryOwnerPlane, x, y, owner == player ? 1.0f : -1.0f);
                 }
+                const int big_owner = game_state_.monasteryBigMeepleOwner(x, y);
+                if (big_owner != -1) {
+                    SetPlaneValue(values, kMonasteryBigMeeplePlane, x, y, big_owner == player ? 1.0f : -1.0f);
+                }
             }
             for (int pair = 0; pair < kNumSidePairs; ++pair) {
                 const int a = kSidePairs[pair][0];
@@ -459,18 +476,27 @@ void CarcassonneState::ObservationTensor(Player player, absl::Span<float> values
                     continue;
                 }
                 const Feature &feature = game_state_.featureAt(placement.id, side);
+                // The size without an inn or cathedral, which the flag plane
+                // shows; the signed score is what the feature really adds.
+                const float base_score = static_cast<float>(feature.getBaseScore());
                 const float score = static_cast<float>(feature.getScore());
                 const int mine = feature.meeple_count[player];
                 const int theirs = feature.meeple_count[opponent];
-                // Equal meeples score for both, which leaves the difference alone.
+                // Equal strengths score for both, which leaves the difference alone.
                 const float holder = mine > theirs ? 1.0f : (theirs > mine ? -1.0f : 0.0f);
                 SetPlaneValue(values, kFeatureOpensPlane + side, x, y,
                               std::min<int>(feature.opens, kMaxOpens) / static_cast<float>(kMaxOpens));
-                SetPlaneValue(values, kFeatureScorePlane + side, x, y, std::min(score / kFeatureScoreNormalization, 1.0f));
+                SetPlaneValue(values, kFeatureScorePlane + side, x, y,
+                              std::min(base_score / kFeatureScoreNormalization, 1.0f));
                 SetPlaneValue(values, kFeatureMyMeeplesPlane + side, x, y, mine / kMeepleNormalization);
                 SetPlaneValue(values, kFeatureOpponentMeeplesPlane + side, x, y, theirs / kMeepleNormalization);
                 SetPlaneValue(values, kFeatureSignedScorePlane + side, x, y,
                               Clip(holder * score / kFeatureScoreNormalization));
+                SetPlaneValue(values, kFeatureMyBigMeeplePlane + side, x, y, feature.big_meeples[player]);
+                SetPlaneValue(values, kFeatureOpponentBigMeeplePlane + side, x, y, feature.big_meeples[opponent]);
+                if (feature.inns > 0 || feature.cathedrals > 0) {
+                    SetPlaneValue(values, kFeatureInnCathedralPlane + side, x, y, 1.0f);
+                }
             }
             for (int half_edge = 0; half_edge < HALF_EDGE_COUNT; ++half_edge) {
                 if (tile.field[half_edge] == -1) {
@@ -544,15 +570,20 @@ void CarcassonneState::ObservationTensor(Player player, absl::Span<float> values
     game_state_.getPendingFieldScore(field_pending);
     global[kGlobalMyFieldPending] = Clip(field_pending[player] / kFieldPendingNormalization);
     global[kGlobalOpponentFieldPending] = Clip(field_pending[opponent] / kFieldPendingNormalization);
-    global[kGlobalMyFarmers] = game_state_.farmersOnBoard(player) / kMeepleNormalization;
-    global[kGlobalOpponentFarmers] = game_state_.farmersOnBoard(opponent) / kMeepleNormalization;
+    global[kGlobalMyFarmers] =
+        (game_state_.farmersOnBoard(player) - game_state_.bigFarmers(player)) / kMeepleNormalization;
+    global[kGlobalOpponentFarmers] =
+        (game_state_.farmersOnBoard(opponent) - game_state_.bigFarmers(opponent)) / kMeepleNormalization;
     for (int expansion = 1; expansion < EXPANSION_COUNT; ++expansion) {
         const uint32_t bit = expansionBit(static_cast<Expansion>(expansion));
         global[kGlobalExpansionModes + 2 * (expansion - 1)] = (game_state_.expansions & bit) ? 1.0f : 0.0f;
-        global[kGlobalExpansionModes + 2 * (expansion - 1) + 1] =
-            (game_state_.expansions & RULED_EXPANSIONS & bit) ? 1.0f : 0.0f;
+        global[kGlobalExpansionModes + 2 * (expansion - 1) + 1] = (game_state_.rules & bit) ? 1.0f : 0.0f;
     }
     global[kGlobalRiverTiles] = game_state_.river_tiles_placed / kRiverTileNormalization;
+    global[kGlobalMyBigMeeple] = game_state_.holding_big_meeples[player];
+    global[kGlobalOpponentBigMeeple] = game_state_.holding_big_meeples[opponent];
+    global[kGlobalMyBigFarmer] = game_state_.bigFarmers(player);
+    global[kGlobalOpponentBigFarmer] = game_state_.bigFarmers(opponent);
 }
 
 std::unique_ptr<State> CarcassonneState::Clone() const { return std::unique_ptr<State>(new CarcassonneState(*this)); }
@@ -636,15 +667,19 @@ CarcassonneGame::CarcassonneGame(const GameParameters &params)
     SPIEL_CHECK_GE(max_turns_, 0);
     for (int expansion = 1; expansion < EXPANSION_COUNT; ++expansion) {
         const std::string mode = ParameterValue<std::string>(EXPANSION_NAMES[expansion]);
-        // An expansion whose rules the engine plays comes with them: "on". The
-        // others deal their tiles alone: "tiles".
-        const bool ruled = (RULED_EXPANSIONS & expansionBit(static_cast<Expansion>(expansion))) != 0;
-        const std::string deal = ruled ? "on" : "tiles";
-        if (mode == deal) {
-            expansions_ |= expansionBit(static_cast<Expansion>(expansion));
+        const uint32_t bit = expansionBit(static_cast<Expansion>(expansion));
+        // "tiles" deals the tiles alone, unless they need the rules; "on" adds
+        // the rules, where the engine plays them.
+        const bool tiles_mode = (RULES_REQUIRED_EXPANSIONS & bit) == 0;
+        const bool on_mode = (RULED_EXPANSIONS & bit) != 0;
+        if (mode == "tiles" && tiles_mode) {
+            expansions_ |= bit;
+        } else if (mode == "on" && on_mode) {
+            expansions_ |= bit;
+            rules_ |= bit;
         } else if (mode != "off") {
-            SpielFatalError(absl::StrCat("carcassonne: ", EXPANSION_NAMES[expansion], "=", mode, "; expected off or ",
-                                         deal));
+            SpielFatalError(absl::StrCat("carcassonne: ", EXPANSION_NAMES[expansion], "=", mode, "; expected off",
+                                         tiles_mode ? ", tiles" : "", on_mode ? ", on" : ""));
         }
     }
 }
@@ -671,11 +706,14 @@ Action RotateAction(Action action, int k, const SideGroups &groups) {
         return EncodeTileAction(x, y, (rot + k) % 4);
     }
     const int pos = DecodeMeepleAction(action);
-    if (pos >= 0 && pos < 4) {
-        return EncodeMeepleAction(RotateMeepleSide(pos, k, groups));
+    // The big meeple goes on the same spots, MEEPLE_POS_BIG further on.
+    const int big = isBigMeeplePos(pos) ? MEEPLE_POS_BIG : 0;
+    const int spot = meepleSpot(pos);
+    if (spot >= 0 && spot < 4) {
+        return EncodeMeepleAction(big + RotateMeepleSide(spot, k, groups));
     }
-    if (pos >= MEEPLE_POS_FIELD && pos < MEEPLE_POS_INNER_FIELD) {
-        return EncodeMeepleAction(MEEPLE_POS_FIELD + RotateFieldHalfEdge(pos - MEEPLE_POS_FIELD, k, groups));
+    if (spot >= MEEPLE_POS_FIELD && spot < MEEPLE_POS_INNER_FIELD) {
+        return EncodeMeepleAction(big + MEEPLE_POS_FIELD + RotateFieldHalfEdge(spot - MEEPLE_POS_FIELD, k, groups));
     }
     return action;  // Skip, monastery and inner fields do not depend on orientation.
 }
@@ -707,23 +745,26 @@ void RotateObservation(absl::Span<const float> observation, int k, const SideGro
         rotated[i] = observation[source[i]];
     }
     // The legal meeple sides and half-edges sit in the global vector, which the
-    // table leaves in place; rename each legal one instead.
-    const int legal_sides = kGlobalFeaturePlane * BOARD_SIZE * BOARD_SIZE + kGlobalLegalMeeple + 1;
-    const int legal_half_edges = legal_sides + MEEPLE_POS_FIELD;
-    for (int side = 0; side < 4; ++side) {
-        rotated[legal_sides + side] = 0.0f;
-    }
-    for (int half_edge = 0; half_edge < HALF_EDGE_COUNT; ++half_edge) {
-        rotated[legal_half_edges + half_edge] = 0.0f;
-    }
-    for (int side = 0; side < 4; ++side) {
-        if (observation[legal_sides + side] != 0.0f) {
-            rotated[legal_sides + RotateMeepleSide(side, k, groups)] = 1.0f;
+    // table leaves in place; rename each legal one instead, for the meeple and
+    // for the big meeple.
+    for (int big : {0, MEEPLE_POS_BIG}) {
+        const int legal_sides = kGlobalFeaturePlane * BOARD_SIZE * BOARD_SIZE + kGlobalLegalMeeple + 1 + big;
+        const int legal_half_edges = legal_sides + MEEPLE_POS_FIELD;
+        for (int side = 0; side < 4; ++side) {
+            rotated[legal_sides + side] = 0.0f;
         }
-    }
-    for (int half_edge = 0; half_edge < HALF_EDGE_COUNT; ++half_edge) {
-        if (observation[legal_half_edges + half_edge] != 0.0f) {
-            rotated[legal_half_edges + RotateFieldHalfEdge(half_edge, k, groups)] = 1.0f;
+        for (int half_edge = 0; half_edge < HALF_EDGE_COUNT; ++half_edge) {
+            rotated[legal_half_edges + half_edge] = 0.0f;
+        }
+        for (int side = 0; side < 4; ++side) {
+            if (observation[legal_sides + side] != 0.0f) {
+                rotated[legal_sides + RotateMeepleSide(side, k, groups)] = 1.0f;
+            }
+        }
+        for (int half_edge = 0; half_edge < HALF_EDGE_COUNT; ++half_edge) {
+            if (observation[legal_half_edges + half_edge] != 0.0f) {
+                rotated[legal_half_edges + RotateFieldHalfEdge(half_edge, k, groups)] = 1.0f;
+            }
         }
     }
 }
@@ -733,8 +774,11 @@ float ObservationPlaneDenominator(int plane) {
     SPIEL_CHECK_LT(plane, kObservationPlanes);
     auto in = [plane](int first, int count) { return plane >= first && plane < first + count; };
     // Each is the normalization ObservationTensor writes the plane with.
-    // Everything up to the last-placed plane is 0/1, and the owner is +-1.
-    if (plane <= kLastPlacedPlane || plane == kMonasteryOwnerPlane) {
+    // Everything up to the last-placed plane is 0/1, and so are the big meeple
+    // and inn / cathedral planes; the monastery owners are +-1.
+    if (plane <= kLastPlacedPlane || plane == kMonasteryOwnerPlane || in(kFeatureMyBigMeeplePlane, 4) ||
+        in(kFeatureOpponentBigMeeplePlane, 4) || plane == kMonasteryBigMeeplePlane ||
+        in(kFeatureInnCathedralPlane, 4)) {
         return 1.0f;
     }
     if (in(kFeatureOpensPlane, 4)) {

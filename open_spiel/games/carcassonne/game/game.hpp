@@ -21,8 +21,10 @@ constexpr int EDGE_SLOT_COUNT = TOTAL_TILE_COUNT * 4;
 constexpr int FIELD_SLOT_COUNT = TOTAL_TILE_COUNT * MAX_TILE_FIELDS;
 // A field scores this for every completed city it borders.
 constexpr int FIELD_POINTS_PER_CITY = 3;
+// Each player has 7 meeples, and with the Inns & Cathedrals rules a big meeple.
+constexpr int MEEPLES_PER_PLAYER = 7;
 // Farmers are never returned, so a game has at most every meeple as one.
-constexpr int MAX_FARMERS = 2 * 7;
+constexpr int MAX_FARMERS = 2 * (MEEPLES_PER_PLAYER + 1);
 
 // Where a meeple goes on the tile just placed. A feature is named by its
 // lowest side on that tile and a field by its lowest half-edge, so each move
@@ -31,8 +33,14 @@ constexpr int MEEPLE_POS_SKIP = -1;
 constexpr int MEEPLE_POS_MONASTERY = 4;                                    // 0..3: the feature on that side
 constexpr int MEEPLE_POS_FIELD = 5;                                        // 5..12: a farmer, by half-edge
 constexpr int MEEPLE_POS_INNER_FIELD = MEEPLE_POS_FIELD + HALF_EDGE_COUNT; // 13: on the tile's inner field
-constexpr int MEEPLE_POS_COUNT = MEEPLE_POS_INNER_FIELD - MEEPLE_POS_SKIP + 1;   // positions -1 .. 13
+// 14..27: the big meeple on spot pos - 14, one of 0..13 above.
+constexpr int MEEPLE_POS_BIG = MEEPLE_POS_INNER_FIELD + 1;
+constexpr int MEEPLE_POS_COUNT = MEEPLE_POS_BIG + MEEPLE_POS_BIG - MEEPLE_POS_SKIP; // positions -1 .. 27
 using MeepleMoves = FixedVector<int, MEEPLE_POS_COUNT>;
+
+constexpr bool isBigMeeplePos(int pos) { return pos >= MEEPLE_POS_BIG; }
+// Where a meeple move puts its meeple, the big one or not: -1 .. 13.
+constexpr int meepleSpot(int pos) { return isBigMeeplePos(pos) ? pos - MEEPLE_POS_BIG : pos; }
 
 enum GamePhase { PHASE_CHANCE = 0, PHASE_TILE = 1, PHASE_MEEPLE = 2, PHASE_TERMINAL = 3 };
 
@@ -66,6 +74,7 @@ struct MonasteryTracker {
     int y = 0;
     int tile_count = 0;
     int owner = 0;
+    bool big = false; // the owner's meeple here is the big one
 };
 
 class Feature {
@@ -73,9 +82,17 @@ class Feature {
     EdgeType type = NONE;
     TileMask tile_mask;
     uint8_t opens = 0;
+    // Each player's strength for the majority: a meeple counts 1, the big
+    // meeple 2.
     uint8_t meeple_count[2] = {};
+    // 1 if that player's big meeple is on the feature (it is in meeple_count too).
+    uint8_t big_meeples[2] = {};
     // Shields on the city, one per city piece that carries MARK_SHIELD.
     uint8_t shields = 0;
+    // With the Inns & Cathedrals rules: inns on the road (MARK_INN) and
+    // cathedrals in the city, one per piece. Left at 0 without the rules.
+    uint8_t inns = 0;
+    uint8_t cathedrals = 0;
 
     Feature() = default;
     Feature(EdgeType type, int id);
@@ -84,7 +101,13 @@ class Feature {
 
     bool hasMeeples() const;
     int getTileCount() const;
+    // What the feature scores now: once closed, its completion score; while
+    // open, what the end of the game would give it, 0 for a road with an inn
+    // or a city with a cathedral.
     int getScore() const;
+    // The same without inns and cathedrals: a tile a point, a shield one more,
+    // a closed city doubled.
+    int getBaseScore() const;
 };
 
 class BoardModule {
@@ -102,17 +125,25 @@ class BoardModule {
 long long OpensUnderflowCount();
 
 class FeatureModule {
-    void settleCompletedFeatures(int tile_id, int side, int *player_scores, int *holding_meeples);
+    void settleCompletedFeatures(int tile_id, int side, int *player_scores, int *holding_meeples,
+                                 int *holding_big_meeples);
 
   public:
     DisjointSet<Feature, std::plus<Feature>, EDGE_SLOT_COUNT> featureMap;
+    // Whether placed tiles bring their inns and cathedrals (the Inns &
+    // Cathedrals rules). Set before the first tile.
+    bool inns_cathedrals = false;
     FeatureModule();
     int edgeIndex(int tile_id, int side) const;
     void resolveEndGameScore(int *player_scores);
     void placeTileOnBoard(int tile_id, int x, int y, int rot, const Tile &tile, const BoardModule &board);
+    // The sides (0..3) a meeple can go on: one per feature with no meeples.
     void getLegalMeepleMoves(MeepleMoves &ret, int x, int y, const BoardModule &board, const Tile &tile) const;
-    void placeMeeple(int x, int y, int pos, int player, const BoardModule &board, int *player_scores, int *holding_meeples);
-    void settleAfterPlaceMeeple(int x, int y, const BoardModule &board, int *player_scores, int *holding_meeples);
+    void placeMeeple(int x, int y, int side, int player, bool big, const BoardModule &board);
+    // Scores the features of the tile at (x, y) that are complete and gives
+    // back their meeples, each to its own supply.
+    void settleAfterPlaceMeeple(int x, int y, const BoardModule &board, int *player_scores, int *holding_meeples,
+                                int *holding_big_meeples);
     // Adds each feature that holds meeples to its majority holders, as the
     // end-game scoring and turn-end settlement would.
     void accumulatePendingScore(int *pending) const;
@@ -124,6 +155,7 @@ class Field {
     // (FeatureModule::edgeIndex); featureMap finds the whole city from it.
     std::bitset<EDGE_SLOT_COUNT> city_edges;
     TileMask tile_mask;
+    // Each player's strength for the majority, as Feature::meeple_count.
     uint8_t farmer_count[2] = {};
 
     Field operator+(const Field &other) const;
@@ -145,14 +177,17 @@ class FieldModule {
     DisjointSet<Field, std::plus<Field>, FIELD_SLOT_COUNT> fieldMap;
     // The slot of every farmer placed, so scoring visits only those fields.
     FixedVector<int16_t, MAX_FARMERS> farmed_slots;
-    // Farmers each player has placed; they never come back.
+    // Farmers each player has placed, the big meeple counted as one; they never
+    // come back.
     uint8_t farmers_placed[2] = {};
+    // 1 once that player's big meeple is a farmer.
+    uint8_t big_farmers[2] = {};
     FieldModule();
     int fieldIndex(int tile_id, int local) const;
     void placeTileOnBoard(int tile_id, int x, int y, const Tile &tile, const BoardModule &board,
                           const FeatureModule &features);
     void getLegalFarmerMoves(MeepleMoves &ret, int tile_id, const Tile &tile) const;
-    void placeFarmer(int tile_id, const Tile &tile, int pos, int player);
+    void placeFarmer(int tile_id, const Tile &tile, int pos, int player, bool big = false);
     // For each half-edge of the tile, the lowest half-edge of the tile in the
     // same field (-1 on city sides).
     void getHalfEdgeGroups(int tile_id, const Tile &tile, int8_t groups[HALF_EDGE_COUNT]) const;
@@ -168,11 +203,13 @@ class MonasteryModule {
     FixedVector<MonasteryTracker, MONASTERY_TILE_COUNT> active_monasteries;
     void placeTileOnBoard(int tile_id, int x, int y, int rot);
     void resolveEndGameScore(int *player_scores);
-    void placeMeeple(int x, int y, int pos, int player, const BoardModule &board, int *player_scores, int *holding_meeples);
-    void settleCompletedMonasteries(int *player_scores, int *holding_meeples);
+    void placeMeeple(int x, int y, int player, bool big, const BoardModule &board);
+    void settleCompletedMonasteries(int *player_scores, int *holding_meeples, int *holding_big_meeples);
     void accumulatePendingScore(int *pending) const;
     // Owner of the claimed monastery at (x, y), or -1.
     int ownerAt(int x, int y) const;
+    // The same, but only if the owner's meeple there is the big one.
+    int bigMeepleOwnerAt(int x, int y) const;
 };
 
 class FrontierModule {
@@ -259,14 +296,25 @@ class Carcassonne {
     int last_y = -1;
     GamePhase current_phase = PHASE_CHANCE;
     int player_scores[2] = {0, 0};
-    int holding_meeples[2] = {7, 7};
+    int holding_meeples[2] = {MEEPLES_PER_PLAYER, MEEPLES_PER_PLAYER};
+    // The big meeple in hand: 1 or 0 with the big meeple rules, else 0.
+    int holding_big_meeples[2] = {0, 0};
     int currentPlayer = 0;
     int current_tile_in_hand = 0;
     int completed_turns = 0;
     int max_turns = 0;
     // The expansionBit() mask of the expansions this game deals, the base
-    // included; those in RULED_EXPANSIONS also play their rules.
+    // included.
     uint32_t expansions = BASE_ONLY;
+    // Those of them whose rules this game plays (a part of RULED_EXPANSIONS).
+    uint32_t rules = 0;
+
+    // Inns & Cathedrals: each player also has a big meeple, placed instead of a
+    // meeple. It counts as two for the majority and scores no more; it comes
+    // back like any meeple, and as a farmer stays till the end. A road with an
+    // inn scores 2 a tile once closed, a city with a cathedral 3 a tile and a
+    // shield; left open at the end, either scores nothing (Feature::getScore).
+    bool big_meeple_rules = false;
 
     // River rules (on whenever the river tiles are dealt). The river is laid
     // first, from the spring at the centre to the lake, each tile continuing it,
@@ -283,8 +331,11 @@ class Carcassonne {
     // Starts with the start tile turned by start_rotation quarter turns: the
     // whole game rotated about the centre. Used to test board-rotation symmetry.
     // The deck holds the base tiles and those of the expansions in
-    // `expansions` (an expansionBit() mask); with the river in, its rules apply.
-    Carcassonne(int max_turns, int start_rotation, uint32_t expansions = BASE_ONLY);
+    // `expansions` (an expansionBit() mask). Of those, the ones in `rules` play
+    // their rules too, and the river always does; by default every one that has
+    // rules.
+    Carcassonne(int max_turns, int start_rotation, uint32_t expansions = BASE_ONLY,
+                uint32_t rules = RULED_EXPANSIONS);
     int currentTileType() const;
     Carcassonne clone() const;
 
@@ -309,6 +360,10 @@ class Carcassonne {
     bool isFrontier(int x, int y) const { return frontier.frontier[y][x]; }
     int coverage3x3(int x, int y) const { return board.count3x3(x, y); }
     int monasteryOwner(int x, int y) const { return monasteries.ownerAt(x, y); }
+    // The owner of the monastery at (x, y) if it holds their big meeple, or -1.
+    int monasteryBigMeepleOwner(int x, int y) const { return monasteries.bigMeepleOwnerAt(x, y); }
+    // 1 once the player's big meeple is a farmer.
+    int bigFarmers(int player) const { return fields.big_farmers[player]; }
 
     // Points each player still adds if the game ended now: features and
     // monasteries that hold meeples, including features the last tile closed,
@@ -323,6 +378,8 @@ class Carcassonne {
     void drawTile(int type_id);
     void getLegalTileMoves(TileMove *out, int &count) const;
     void placeTile(int x, int y, int rot);
+    // Skip, then every free spot with a meeple if the player has one, then the
+    // same spots with the big meeple (spot + MEEPLE_POS_BIG) if they have it.
     MeepleMoves getLegalMeepleMoves() const;
     // For each side of the last placed tile, the lowest side of that tile in the
     // same feature (-1 for grass, river or no tile). Meeple moves name a feature by that

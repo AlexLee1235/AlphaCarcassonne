@@ -86,6 +86,9 @@ const std::vector<PlaneGroup>& PlaneGroups() {
       {"inner field score", kInnerFieldScorePlane, 1},
       {"inner field size", kInnerFieldSizePlane, 1},
       {"inner field open cities", kInnerFieldOpenCitiesPlane, 1},
+      {"feature big meeple (mine, theirs)", kFeatureMyBigMeeplePlane, 8},
+      {"monastery big meeple", kMonasteryBigMeeplePlane, 1},
+      {"feature inn or cathedral", kFeatureInnCathedralPlane, 4},
   };
   return groups;
 }

@@ -45,7 +45,8 @@ int FeatureModule::edgeIndex(int tile_id, int side) const { return (tile_id - 1)
 
 FeatureModule::FeatureModule() : featureMap(std::plus<Feature>{}) {}
 
-void FeatureModule::settleCompletedFeatures(int tile_id, int side, int *player_scores, int *holding_meeples) {
+void FeatureModule::settleCompletedFeatures(int tile_id, int side, int *player_scores, int *holding_meeples,
+                                            int *holding_big_meeples) {
     int root = featureMap.find(edgeIndex(tile_id, side));
     Feature &feature = featureMap.getSetData(root);
     if (feature.opens != 0) {
@@ -63,10 +64,13 @@ void FeatureModule::settleCompletedFeatures(int tile_id, int side, int *player_s
     if (m1 >= m0) {
         player_scores[1] += score;
     }
-    feature.meeple_count[0] = 0;
-    feature.meeple_count[1] = 0;
-    holding_meeples[0] += m0;
-    holding_meeples[1] += m1;
+    // The big meeple is two of the strength but one piece, back to its own supply.
+    for (int player = 0; player < 2; ++player) {
+        holding_meeples[player] += feature.meeple_count[player] - 2 * feature.big_meeples[player];
+        holding_big_meeples[player] += feature.big_meeples[player];
+        feature.meeple_count[player] = 0;
+        feature.big_meeples[player] = 0;
+    }
 }
 
 void FeatureModule::resolveEndGameScore(int *player_scores) {
@@ -101,6 +105,16 @@ void FeatureModule::placeTileOnBoard(int tile_id, int x, int y, int rot, const T
         }
         if (tile.edge[i] == CITY && lowest_side && (tile.featureMarks(i) & MARK_SHIELD)) {
             feature.shields = 1;
+        }
+        // Inns and cathedrals the same way: an inn belongs to the road piece
+        // it is written on, the cathedral to the tile's one city.
+        if (inns_cathedrals && lowest_side) {
+            if (tile.edge[i] == ROAD && (tile.featureMarks(i) & MARK_INN)) {
+                feature.inns = 1;
+            }
+            if (tile.edge[i] == CITY && PHYSICAL_TO_CANONICAL_TYPE[tile_id] == CATHEDRAL_TYPE) {
+                feature.cathedrals = 1;
+            }
         }
         featureMap.getSetData(edgeIndex(tile_id, i)) = feature;
     }
@@ -164,15 +178,17 @@ void FeatureModule::getLegalMeepleMoves(MeepleMoves &ret, int x, int y, const Bo
     }
 }
 
-void FeatureModule::placeMeeple(int x, int y, int pos, int player, const BoardModule &board, int *player_scores,
-                                int *holding_meeples) {
-    featureMap.getSetData(edgeIndex(board.board[y][x].id, pos)).meeple_count[player]++;
+void FeatureModule::placeMeeple(int x, int y, int side, int player, bool big, const BoardModule &board) {
+    Feature &feature = featureMap.getSetData(edgeIndex(board.board[y][x].id, side));
+    feature.meeple_count[player] += big ? 2 : 1;
+    feature.big_meeples[player] += big ? 1 : 0;
 }
 
-void FeatureModule::settleAfterPlaceMeeple(int x, int y, const BoardModule &board, int *player_scores, int *holding_meeples){
+void FeatureModule::settleAfterPlaceMeeple(int x, int y, const BoardModule &board, int *player_scores,
+                                           int *holding_meeples, int *holding_big_meeples) {
     for (int i = 0; i < 4; ++i) {
         if (isFeatureEdge(board.edge[y][x][i])) {
-            settleCompletedFeatures(board.board[y][x].id, i, player_scores, holding_meeples);
+            settleCompletedFeatures(board.board[y][x].id, i, player_scores, holding_meeples, holding_big_meeples);
         }
     }
 }
@@ -193,7 +209,8 @@ void FeatureModule::accumulatePendingScore(int *pending) const {
         }
         // An open feature scores at the end of the game; a closed one still
         // holding meeples was closed by the last tile and scores when the turn
-        // ends. getScore() doubles a closed city either way.
+        // ends. getScore() doubles a closed city either way, and gives an open
+        // road with an inn or city with a cathedral nothing.
         int score = feature.getScore();
         if (m0 >= m1) {
             pending[0] += score;

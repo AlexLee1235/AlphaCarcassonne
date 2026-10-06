@@ -7,11 +7,12 @@
 #include <vector>
 
 
-void MonasteryModule::settleCompletedMonasteries(int *player_scores, int *holding_meeples) {
+void MonasteryModule::settleCompletedMonasteries(int *player_scores, int *holding_meeples, int *holding_big_meeples) {
     for (int i = active_monasteries.size() - 1; i >= 0; --i) {
         if (active_monasteries[i].tile_count == 9) {
-            player_scores[active_monasteries[i].owner] += 9;
-            holding_meeples[active_monasteries[i].owner]++;
+            const int owner = active_monasteries[i].owner;
+            player_scores[owner] += 9;
+            (active_monasteries[i].big ? holding_big_meeples : holding_meeples)[owner]++;
             active_monasteries.swap_pop_erase_at(i);
         }
     }
@@ -31,9 +32,8 @@ void MonasteryModule::placeTileOnBoard(int tile_id, int x, int y, int rot) {
     }
 }
 
-void MonasteryModule::placeMeeple(int x, int y, int pos, int player, const BoardModule &board, int *player_scores,
-                                  int *holding_meeples) {
-    active_monasteries.push_back({x, y, board.count3x3(x, y), player});
+void MonasteryModule::placeMeeple(int x, int y, int player, bool big, const BoardModule &board) {
+    active_monasteries.push_back({x, y, board.count3x3(x, y), player, big});
 }
 
 void MonasteryModule::accumulatePendingScore(int *pending) const {
@@ -46,6 +46,15 @@ int MonasteryModule::ownerAt(int x, int y) const {
     for (int i = 0; i < active_monasteries.size(); ++i) {
         if (active_monasteries[i].x == x && active_monasteries[i].y == y) {
             return active_monasteries[i].owner;
+        }
+    }
+    return -1;
+}
+
+int MonasteryModule::bigMeepleOwnerAt(int x, int y) const {
+    for (int i = 0; i < active_monasteries.size(); ++i) {
+        if (active_monasteries[i].x == x && active_monasteries[i].y == y) {
+            return active_monasteries[i].big ? active_monasteries[i].owner : -1;
         }
     }
     return -1;

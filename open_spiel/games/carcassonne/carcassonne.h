@@ -21,14 +21,15 @@ namespace carcassonne {
 inline constexpr int kNumPlayers = 2;
 inline constexpr int kChanceActionCount = CANONICAL_TILE_TYPE_COUNT;
 inline constexpr int kTileActionCount = BOARD_SIZE * BOARD_SIZE * 4;
-// One action per meeple position, -1 (skip) to MEEPLE_POS_COUNT - 2.
+// One action per meeple position, -1 (skip) to MEEPLE_POS_COUNT - 2: skip,
+// the 14 spots with a meeple, then the same 14 with the big meeple.
 inline constexpr int kMeepleActionCount = MEEPLE_POS_COUNT;
 inline constexpr int kMeepleActionOffset = kTileActionCount;
 inline constexpr int kNumDistinctPlayerActions = kTileActionCount + kMeepleActionCount;
 // The conv policy head of alpha_zero_torch (model.cc) reads at most
-// kMaxExtraActions = 16 actions beyond the tile placements; with more it
+// kMaxExtraActions = 32 actions beyond the tile placements; with more it
 // silently falls back to the dense head.
-static_assert(kMeepleActionCount <= 16, "alpha_zero_torch's conv policy head would not fit");
+static_assert(kMeepleActionCount <= 32, "alpha_zero_torch's conv policy head would not fit");
 
 // Observation: spatial planes for what is on the board, then one plane that
 // is not spatial. Its first kGlobalFeatures cells hold a vector of board-wide
@@ -59,8 +60,8 @@ inline constexpr int kLastPlacedPlane = kLegalPlacementPlane + kLegalPlacementPl
 // for each quantity. Summing them along a feature needs the whole feature in view,
 // which the convolutions cannot do, so they are computed here.
 inline constexpr int kFeatureOpensPlane = kLastPlacedPlane + 1;         // min(opens, 6) / 6
-inline constexpr int kFeatureScorePlane = kFeatureOpensPlane + 4;       // getScore() / 30
-inline constexpr int kFeatureMyMeeplesPlane = kFeatureScorePlane + 4;   // count / 7
+inline constexpr int kFeatureScorePlane = kFeatureOpensPlane + 4;       // getBaseScore() / 30: no inn or cathedral
+inline constexpr int kFeatureMyMeeplesPlane = kFeatureScorePlane + 4;   // strength (big meeple 2) / 7
 inline constexpr int kFeatureOpponentMeeplesPlane = kFeatureMyMeeplesPlane + 4;
 inline constexpr int kFeatureSignedScorePlane = kFeatureOpponentMeeplesPlane + 4; // +-getScore() / 30
 // Monasteries: tiles around it / 9, and +1 mine, -1 the opponent's.
@@ -68,7 +69,7 @@ inline constexpr int kMonasteryCoveragePlane = kFeatureSignedScorePlane + 4;
 inline constexpr int kMonasteryOwnerPlane = kMonasteryCoveragePlane + 1;
 // The field each half-edge of a tile belongs to (see FieldLayout), one plane
 // per half-edge for each quantity; 0 on city sides.
-inline constexpr int kFieldMyFarmersPlane = kMonasteryOwnerPlane + 1;                 // count / 7
+inline constexpr int kFieldMyFarmersPlane = kMonasteryOwnerPlane + 1;                 // strength / 7
 inline constexpr int kFieldOpponentFarmersPlane = kFieldMyFarmersPlane + HALF_EDGE_COUNT;
 inline constexpr int kFieldScorePlane = kFieldOpponentFarmersPlane + HALF_EDGE_COUNT; // 3 * completed cities / 30
 inline constexpr int kFieldSizePlane = kFieldScorePlane + HALF_EDGE_COUNT;            // tiles / 60
@@ -79,11 +80,23 @@ inline constexpr int kInnerFieldOpponentFarmersPlane = kInnerFieldMyFarmersPlane
 inline constexpr int kInnerFieldScorePlane = kInnerFieldOpponentFarmersPlane + 1;
 inline constexpr int kInnerFieldSizePlane = kInnerFieldScorePlane + 1;
 inline constexpr int kInnerFieldOpenCitiesPlane = kInnerFieldSizePlane + 1;
-inline constexpr int kSpatialPlanes = kInnerFieldOpenCitiesPlane + 1;
+// The big meeple (Inns & Cathedrals), which counts 2 in the strength planes
+// above but comes back as one piece: 1 where the feature on that side holds my
+// / the opponent's big meeple, one plane per side.
+inline constexpr int kFeatureMyBigMeeplePlane = kInnerFieldOpenCitiesPlane + 1;
+inline constexpr int kFeatureOpponentBigMeeplePlane = kFeatureMyBigMeeplePlane + 4;
+// +1 where the meeple on a monastery is my big meeple, -1 the opponent's.
+inline constexpr int kMonasteryBigMeeplePlane = kFeatureOpponentBigMeeplePlane + 4;
+// 1 where the feature on that side has an inn (a road) or a cathedral (a city),
+// with the Inns & Cathedrals rules: closed it scores 2x / 3x, left open 0. The
+// score plane leaves them out, the signed score plane counts them. One plane
+// per side.
+inline constexpr int kFeatureInnCathedralPlane = kMonasteryBigMeeplePlane + 1;
+inline constexpr int kSpatialPlanes = kFeatureInnCathedralPlane + 4;
 inline constexpr int kGlobalFeaturePlane = kSpatialPlanes;
 inline constexpr int kObservationPlanes = kGlobalFeaturePlane + 1;
 static_assert(kLastPlacedPlane == 33);
-static_assert(kSpatialPlanes == 101);
+static_assert(kSpatialPlanes == 114);
 
 // Offsets in the global vector, all from the observing player's side.
 inline constexpr int kGlobalMyScore = 0;           // clip(/100)
@@ -103,15 +116,16 @@ inline constexpr int kGlobalTileInHand = kGlobalRemainingByType + CANONICAL_TILE
 inline constexpr int kGlobalTilePhase = kGlobalTileInHand + CANONICAL_TILE_TYPE_COUNT;
 inline constexpr int kGlobalMeeplePhase = kGlobalTilePhase + 1;
 // Legal meeple moves in action order: skip, sides 0-3, monastery, half-edges
-// 0-7, inner field.
+// 0-7, inner field, then those 14 with the big meeple.
 inline constexpr int kGlobalLegalMeeple = kGlobalMeeplePhase + 1;
 inline constexpr int kGlobalLegalPlacements = kGlobalLegalMeeple + kMeepleActionCount; // / 100
 inline constexpr int kGlobalIsPlayer0 = kGlobalLegalPlacements + 1;
 // The part of the pending scores that fields score, clip(/40).
 inline constexpr int kGlobalMyFieldPending = kGlobalIsPlayer0 + 1;
 inline constexpr int kGlobalOpponentFieldPending = kGlobalMyFieldPending + 1;
-// Farmers on the board, / 7. They never come back, so with the meeples held
-// they also give how many are out on features and will return.
+// Meeples on the board as farmers, the big meeple not included, / 7. They
+// never come back, so with the meeples held they also give how many are out on
+// features and will return.
 inline constexpr int kGlobalMyFarmers = kGlobalOpponentFieldPending + 1;
 inline constexpr int kGlobalOpponentFarmers = kGlobalMyFarmers + 1;
 // Each expansion other than the base, in Expansion order (inns_cathedrals,
@@ -121,8 +135,15 @@ inline constexpr int kGlobalExpansionModes = kGlobalOpponentFarmers + 1;
 inline constexpr int kGlobalExpansionCells = 2 * (EXPANSION_COUNT - 1);
 // River tiles on the board, the spring included, / 12; 0 without the river.
 inline constexpr int kGlobalRiverTiles = kGlobalExpansionModes + kGlobalExpansionCells;
-inline constexpr int kGlobalFeatures = kGlobalRiverTiles + 1;
-static_assert(kGlobalFeatures == 44 + 2 * CANONICAL_TILE_TYPE_COUNT);
+// The big meeple in hand, 1 or 0; 0 without its rules.
+inline constexpr int kGlobalMyBigMeeple = kGlobalRiverTiles + 1;
+inline constexpr int kGlobalOpponentBigMeeple = kGlobalMyBigMeeple + 1;
+// The big meeple is a farmer, 1 or 0: it never comes back. Neither this nor in
+// hand, it is on a feature or a monastery, where the big meeple planes show it.
+inline constexpr int kGlobalMyBigFarmer = kGlobalOpponentBigMeeple + 1;
+inline constexpr int kGlobalOpponentBigFarmer = kGlobalMyBigFarmer + 1;
+inline constexpr int kGlobalFeatures = kGlobalOpponentBigFarmer + 1;
+static_assert(kGlobalFeatures == 62 + 2 * CANONICAL_TILE_TYPE_COUNT);
 static_assert(kGlobalFeatures <= BOARD_SIZE * BOARD_SIZE);
 inline constexpr int kObservationTensorSize = kObservationPlanes * BOARD_SIZE * BOARD_SIZE;
 
@@ -131,8 +152,10 @@ class CarcassonneGame;
 class CarcassonneState : public State {
   public:
     explicit CarcassonneState(std::shared_ptr<const Game> game);
-    // `expansions`: the expansionBit() mask of expansions whose tiles are dealt.
-    CarcassonneState(std::shared_ptr<const Game> game, int max_turns, uint32_t expansions = BASE_ONLY);
+    // `expansions`: the expansionBit() mask of expansions whose tiles are dealt;
+    // `rules`: those of them that play their rules (see ::Carcassonne).
+    CarcassonneState(std::shared_ptr<const Game> game, int max_turns, uint32_t expansions = BASE_ONLY,
+                     uint32_t rules = RULED_EXPANSIONS);
     CarcassonneState(std::shared_ptr<const Game> game, const ::Carcassonne &game_state);
     CarcassonneState(const CarcassonneState &) = default;
 
@@ -162,7 +185,7 @@ class CarcassonneGame : public Game {
 
     int NumDistinctActions() const override { return kNumDistinctPlayerActions; }
     std::unique_ptr<State> NewInitialState() const override {
-        return std::unique_ptr<State>(new CarcassonneState(shared_from_this(), max_turns_, expansions_));
+        return std::unique_ptr<State>(new CarcassonneState(shared_from_this(), max_turns_, expansions_, rules_));
     }
     // Every type of every expansion, so the shapes do not depend on the options.
     int MaxChanceOutcomes() const override { return kChanceActionCount; }
@@ -180,10 +203,13 @@ class CarcassonneGame : public Game {
     // The expansionBit() mask of the expansions whose tiles this game deals,
     // the base game included.
     uint32_t Expansions() const { return expansions_; }
+    // Those of them dealt "on": their rules are played too.
+    uint32_t Rules() const { return rules_; }
 
   private:
     int max_turns_ = 0;
     uint32_t expansions_ = BASE_ONLY;
+    uint32_t rules_ = 0;
 };
 
 // Board rotation, for training-data augmentation. Rules, deck and the square

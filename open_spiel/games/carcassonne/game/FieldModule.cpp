@@ -104,13 +104,16 @@ void FieldModule::getLegalFarmerMoves(MeepleMoves &ret, int tile_id, const Tile 
     }
 }
 
-void FieldModule::placeFarmer(int tile_id, const Tile &tile, int pos, int player) {
+void FieldModule::placeFarmer(int tile_id, const Tile &tile, int pos, int player, bool big) {
     int local = pos == MEEPLE_POS_INNER_FIELD ? tile.innerField() : tile.field[pos - MEEPLE_POS_FIELD];
     assert(local >= 0 && local < tile.field_count);
     int slot = fieldIndex(tile_id, local);
-    fieldMap.getSetData(slot).farmer_count[player]++;
+    fieldMap.getSetData(slot).farmer_count[player] += big ? 2 : 1;
     farmed_slots.push_back(static_cast<int16_t>(slot));
     farmers_placed[player]++;
+    if (big) {
+        big_farmers[player] = 1;
+    }
 }
 
 void FieldModule::getHalfEdgeGroups(int tile_id, const Tile &tile, int8_t groups[HALF_EDGE_COUNT]) const {

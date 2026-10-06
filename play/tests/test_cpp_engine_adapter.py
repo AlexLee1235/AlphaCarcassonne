@@ -116,9 +116,9 @@ def test_bot_cli_reports_latest_observation_shape() -> None:
 
     # 101 spatial planes (fields and expansion terrain included) and one global
     # plane; meeple positions -1..13.
-    assert response["observation_shape"] == [102, ENGINE_BOARD_SIZE, ENGINE_BOARD_SIZE]
-    assert response["observation_tensor_size"] == 102 * ENGINE_BOARD_SIZE * ENGINE_BOARD_SIZE
-    assert response["num_distinct_actions"] == ENGINE_BOARD_SIZE * ENGINE_BOARD_SIZE * 4 + 15
+    assert response["observation_shape"] == [115, ENGINE_BOARD_SIZE, ENGINE_BOARD_SIZE]
+    assert response["observation_tensor_size"] == 115 * ENGINE_BOARD_SIZE * ENGINE_BOARD_SIZE
+    assert response["num_distinct_actions"] == ENGINE_BOARD_SIZE * ENGINE_BOARD_SIZE * 4 + 29
 
 
 def test_player_spec_builds_per_player_az_env_without_device() -> None:

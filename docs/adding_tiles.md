@@ -12,7 +12,7 @@
 
 `tiles/` 裡的圖已經照這個順序編好號，填表時照著 type 順序一列一列往下填即可。
 
-目前除了河流（§8）之外**只做牌的形狀**，擴充的規則一律不算：旅館、大教堂、貨物、龍、公主、魔法門、火山都還沒有效果。
+目前除了河流與旅館與大教堂（§8）之外**只做牌的形狀**，擴充的規則一律不算：貨物、建築師、龍、公主、魔法門、火山都還沒有效果。
 
 ---
 
@@ -255,15 +255,24 @@ cd /mnt/c/achieve/Carcassonne/AlphaCarcassonne/build && make carcassonne_test -j
 ## 8. 開擴充來玩或訓練
 
 ```
-carcassonne(inns_cathedrals=tiles,traders_builders=tiles,river=on,princess_dragon=tiles)
+carcassonne(inns_cathedrals=on,traders_builders=tiles,river=on,princess_dragon=tiles)
 ```
 
-- 每個參數是 `off`（預設）或 `tiles`（只發牌、不算規則）；**河流是 `off` 或 `on`**（發牌並套用河流規則，沒有只發牌的選項）。基本版的牌一定都在。
-- **觀測和動作的維度不隨參數改變**：global vector 為牌表裡的每一種牌都留了位置（44 + 2 × 牌種數），沒發的牌種一律是 0。
+- 每個參數是 `off`（預設）、`tiles`（只發牌、不算規則）或 `on`（發牌並套用規則，只有規則做好的擴充才有）。基本版的牌一定都在。
+  - 河流：`off`／`on`，沒有只發牌的選項。
+  - 旅館與大教堂：`off`／`tiles`／`on`。`on` = 大米寶＋旅館＋大教堂；`tiles` 的旅館、大教堂只是一般的路和城。
+  - 商人與建築師、公主與龍：`off`／`tiles`。
+- **觀測和動作的維度不隨參數改變**：global vector 為牌表裡的每一種牌都留了位置（62 + 2 × 牌種數），沒發的牌種一律是 0。
   所以**牌表每加一種牌，維度就變一次**。等牌表定案再開始訓練；舊的 checkpoint 也不能載入，`carcassonne_bot_cli` 會直接報錯。
 - 河流規則（`river=on`）：河源取代起始牌放在中央，基本版的起始牌拿掉不用（牌組 72 + 12 − 1 = 83 張）；先抽完河流牌，湖一定最後，之後才抽一般牌。
   每張河流牌都要接在河的出口上，而且連續兩個彎不能往同一邊轉（中間隔著直流也算），所以河只會在兩個方向間交替、不會流回自己旁邊。
   河不能流出盤面；放不下的河流牌（只會在盤面邊緣發生）跟一般牌一樣丟掉。規則寫在 `game/game.cpp` 的 `isLegalPlacement` / `advanceRiver`。
+- 大米寶（`inns_cathedrals=on`）：每人多 1 個大米寶，可以取代一般 meeple 放在任何能放 meeple 的地方（城、路、修道院、農田）。
+  多數決時算 2 個，分數不加倍；完成後一樣收回，當農夫就留到終局。只剩大米寶時也能放。
+  動作是另外 14 個（`place_big_meeple(...)`，接在一般 meeple 動作後面）；規則寫在 `game/game.cpp` 的 `getLegalMeepleMoves` / `placeMeeple`。
+- 旅館與大教堂（`inns_cathedrals=on`）：路上只要有一間旅館（`MARK_INN`，只算它旁邊那段路），完成時每張磚 2 分；
+  城裡只要有一座大教堂（type 36，`CATHEDRAL_TYPE`），完成時每張磚、每個盾 3 分。兩者終局沒完成都是 0 分。
+  規則寫在 `game/Feature.cpp` 的 `getScore()`；旅館與大教堂在 `FeatureModule::placeTileOnBoard` 記進元件。
 - 盤面：牌變多，對局也變大。填完後用下面的指令量全開時的跨度，再決定 `BOARD_SIZE`（目前 21）要不要加大：
   ```bash
   cd tools && make build/diag_board31 && ./build/diag_board31 3000 all

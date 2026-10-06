@@ -35,11 +35,13 @@ float GlobalValue(const std::vector<float>& tensor, int index) {
 
 bool Near(float left, float right) { return std::abs(left - right) < 1e-6f; }
 
-// Every expansion's tiles: the river with its rules, the others without.
+// Every expansion's tiles, with the rules of those that have them (the river,
+// the big meeple).
 constexpr const char* kAllExpansionsGame =
-    "carcassonne(inns_cathedrals=tiles,traders_builders=tiles,river=on,"
+    "carcassonne(inns_cathedrals=on,traders_builders=tiles,river=on,"
     "princess_dragon=tiles)";
 constexpr const char* kRiverGame = "carcassonne(river=on)";
+constexpr const char* kInnsCathedralsGame = "carcassonne(inns_cathedrals=on)";
 
 int TestTerrainIndex(EdgeType edge_type) {
   switch (edge_type) {
@@ -163,11 +165,11 @@ void ObservationTensorSmokeTest() {
   const std::vector<int> shape = game->ObservationTensorShape();
 
   SPIEL_CHECK_EQ(shape.size(), 3);
-  SPIEL_CHECK_EQ(shape[0], 102);
+  SPIEL_CHECK_EQ(shape[0], 115);
   SPIEL_CHECK_EQ(shape[0], kObservationPlanes);
   SPIEL_CHECK_EQ(shape[1], BOARD_SIZE);
   SPIEL_CHECK_EQ(shape[2], BOARD_SIZE);
-  SPIEL_CHECK_EQ(game->NumDistinctActions(), 4 * BOARD_SIZE * BOARD_SIZE + 15);
+  SPIEL_CHECK_EQ(game->NumDistinctActions(), 4 * BOARD_SIZE * BOARD_SIZE + 29);
 
   SPIEL_CHECK_EQ(state->ObservationTensor(0).size(), kObservationTensorSize);
   SPIEL_CHECK_EQ(state->ObservationTensor(1).size(), kObservationTensorSize);
@@ -232,6 +234,9 @@ void ObservationTensorSmokeTest() {
   }
   CheckZeroPlanes(initial_obs, kInnerFieldMyFarmersPlane,
                   kInnerFieldOpenCitiesPlane + 1 - kInnerFieldMyFarmersPlane);
+  // No big meeple, inn or cathedral in the base game.
+  CheckZeroPlanes(initial_obs, kFeatureMyBigMeeplePlane,
+                  kSpatialPlanes - kFeatureMyBigMeeplePlane);
   CheckRemainingByType(initial_obs, initial_state->UnderlyingState());
   for (int i : {kGlobalMyScore, kGlobalOpponentScore, kGlobalScoreDiff,
                 kGlobalMyPending, kGlobalOpponentPending, kGlobalStaticDiff,
@@ -239,7 +244,9 @@ void ObservationTensorSmokeTest() {
                 kGlobalCompletedTurns, kGlobalTilePhase, kGlobalMeeplePhase,
                 kGlobalLegalPlacements, kGlobalMyFieldPending,
                 kGlobalOpponentFieldPending, kGlobalMyFarmers,
-                kGlobalOpponentFarmers, kGlobalRiverTiles}) {
+                kGlobalOpponentFarmers, kGlobalRiverTiles, kGlobalMyBigMeeple,
+                kGlobalOpponentBigMeeple, kGlobalMyBigFarmer,
+                kGlobalOpponentBigFarmer}) {
     SPIEL_CHECK_EQ(GlobalValue(initial_obs, i), 0.0f);
   }
   for (int cell = 0; cell < kGlobalExpansionCells; ++cell) {
@@ -385,9 +392,9 @@ void RelativePerspectiveTest() {
     SPIEL_CHECK_TRUE(Near(GlobalValue(obs, kGlobalOpponentMeeples),
                           core.holding_meeples[opponent] / 7.0f));
     SPIEL_CHECK_TRUE(Near(GlobalValue(obs, kGlobalMyFarmers),
-                          core.farmersOnBoard(player) / 7.0f));
+                          (core.farmersOnBoard(player) - core.bigFarmers(player)) / 7.0f));
     SPIEL_CHECK_TRUE(Near(GlobalValue(obs, kGlobalOpponentFarmers),
-                          core.farmersOnBoard(opponent) / 7.0f));
+                          (core.farmersOnBoard(opponent) - core.bigFarmers(opponent)) / 7.0f));
     const int diff = core.player_scores[player] - core.player_scores[opponent] +
                      pending[player] - pending[opponent];
     SPIEL_CHECK_TRUE(Near(GlobalValue(obs, kGlobalStaticDiff),
@@ -703,10 +710,9 @@ void ShieldPerCityTest() {
   }
 }
 
-// Draws `type`, places it at (tile_x, tile_y) turned `rot` and plays meeple
-// position `pos`, checking each step is legal.
-void PlayTurn(::Carcassonne* game, int type, int tile_x, int tile_y, int rot,
-              int pos) {
+// Draws `type` and places it at (tile_x, tile_y) turned `rot`, checking that
+// is legal.
+void PlaceTile(::Carcassonne* game, int type, int tile_x, int tile_y, int rot) {
   SPIEL_CHECK_EQ(game->current_phase, PHASE_CHANCE);
   game->drawTile(type);
   SPIEL_CHECK_EQ(game->current_phase, PHASE_TILE);
@@ -720,6 +726,12 @@ void PlayTurn(::Carcassonne* game, int type, int tile_x, int tile_y, int rot,
   }
   SPIEL_CHECK_TRUE(legal);
   game->placeTile(tile_x, tile_y, rot);
+}
+
+// The same, then plays meeple position `pos`, checking it is legal.
+void PlayTurn(::Carcassonne* game, int type, int tile_x, int tile_y, int rot,
+              int pos) {
+  PlaceTile(game, type, tile_x, tile_y, rot);
   const MeepleMoves meeple_moves = game->getLegalMeepleMoves();
   SPIEL_CHECK_TRUE(std::find(meeple_moves.begin(), meeple_moves.end(), pos) !=
                    meeple_moves.end());
@@ -900,12 +912,462 @@ void InnerFieldTest() {
   check_scores(12, 12);
   fields->placeFarmer(id, four_cities, MEEPLE_POS_INNER_FIELD, 1);
   check_scores(0, 12);
+  // A big meeple counts as two farmers, one piece.
+  fields->placeFarmer(id, four_cities, MEEPLE_POS_INNER_FIELD, 0, /*big=*/true);
+  check_scores(12, 0);
+  fields->placeFarmer(id, four_cities, MEEPLE_POS_INNER_FIELD, 1);
+  check_scores(12, 12);
+  SPIEL_CHECK_EQ(fields->farmers_placed[0], 2);
+  SPIEL_CHECK_EQ(fields->big_farmers[0], 1);
+  SPIEL_CHECK_EQ(fields->big_farmers[1], 0);
 
   // The inner field is the same field whichever way the board turns.
   const Action inner_action = kMeepleActionOffset + MEEPLE_POS_INNER_FIELD + 1;
   for (int k = 0; k < kNumBoardRotations; ++k) {
     SPIEL_CHECK_EQ(RotateAction(inner_action, k, kNoSideGroups), inner_action);
   }
+}
+
+// The meeple moves offered: skip first, then each free spot with a meeple if
+// the player has one and with the big meeple if they have it.
+void CheckBigMeepleMoves(const ::Carcassonne& core) {
+  const MeepleMoves moves = core.getLegalMeepleMoves();
+  SPIEL_CHECK_GE(moves.size(), 1);
+  SPIEL_CHECK_EQ(moves[0], MEEPLE_POS_SKIP);
+  std::vector<int> spots;
+  std::vector<int> big_spots;
+  for (int i = 1; i < moves.size(); ++i) {
+    (isBigMeeplePos(moves[i]) ? big_spots : spots).push_back(meepleSpot(moves[i]));
+  }
+  const int player = core.currentPlayer;
+  const bool meeple = core.holding_meeples[player] > 0;
+  const bool big = core.holding_big_meeples[player] > 0;
+  if (!meeple) SPIEL_CHECK_TRUE(spots.empty());
+  if (!big) SPIEL_CHECK_TRUE(big_spots.empty());
+  if (meeple && big) SPIEL_CHECK_TRUE(spots == big_spots);
+}
+
+// Every piece is in hand, on a feature, on a monastery or a farmer: 7 meeples
+// and, with the rules, one big meeple each. The observation shows where the
+// big ones are.
+void CheckBigMeeples(const State& state) {
+  const ::Carcassonne& core =
+      dynamic_cast<const CarcassonneState&>(state).UnderlyingState();
+  const std::vector<float> obs0 = state.ObservationTensor(0);
+  const std::vector<float> obs1 = state.ObservationTensor(1);
+  int meeples[2] = {core.holding_meeples[0], core.holding_meeples[1]};
+  int bigs[2] = {core.holding_big_meeples[0], core.holding_big_meeples[1]};
+  std::vector<const Feature*> seen;
+  // SPIEL_CHECK_EQ's own locals are called x and y.
+  for (int ty = 0; ty < BOARD_SIZE; ++ty) {
+    for (int tx = 0; tx < BOARD_SIZE; ++tx) {
+      const Placement placement = core.getPlacement(tx, ty);
+      if (placement.id == 0) continue;
+      const Tile& tile = full_deck[placement.id][placement.rotation];
+      for (int side = 0; side < 4; ++side) {
+        if (!isFeatureEdge(tile.edge[side])) continue;
+        const Feature& feature = core.featureAt(placement.id, side);
+        for (Player player = 0; player < kNumPlayers; ++player) {
+          const std::vector<float>& obs = player == 0 ? obs0 : obs1;
+          const int opponent = 1 - player;
+          SPIEL_CHECK_EQ(PlaneValue(obs, kFeatureMyBigMeeplePlane + side, tx, ty),
+                         static_cast<float>(feature.big_meeples[player]));
+          SPIEL_CHECK_EQ(
+              PlaneValue(obs, kFeatureOpponentBigMeeplePlane + side, tx, ty),
+              static_cast<float>(feature.big_meeples[opponent]));
+        }
+        if (std::find(seen.begin(), seen.end(), &feature) != seen.end()) continue;
+        seen.push_back(&feature);
+        for (Player player = 0; player < kNumPlayers; ++player) {
+          SPIEL_CHECK_LE(feature.big_meeples[player], 1);
+          const int pieces =
+              feature.meeple_count[player] - 2 * feature.big_meeples[player];
+          SPIEL_CHECK_GE(pieces, 0);
+          meeples[player] += pieces;
+          bigs[player] += feature.big_meeples[player];
+        }
+      }
+      if (tile.monastery) {
+        const int owner = core.monasteryOwner(tx, ty);
+        const int big_owner = core.monasteryBigMeepleOwner(tx, ty);
+        if (owner == -1) {
+          SPIEL_CHECK_EQ(big_owner, -1);
+        } else {
+          SPIEL_CHECK_TRUE(big_owner == -1 || big_owner == owner);
+          ++(big_owner == owner ? bigs : meeples)[owner];
+        }
+        const float mine = big_owner == -1 ? 0.0f : (big_owner == 0 ? 1.0f : -1.0f);
+        SPIEL_CHECK_EQ(PlaneValue(obs0, kMonasteryBigMeeplePlane, tx, ty), mine);
+        SPIEL_CHECK_EQ(PlaneValue(obs1, kMonasteryBigMeeplePlane, tx, ty), -mine);
+      }
+    }
+  }
+  for (Player player = 0; player < kNumPlayers; ++player) {
+    const int farmers = core.farmersOnBoard(player) - core.bigFarmers(player);
+    meeples[player] += farmers;
+    bigs[player] += core.bigFarmers(player);
+    SPIEL_CHECK_EQ(meeples[player], MEEPLES_PER_PLAYER);
+    SPIEL_CHECK_EQ(bigs[player], core.big_meeple_rules ? 1 : 0);
+    // The global vector places every piece short of naming its feature:
+    // meeples in hand and farmers (the rest are out on features), the big
+    // meeple in hand or a farmer (else the big meeple planes show it).
+    const int opponent = 1 - player;
+    const std::vector<float>& obs = player == 0 ? obs0 : obs1;
+    SPIEL_CHECK_TRUE(Near(GlobalValue(obs, kGlobalMyFarmers), farmers / 7.0f));
+    SPIEL_CHECK_EQ(GlobalValue(obs, kGlobalMyBigMeeple),
+                   static_cast<float>(core.holding_big_meeples[player]));
+    SPIEL_CHECK_EQ(GlobalValue(obs, kGlobalOpponentBigMeeple),
+                   static_cast<float>(core.holding_big_meeples[opponent]));
+    SPIEL_CHECK_EQ(GlobalValue(obs, kGlobalMyBigFarmer),
+                   static_cast<float>(core.bigFarmers(player)));
+    SPIEL_CHECK_EQ(GlobalValue(obs, kGlobalOpponentBigFarmer),
+                   static_cast<float>(core.bigFarmers(opponent)));
+  }
+  int fast[2];
+  int slow[2];
+  core.getPendingScore(fast);
+  core.getPendingScoreByResolving(slow);
+  SPIEL_CHECK_EQ(fast[0], slow[0]);
+  SPIEL_CHECK_EQ(fast[1], slow[1]);
+  if (core.current_phase == PHASE_MEEPLE) {
+    CheckBigMeepleMoves(core);
+  }
+}
+
+// Inns & Cathedrals' big meeple: placed instead of a meeple, it counts as two
+// for the majority, scores no more, and comes back to its own supply.
+void BigMeepleTest() {
+  const uint32_t inns = BASE_ONLY | expansionBit(EXP_INNS_CATHEDRALS);
+  SPIEL_CHECK_FALSE(::Carcassonne().big_meeple_rules);
+  SPIEL_CHECK_FALSE(::Carcassonne(0, START_TILE_ROTATION, inns, /*rules=*/0u)
+                        .big_meeple_rules);
+
+  // A road: P0's big meeple against one P1 meeple. The start tile (type 20)
+  // at the centre has a road east-west.
+  const int c = BOARD_SIZE / 2;
+  std::shared_ptr<const Game> inns_game = LoadGame(kInnsCathedralsGame);
+  ::Carcassonne game(/*max_turns=*/0, START_TILE_ROTATION, inns);
+  SPIEL_CHECK_TRUE(game.big_meeple_rules);
+  SPIEL_CHECK_EQ(game.holding_big_meeples[0], 1);
+  SPIEL_CHECK_EQ(game.holding_big_meeples[1], 1);
+  // P0: a bend west of the start tile turns its road south. Each free spot is
+  // offered with either meeple; P0 puts the big one on the road.
+  PlaceTile(&game, 22, c - 1, c, 3);
+  const MeepleMoves first_moves = game.getLegalMeepleMoves();
+  CheckBigMeepleMoves(game);
+  SPIEL_CHECK_GT(first_moves.size(), 1);
+  SPIEL_CHECK_EQ((first_moves.size() - 1) % 2, 0);
+  SPIEL_CHECK_TRUE(std::find(first_moves.begin(), first_moves.end(),
+                             MEEPLE_POS_BIG + 1) != first_moves.end());
+  game.placeMeeple(MEEPLE_POS_BIG + 1);
+  SPIEL_CHECK_EQ(game.holding_meeples[0], MEEPLES_PER_PLAYER);
+  SPIEL_CHECK_EQ(game.holding_big_meeples[0], 0);
+  const int bend = game.getPlacement(c - 1, c).id;
+  SPIEL_CHECK_EQ(game.featureAt(bend, 1).meeple_count[0], 2);
+  SPIEL_CHECK_EQ(game.featureAt(bend, 1).big_meeples[0], 1);
+  // P1: a bend south of the start tile, its own road; a meeple on it.
+  PlayTurn(&game, 22, c, c + 1, 0, 2);
+  // P0: a bend joins the two roads. P0's big meeple is out, so only meeple
+  // moves are offered.
+  PlaceTile(&game, 22, c - 1, c + 1, 2);
+  CheckBigMeepleMoves(game);
+  for (int move : game.getLegalMeepleMoves()) {
+    SPIEL_CHECK_FALSE(isBigMeeplePos(move));
+  }
+  game.placeMeeple(MEEPLE_POS_SKIP);
+  const Feature& road = game.featureAt(bend, 1);
+  SPIEL_CHECK_EQ(road.meeple_count[0], 2);
+  SPIEL_CHECK_EQ(road.meeple_count[1], 1);
+  SPIEL_CHECK_EQ(road.getTileCount(), 4);
+  // Two against one: the road is P0's alone.
+  int pending[2];
+  game.getPendingScore(pending);
+  SPIEL_CHECK_EQ(pending[0], 4);
+  SPIEL_CHECK_EQ(pending[1], 0);
+  {
+    CarcassonneState view(inns_game, game);
+    const State& state = view;
+    const std::vector<float> obs0 = state.ObservationTensor(0);
+    const std::vector<float> obs1 = state.ObservationTensor(1);
+    // The start tile's west side is on the road, its east side too.
+    for (int side : {1, 3}) {
+      SPIEL_CHECK_EQ(PlaneValue(obs0, kFeatureMyBigMeeplePlane + side, c, c), 1.0f);
+      SPIEL_CHECK_EQ(PlaneValue(obs1, kFeatureOpponentBigMeeplePlane + side, c, c),
+                     1.0f);
+      SPIEL_CHECK_TRUE(
+          Near(PlaneValue(obs0, kFeatureMyMeeplesPlane + side, c, c), 2.0f / 7));
+      SPIEL_CHECK_TRUE(Near(
+          PlaneValue(obs0, kFeatureOpponentMeeplesPlane + side, c, c), 1.0f / 7));
+      SPIEL_CHECK_GT(PlaneValue(obs0, kFeatureSignedScorePlane + side, c, c), 0.0f);
+    }
+    SPIEL_CHECK_EQ(GlobalValue(obs0, kGlobalMyBigMeeple), 0.0f);
+    SPIEL_CHECK_EQ(GlobalValue(obs0, kGlobalOpponentBigMeeple), 1.0f);
+    CheckBigMeeples(state);
+  }
+  // P1: a monastery ends the road east of the start tile; P0 another south of
+  // P1's bend, which completes it: six tiles for P0. Each meeple goes back to
+  // its own supply.
+  PlayTurn(&game, 2, c + 1, c, 1, MEEPLE_POS_SKIP);
+  PlayTurn(&game, 2, c, c + 2, 2, MEEPLE_POS_SKIP);
+  SPIEL_CHECK_EQ(game.player_scores[0], 6);
+  SPIEL_CHECK_EQ(game.player_scores[1], 0);
+  for (Player player = 0; player < kNumPlayers; ++player) {
+    SPIEL_CHECK_EQ(game.holding_meeples[player], MEEPLES_PER_PLAYER);
+    SPIEL_CHECK_EQ(game.holding_big_meeples[player], 1);
+  }
+  // With only the big meeple left, only it is offered; with nothing, skip.
+  game.holding_meeples[1] = 0;
+  game.drawTile(21);
+  std::array<TileMove, kTileActionCount> tile_moves{};
+  int tile_move_count = 0;
+  game.getLegalTileMoves(tile_moves.data(), tile_move_count);
+  SPIEL_CHECK_GT(tile_move_count, 0);
+  game.placeTile(tile_moves[0].x, tile_moves[0].y, tile_moves[0].rot);
+  const MeepleMoves big_only = game.getLegalMeepleMoves();
+  SPIEL_CHECK_GT(big_only.size(), 1);
+  for (int i = 1; i < big_only.size(); ++i) {
+    SPIEL_CHECK_TRUE(isBigMeeplePos(big_only[i]));
+  }
+  game.holding_big_meeples[1] = 0;
+  SPIEL_CHECK_EQ(game.getLegalMeepleMoves().size(), 1);
+
+  // A big meeple on a completed monastery goes back to the big supply.
+  MonasteryModule monasteries;
+  monasteries.active_monasteries.push_back({c, c, 9, 1, true});
+  monasteries.active_monasteries.push_back({c + 2, c, 9, 0, false});
+  SPIEL_CHECK_EQ(monasteries.bigMeepleOwnerAt(c, c), 1);
+  SPIEL_CHECK_EQ(monasteries.bigMeepleOwnerAt(c + 2, c), -1);
+  SPIEL_CHECK_EQ(monasteries.ownerAt(c + 2, c), 0);
+  int scores[2] = {0, 0};
+  int holding[2] = {0, 0};
+  int holding_big[2] = {0, 0};
+  monasteries.settleCompletedMonasteries(scores, holding, holding_big);
+  SPIEL_CHECK_EQ(scores[0], 9);
+  SPIEL_CHECK_EQ(scores[1], 9);
+  SPIEL_CHECK_EQ(holding[0], 1);
+  SPIEL_CHECK_EQ(holding[1], 0);
+  SPIEL_CHECK_EQ(holding_big[0], 0);
+  SPIEL_CHECK_EQ(holding_big[1], 1);
+  SPIEL_CHECK_EQ(monasteries.active_monasteries.size(), 0);
+
+  // Random games: with "on" every piece is accounted for at every state;
+  // dealt as "tiles" there is no big meeple.
+  std::mt19937 rng(20261007);
+  int big_placed = 0;
+  int big_returned = 0;
+  int big_farmers = 0;
+  for (const char* game_string : {kInnsCathedralsGame, kAllExpansionsGame,
+                                  "carcassonne(inns_cathedrals=tiles)"}) {
+    std::shared_ptr<const Game> random_game = LoadGame(game_string);
+    for (int sim = 0; sim < 40; ++sim) {
+      std::unique_ptr<State> state = random_game->NewInitialState();
+      const ::Carcassonne& core =
+          dynamic_cast<const CarcassonneState&>(*state).UnderlyingState();
+      while (true) {
+        if (!state->IsChanceNode()) {
+          CheckBigMeeples(*state);
+        }
+        if (state->IsTerminal()) break;
+        const std::vector<Action> legal = state->LegalActions();
+        const Action action =
+            state->IsChanceNode()
+                ? SampleAction(state->ChanceOutcomes(), rng).first
+                : legal[std::uniform_int_distribution<int>(0, legal.size() - 1)(rng)];
+        const int held[2] = {core.holding_big_meeples[0],
+                             core.holding_big_meeples[1]};
+        if (core.current_phase == PHASE_MEEPLE &&
+            isBigMeeplePos(DecodeMeepleActionForTest(action))) {
+          ++big_placed;
+          big_farmers += meepleSpot(DecodeMeepleActionForTest(action)) >=
+                         MEEPLE_POS_FIELD;
+        }
+        state->ApplyAction(action);
+        for (Player player = 0; player < kNumPlayers; ++player) {
+          big_returned += core.holding_big_meeples[player] > held[player];
+        }
+      }
+    }
+  }
+  std::cout << "BigMeepleTest: " << big_placed << " big meeples placed ("
+            << big_farmers << " as farmers), " << big_returned << " returned"
+            << std::endl;
+  SPIEL_CHECK_GT(big_placed, 0);
+  SPIEL_CHECK_GT(big_farmers, 0);
+  SPIEL_CHECK_GT(big_returned, 0);
+}
+
+// The inn / cathedral planes match the features on every side: the flag, the
+// score without them and the signed score with them. Without the rules no
+// feature has either. Counts the sides seen with an inn and with a cathedral.
+void CheckInnCathedralPlanes(const State& state, int* inn_sides,
+                             int* cathedral_sides) {
+  const ::Carcassonne& core =
+      dynamic_cast<const CarcassonneState&>(state).UnderlyingState();
+  const std::vector<float> obs = state.ObservationTensor(0);
+  // SPIEL_CHECK_EQ's own locals are called x and y.
+  for (int ty = 0; ty < BOARD_SIZE; ++ty) {
+    for (int tx = 0; tx < BOARD_SIZE; ++tx) {
+      const Placement placement = core.getPlacement(tx, ty);
+      if (placement.id == 0) continue;
+      const Tile& tile = full_deck[placement.id][placement.rotation];
+      for (int side = 0; side < 4; ++side) {
+        const float flag =
+            PlaneValue(obs, kFeatureInnCathedralPlane + side, tx, ty);
+        if (!isFeatureEdge(tile.edge[side])) {
+          SPIEL_CHECK_EQ(flag, 0.0f);
+          continue;
+        }
+        const Feature& feature = core.featureAt(placement.id, side);
+        const int inns = feature.inns;
+        const int cathedrals = feature.cathedrals;
+        if (!core.big_meeple_rules) {
+          SPIEL_CHECK_EQ(inns, 0);
+          SPIEL_CHECK_EQ(cathedrals, 0);
+        }
+        // Inns line roads, cathedrals stand in cities.
+        if (feature.type == ROAD) SPIEL_CHECK_EQ(cathedrals, 0);
+        if (feature.type == CITY) SPIEL_CHECK_EQ(inns, 0);
+        *inn_sides += inns > 0;
+        *cathedral_sides += cathedrals > 0;
+        const bool marked = inns > 0 || cathedrals > 0;
+        SPIEL_CHECK_EQ(flag, marked ? 1.0f : 0.0f);
+        SPIEL_CHECK_TRUE(
+            Near(PlaneValue(obs, kFeatureScorePlane + side, tx, ty),
+                 std::min(feature.getBaseScore() / 30.0f, 1.0f)));
+        if (!marked) {
+          SPIEL_CHECK_EQ(feature.getScore(), feature.getBaseScore());
+        } else if (feature.opens > 0) {
+          // Left open it would score nothing.
+          SPIEL_CHECK_EQ(feature.getScore(), 0);
+          SPIEL_CHECK_EQ(
+              PlaneValue(obs, kFeatureSignedScorePlane + side, tx, ty), 0.0f);
+        }
+      }
+    }
+  }
+}
+
+// Inns & Cathedrals: a road with an inn scores 2 a tile once closed, a city
+// with a cathedral 3 a tile and a shield; left open at the end, nothing.
+// Dealt as "tiles" they score as plain roads and cities.
+void InnCathedralTest() {
+  const uint32_t inns = BASE_ONLY | expansionBit(EXP_INNS_CATHEDRALS);
+  std::shared_ptr<const Game> inns_game = LoadGame(kInnsCathedralsGame);
+  // The start tile (type 20) at the centre: a city north, a road east-west.
+  const int c = BOARD_SIZE / 2;
+  for (bool ruled : {true, false}) {
+    const uint32_t rules = ruled ? RULED_EXPANSIONS : 0u;
+
+    // The road through the start tile with an inn on it (type 48, a straight
+    // road east of it) and a monastery at each end: four tiles.
+    {
+      ::Carcassonne game(/*max_turns=*/0, START_TILE_ROTATION, inns, rules);
+      SPIEL_CHECK_EQ(game.big_meeple_rules, ruled);
+      PlayTurn(&game, 48, c + 1, c, 0, 1);               // P0, on the road
+      PlayTurn(&game, 2, c + 2, c, 1, MEEPLE_POS_SKIP);  // P1 ends it east
+      const Feature& road = game.featureAt(game.getPlacement(c, c).id, 1);
+      SPIEL_CHECK_EQ(static_cast<int>(road.inns), ruled ? 1 : 0);
+      SPIEL_CHECK_EQ(road.getBaseScore(), 3);
+      SPIEL_CHECK_EQ(road.getScore(), ruled ? 0 : 3);
+      int pending[2];
+      game.getPendingScore(pending);
+      SPIEL_CHECK_EQ(pending[0], ruled ? 0 : 3);
+      {
+        CarcassonneState view(inns_game, game);
+        const State& state = view;
+        const std::vector<float> obs = state.ObservationTensor(0);
+        for (int side : {1, 3}) {
+          SPIEL_CHECK_EQ(PlaneValue(obs, kFeatureInnCathedralPlane + side, c, c),
+                         ruled ? 1.0f : 0.0f);
+          SPIEL_CHECK_TRUE(
+              Near(PlaneValue(obs, kFeatureScorePlane + side, c, c), 3.0f / 30));
+          SPIEL_CHECK_TRUE(
+              Near(PlaneValue(obs, kFeatureSignedScorePlane + side, c, c),
+                   ruled ? 0.0f : 3.0f / 30));
+        }
+        // The city has no cathedral.
+        SPIEL_CHECK_EQ(PlaneValue(obs, kFeatureInnCathedralPlane + 0, c, c), 0.0f);
+      }
+      PlayTurn(&game, 2, c - 1, c, 3, MEEPLE_POS_SKIP);  // P0 ends it west
+      SPIEL_CHECK_EQ(game.player_scores[0], ruled ? 8 : 4);
+      SPIEL_CHECK_EQ(game.player_scores[1], 0);
+    }
+    // The same road left open at the end: two tiles.
+    {
+      ::Carcassonne game(/*max_turns=*/1, START_TILE_ROTATION, inns, rules);
+      PlayTurn(&game, 48, c + 1, c, 0, 1);
+      SPIEL_CHECK_EQ(game.current_phase, PHASE_TERMINAL);
+      SPIEL_CHECK_EQ(game.player_scores[0], ruled ? 0 : 2);
+    }
+
+    // The start tile's city with the cathedral north of it, closed by three
+    // CGGG (type 16): five tiles, no shield.
+    {
+      ::Carcassonne game(/*max_turns=*/0, START_TILE_ROTATION, inns, rules);
+      PlayTurn(&game, CATHEDRAL_TYPE, c, c - 1, 0, 0);  // P0, in the city
+      const Feature& city = game.featureAt(game.getPlacement(c, c).id, 0);
+      SPIEL_CHECK_EQ(static_cast<int>(city.cathedrals), ruled ? 1 : 0);
+      SPIEL_CHECK_EQ(static_cast<int>(city.opens), 3);
+      SPIEL_CHECK_EQ(city.getBaseScore(), 2);
+      SPIEL_CHECK_EQ(city.getScore(), ruled ? 0 : 2);
+      {
+        CarcassonneState view(inns_game, game);
+        const State& state = view;
+        const std::vector<float> obs = state.ObservationTensor(0);
+        SPIEL_CHECK_EQ(PlaneValue(obs, kFeatureInnCathedralPlane + 0, c, c),
+                       ruled ? 1.0f : 0.0f);
+        for (int side = 0; side < 4; ++side) {
+          SPIEL_CHECK_EQ(
+              PlaneValue(obs, kFeatureInnCathedralPlane + side, c, c - 1),
+              ruled ? 1.0f : 0.0f);
+        }
+        // The road has no inn.
+        SPIEL_CHECK_EQ(PlaneValue(obs, kFeatureInnCathedralPlane + 1, c, c), 0.0f);
+      }
+      PlayTurn(&game, 16, c, c - 2, 2, MEEPLE_POS_SKIP);      // P1, north
+      PlayTurn(&game, 16, c + 1, c - 1, 3, MEEPLE_POS_SKIP);  // P0, east
+      PlayTurn(&game, 16, c - 1, c - 1, 1, MEEPLE_POS_SKIP);  // P1, west: closed
+      SPIEL_CHECK_EQ(game.player_scores[0], ruled ? 15 : 10);
+      SPIEL_CHECK_EQ(game.player_scores[1], 0);
+    }
+    // The same city left open at the end: four tiles.
+    {
+      ::Carcassonne game(/*max_turns=*/3, START_TILE_ROTATION, inns, rules);
+      PlayTurn(&game, CATHEDRAL_TYPE, c, c - 1, 0, 0);
+      PlayTurn(&game, 16, c, c - 2, 2, MEEPLE_POS_SKIP);
+      PlayTurn(&game, 16, c + 1, c - 1, 3, MEEPLE_POS_SKIP);
+      SPIEL_CHECK_EQ(game.current_phase, PHASE_TERMINAL);
+      SPIEL_CHECK_EQ(game.player_scores[0], ruled ? 0 : 4);
+    }
+  }
+
+  // Random games: the planes at every state, and no inn or cathedral counts
+  // when dealt as "tiles".
+  std::mt19937 rng(20261008);
+  int inn_sides = 0;
+  int cathedral_sides = 0;
+  for (const char* game_string : {kInnsCathedralsGame, kAllExpansionsGame,
+                                  "carcassonne(inns_cathedrals=tiles)"}) {
+    std::shared_ptr<const Game> random_game = LoadGame(game_string);
+    for (int sim = 0; sim < 20; ++sim) {
+      std::unique_ptr<State> state = random_game->NewInitialState();
+      while (true) {
+        if (!state->IsChanceNode()) {
+          CheckInnCathedralPlanes(*state, &inn_sides, &cathedral_sides);
+        }
+        if (state->IsTerminal()) break;
+        const std::vector<Action> legal = state->LegalActions();
+        state->ApplyAction(
+            state->IsChanceNode()
+                ? SampleAction(state->ChanceOutcomes(), rng).first
+                : legal[std::uniform_int_distribution<int>(0, legal.size() - 1)(rng)]);
+      }
+    }
+  }
+  std::cout << "InnCathedralTest: " << inn_sides << " inn road sides, "
+            << cathedral_sides << " cathedral city sides seen" << std::endl;
+  SPIEL_CHECK_GT(inn_sides, 0);
+  SPIEL_CHECK_GT(cathedral_sides, 0);
 }
 
 void ReturnsMatchScoresTest() {
@@ -1010,16 +1472,21 @@ void LastUnplaceableTileTest() {
 // both games must end with the same scores. Returns how many legal meeple moves
 // were renamed differently from a plain side shift (the lowest side of the
 // feature changed), so the caller can check that case was exercised, and adds
-// the same count for farmer moves (half-edge shifts) to `renamed_farmer_moves`.
+// the same count for farmer moves (half-edge shifts) to `renamed_farmer_moves`
+// and the legal big meeple moves rotated to `big_meeple_moves`. The big meeple
+// names its spots like the meeple, so both count the same way.
 int CheckRotatedTwin(absl::Span<const Action> history, int k,
                      std::mt19937* rng, int* renamed_farmer_moves,
+                     int* big_meeple_moves,
                      const std::string& game_string = "carcassonne") {
   std::shared_ptr<const Game> game = LoadGame(game_string);
-  const uint32_t expansions =
-      dynamic_cast<const CarcassonneGame&>(*game).Expansions();
-  CarcassonneState state(game, /*max_turns=*/0, expansions);
+  const auto& carcassonne_game = dynamic_cast<const CarcassonneGame&>(*game);
+  const uint32_t expansions = carcassonne_game.Expansions();
+  const uint32_t rules = carcassonne_game.Rules();
+  CarcassonneState state(game, /*max_turns=*/0, expansions, rules);
   CarcassonneState twin(game, ::Carcassonne(/*max_turns=*/0,
-                                            /*start_rotation=*/k, expansions));
+                                            /*start_rotation=*/k, expansions,
+                                            rules));
   // CarcassonneState's override hides State::ObservationTensor(Player).
   const State& state_view = state;
   const State& twin_view = twin;
@@ -1068,15 +1535,20 @@ int CheckRotatedTwin(absl::Span<const Action> history, int k,
       SPIEL_CHECK_EQ(RotateAction(rotated_action, 4 - k, rotated_groups),
                      legal_action);
       rotated_legal.push_back(rotated_action);
-      const int pos = DecodeMeepleActionForTest(legal_action);
-      if (legal_action >= kMeepleActionOffset && pos >= 0 && pos < 4 &&
-          DecodeMeepleActionForTest(rotated_action) != (pos + k) % 4) {
+      if (legal_action < kMeepleActionOffset) continue;
+      const int full_pos = DecodeMeepleActionForTest(legal_action);
+      const int rotated_pos = DecodeMeepleActionForTest(rotated_action);
+      // A big meeple move stays one, on the rotated spot.
+      SPIEL_CHECK_EQ(isBigMeeplePos(rotated_pos), isBigMeeplePos(full_pos));
+      if (isBigMeeplePos(full_pos)) ++*big_meeple_moves;
+      const int pos = meepleSpot(full_pos);
+      const int rotated_spot = meepleSpot(rotated_pos);
+      if (pos >= 0 && pos < 4 && rotated_spot != (pos + k) % 4) {
         ++renamed_meeple_moves;
       }
       const int half_edge = pos - MEEPLE_POS_FIELD;
-      if (legal_action >= kMeepleActionOffset && pos >= MEEPLE_POS_FIELD &&
-          pos < MEEPLE_POS_INNER_FIELD &&
-          DecodeMeepleActionForTest(rotated_action) - MEEPLE_POS_FIELD !=
+      if (pos >= MEEPLE_POS_FIELD && pos < MEEPLE_POS_INNER_FIELD &&
+          rotated_spot - MEEPLE_POS_FIELD !=
               (half_edge + 2 * k) % HALF_EDGE_COUNT) {
         ++*renamed_farmer_moves;
       }
@@ -1096,6 +1568,8 @@ int CheckRotatedTwin(absl::Span<const Action> history, int k,
     SPIEL_CHECK_EQ(core.player_scores[player], twin_core.player_scores[player]);
     SPIEL_CHECK_EQ(core.holding_meeples[player],
                    twin_core.holding_meeples[player]);
+    SPIEL_CHECK_EQ(core.holding_big_meeples[player],
+                   twin_core.holding_big_meeples[player]);
   }
   return renamed_meeple_moves;
 }
@@ -1104,45 +1578,63 @@ void RotationEquivarianceTest() {
   std::mt19937 rng(20260915);
   int renamed_meeple_moves = 0;
   int renamed_farmer_moves = 0;
+  int big_meeple_moves = 0;
   for (int k = 1; k < kNumBoardRotations; ++k) {
-    renamed_meeple_moves += CheckRotatedTwin(kLastUnplaceableTileHistory, k,
-                                             &rng, &renamed_farmer_moves);
+    renamed_meeple_moves +=
+        CheckRotatedTwin(kLastUnplaceableTileHistory, k, &rng,
+                         &renamed_farmer_moves, &big_meeple_moves);
     for (int game = 0; game < 20; ++game) {
-      renamed_meeple_moves +=
-          CheckRotatedTwin({}, k, &rng, &renamed_farmer_moves);
+      renamed_meeple_moves += CheckRotatedTwin({}, k, &rng, &renamed_farmer_moves,
+                                               &big_meeple_moves);
     }
     for (int game = 0; game < 3; ++game) {
-      renamed_meeple_moves += CheckRotatedTwin(
-          {}, k, &rng, &renamed_farmer_moves, kAllExpansionsGame);
-      renamed_meeple_moves +=
-          CheckRotatedTwin({}, k, &rng, &renamed_farmer_moves, kRiverGame);
+      for (const char* game_string :
+           {kAllExpansionsGame, kRiverGame, kInnsCathedralsGame}) {
+        renamed_meeple_moves +=
+            CheckRotatedTwin({}, k, &rng, &renamed_farmer_moves,
+                             &big_meeple_moves, game_string);
+      }
     }
   }
   std::cout << "RotationEquivarianceTest: " << renamed_meeple_moves
             << " meeple moves renamed beyond a side shift, "
             << renamed_farmer_moves
-            << " farmer moves beyond a half-edge shift" << std::endl;
+            << " farmer moves beyond a half-edge shift, " << big_meeple_moves
+            << " big meeple moves" << std::endl;
   SPIEL_CHECK_GT(renamed_meeple_moves, 0);
   SPIEL_CHECK_GT(renamed_farmer_moves, 0);
+  SPIEL_CHECK_GT(big_meeple_moves, 0);
 }
 
-// Each expansion option deals that box's tiles and no others; the shapes stay
-// the same whatever is on.
+// Each expansion option deals that box's tiles and no others, "on" with its
+// rules; the shapes stay the same whatever is on.
 void ExpansionOptionsTest() {
   std::shared_ptr<const Game> base = LoadGame("carcassonne");
   SPIEL_CHECK_EQ(dynamic_cast<const CarcassonneGame&>(*base).Expansions(),
                  BASE_ONLY);
-  for (int expansion = 0; expansion < EXPANSION_COUNT; ++expansion) {
+  SPIEL_CHECK_EQ(dynamic_cast<const CarcassonneGame&>(*base).Rules(), 0u);
+  // Every expansion has a mode beyond off; the river only "on".
+  std::vector<std::pair<int, std::string>> options = {{EXP_BASE, ""}};
+  for (int expansion = 1; expansion < EXPANSION_COUNT; ++expansion) {
+    const uint32_t bit = expansionBit(static_cast<Expansion>(expansion));
+    if (expansion != EXP_RIVER) options.push_back({expansion, "tiles"});
+    if (bit & RULED_EXPANSIONS) options.push_back({expansion, "on"});
+  }
+  SPIEL_CHECK_EQ(static_cast<int>(options.size()), 1 + (EXPANSION_COUNT - 1) + 1);
+  for (const auto& [expansion, mode] : options) {
     uint32_t mask = BASE_ONLY;
     std::string game_string = "carcassonne";
+    const bool on = mode == "on";
     if (expansion != EXP_BASE) {
       mask |= expansionBit(static_cast<Expansion>(expansion));
       game_string = absl::StrCat("carcassonne(", EXPANSION_NAMES[expansion],
-                                 expansion == EXP_RIVER ? "=on)" : "=tiles)");
+                                 "=", mode, ")");
     }
     std::shared_ptr<const Game> game = LoadGame(game_string);
     SPIEL_CHECK_EQ(dynamic_cast<const CarcassonneGame&>(*game).Expansions(),
                    mask);
+    SPIEL_CHECK_EQ(dynamic_cast<const CarcassonneGame&>(*game).Rules(),
+                   on ? mask & ~BASE_ONLY : 0u);
     SPIEL_CHECK_EQ(game->ObservationTensorShape(),
                    base->ObservationTensorShape());
     SPIEL_CHECK_EQ(game->NumDistinctActions(), base->NumDistinctActions());
@@ -1165,18 +1657,27 @@ void ExpansionOptionsTest() {
     const std::vector<float> obs = state->ObservationTensor(0);
     SPIEL_CHECK_TRUE(Near(GlobalValue(obs, kGlobalRemainingTiles),
                           (deckSizeOf(mask) - 1.0f) / deckSizeOf(mask)));
-    // Each expansion's mode: off (0, 0), tiles (1, 0) or on (1, 1); the river
-    // only comes on.
+    // Each expansion's mode: off (0, 0), tiles (1, 0) or on (1, 1).
     for (int other = 1; other < EXPANSION_COUNT; ++other) {
       const int cell = kGlobalExpansionModes + 2 * (other - 1);
       const bool dealt = other == expansion;
       SPIEL_CHECK_EQ(GlobalValue(obs, cell), dealt ? 1.0f : 0.0f);
-      SPIEL_CHECK_EQ(GlobalValue(obs, cell + 1),
-                     dealt && other == EXP_RIVER ? 1.0f : 0.0f);
+      SPIEL_CHECK_EQ(GlobalValue(obs, cell + 1), dealt && on ? 1.0f : 0.0f);
     }
     // The spring is on the board.
     SPIEL_CHECK_TRUE(Near(GlobalValue(obs, kGlobalRiverTiles),
                           expansion == EXP_RIVER ? 1.0f / 12 : 0.0f));
+    // Inns & Cathedrals "on" gives each player a big meeple.
+    const bool big = expansion == EXP_INNS_CATHEDRALS && on;
+    SPIEL_CHECK_EQ(core.big_meeple_rules, big);
+    for (Player player = 0; player < kNumPlayers; ++player) {
+      SPIEL_CHECK_EQ(core.holding_big_meeples[player], big ? 1 : 0);
+    }
+    SPIEL_CHECK_EQ(GlobalValue(obs, kGlobalMyBigMeeple), big ? 1.0f : 0.0f);
+    SPIEL_CHECK_EQ(GlobalValue(obs, kGlobalOpponentBigMeeple),
+                   big ? 1.0f : 0.0f);
+    SPIEL_CHECK_EQ(GlobalValue(obs, kGlobalMyBigFarmer), 0.0f);
+    SPIEL_CHECK_EQ(GlobalValue(obs, kGlobalOpponentBigFarmer), 0.0f);
   }
 }
 
@@ -1403,8 +1904,10 @@ void RiverRulesTest() {
             const bool dealt =
                 (core.expansions & expansionBit(static_cast<Expansion>(expansion))) != 0;
             SPIEL_CHECK_EQ(GlobalValue(obs, cell), dealt ? 1.0f : 0.0f);
-            SPIEL_CHECK_EQ(GlobalValue(obs, cell + 1),
-                           expansion == EXP_RIVER ? 1.0f : 0.0f);
+            // Both games deal the river and Inns & Cathedrals, if at all, "on".
+            const bool ruled = dealt && (expansion == EXP_RIVER ||
+                                         expansion == EXP_INNS_CATHEDRALS);
+            SPIEL_CHECK_EQ(GlobalValue(obs, cell + 1), ruled ? 1.0f : 0.0f);
           }
           const int in_side = (core.river_heading + 2) % 4;
           for (Action legal_action : legal) {
@@ -1546,9 +2049,11 @@ void ObservationDenominatorTest() {
   }
   SPIEL_CHECK_EQ(ObservationPlaneDenominator(kGlobalFeaturePlane), 0.0f);
 
-  std::shared_ptr<const Game> game = LoadGame("carcassonne");
   std::mt19937 rng(20261005);
-  for (int g = 0; g < 10; ++g) {
+  for (int g = 0; g < 20; ++g) {
+    // Half of them with the big meeple, which counts 2 in the meeple planes.
+    std::shared_ptr<const Game> game =
+        LoadGame(g % 2 == 0 ? "carcassonne" : kInnsCathedralsGame);
     std::unique_ptr<State> state = game->NewInitialState();
     while (!state->IsTerminal()) {
       if (state->IsChanceNode()) {
@@ -1584,11 +2089,15 @@ void BasicCarcassonneTests() {
   testing::LoadGameTest("carcassonne(max_turns=10)");
   testing::LoadGameTest(kAllExpansionsGame);
   testing::LoadGameTest(kRiverGame);
+  testing::LoadGameTest(kInnsCathedralsGame);
+  testing::LoadGameTest("carcassonne(inns_cathedrals=tiles)");
   testing::ChanceOutcomesTest(*LoadGame("carcassonne"));
   testing::ChanceOutcomesTest(*LoadGame(kAllExpansionsGame));
   testing::ChanceOutcomesTest(*LoadGame(kRiverGame));
+  testing::ChanceOutcomesTest(*LoadGame(kInnsCathedralsGame));
   testing::RandomSimTest(*LoadGame("carcassonne"), 50);
   testing::RandomSimTest(*LoadGame(kRiverGame), 20);
+  testing::RandomSimTest(*LoadGame(kInnsCathedralsGame), 20);
   ObservationTensorSmokeTest();
   RelativePerspectiveTest();
   PendingScoreTest();
@@ -1602,6 +2111,8 @@ void BasicCarcassonneTests() {
   ExpansionGamesTest();
   FieldScoringTest();
   InnerFieldTest();
+  BigMeepleTest();
+  InnCathedralTest();
   ReturnsMatchScoresTest();
   ShortGameMaxTurnsTest();
   LastUnplaceableTileTest();

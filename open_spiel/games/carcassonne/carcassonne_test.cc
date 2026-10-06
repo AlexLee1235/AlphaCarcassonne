@@ -166,7 +166,7 @@ void ObservationTensorSmokeTest() {
   const std::vector<int> shape = game->ObservationTensorShape();
 
   SPIEL_CHECK_EQ(shape.size(), 3);
-  SPIEL_CHECK_EQ(shape[0], 139);
+  SPIEL_CHECK_EQ(shape[0], 151);
   SPIEL_CHECK_EQ(shape[0], kObservationPlanes);
   SPIEL_CHECK_EQ(shape[1], BOARD_SIZE);
   SPIEL_CHECK_EQ(shape[2], BOARD_SIZE);
@@ -235,7 +235,7 @@ void ObservationTensorSmokeTest() {
   }
   CheckZeroPlanes(initial_obs, kInnerFieldMyFarmersPlane,
                   kInnerFieldOpenCitiesPlane + 1 - kInnerFieldMyFarmersPlane);
-  // No big meeple, inn, cathedral, builder or pig in the base game.
+  // No big meeple, inn, cathedral, builder, pig or goods in the base game.
   CheckZeroPlanes(initial_obs, kFeatureMyBigMeeplePlane,
                   kSpatialPlanes - kFeatureMyBigMeeplePlane);
   CheckRemainingByType(initial_obs, initial_state->UnderlyingState());
@@ -249,7 +249,10 @@ void ObservationTensorSmokeTest() {
                 kGlobalOpponentBigMeeple, kGlobalMyBigFarmer,
                 kGlobalOpponentBigFarmer, kGlobalMyBuilder,
                 kGlobalOpponentBuilder, kGlobalBuilderExtraTile,
-                kGlobalBuilderSecondTile, kGlobalMyPig, kGlobalOpponentPig}) {
+                kGlobalBuilderSecondTile, kGlobalMyPig, kGlobalOpponentPig,
+                kGlobalMyGoods, kGlobalMyGoods + 1, kGlobalMyGoods + 2,
+                kGlobalOpponentGoods, kGlobalOpponentGoods + 1,
+                kGlobalOpponentGoods + 2}) {
     SPIEL_CHECK_EQ(GlobalValue(initial_obs, i), 0.0f);
   }
   for (int cell = 0; cell < kGlobalExpansionCells; ++cell) {
@@ -1857,6 +1860,202 @@ void PigTest() {
   SPIEL_CHECK_GT(pigs_placed, 0);
 }
 
+// Every city side shows the goods its city still holds, the same to both
+// players, and the global vector the tokens; a completed city holds none. The
+// tokens handed out and the goods still in open cities never exceed the
+// table's, and the pending scores agree with scoring a copy.
+void CheckGoods(const State& state) {
+  const ::Carcassonne& core =
+      dynamic_cast<const CarcassonneState&>(state).UnderlyingState();
+  const std::vector<float> obs0 = state.ObservationTensor(0);
+  const std::vector<float> obs1 = state.ObservationTensor(1);
+  float totals[GOODS_KINDS];
+  for (int kind = 0; kind < GOODS_KINDS; ++kind) {
+    totals[kind] = static_cast<float>(goodsInTable(GOODS_MARKS_BY_KIND[kind]));
+  }
+  int open_goods[GOODS_KINDS] = {};
+  std::vector<const Feature*> seen;
+  // SPIEL_CHECK_EQ's own locals are called x and y.
+  for (int ty = 0; ty < BOARD_SIZE; ++ty) {
+    for (int tx = 0; tx < BOARD_SIZE; ++tx) {
+      const Placement placement = core.getPlacement(tx, ty);
+      if (placement.id == 0) continue;
+      const Tile& tile = full_deck[placement.id][placement.rotation];
+      for (int side = 0; side < 4; ++side) {
+        if (!isFeatureEdge(tile.edge[side])) {
+          for (int kind = 0; kind < GOODS_KINDS; ++kind) {
+            SPIEL_CHECK_EQ(
+                PlaneValue(obs0, kFeatureGoodsPlane + 4 * kind + side, tx, ty),
+                0.0f);
+          }
+          continue;
+        }
+        const Feature& feature = core.featureAt(placement.id, side);
+        for (int kind = 0; kind < GOODS_KINDS; ++kind) {
+          const int goods = feature.goods[kind];
+          if (!core.goods_rules || feature.type != CITY || feature.opens == 0) {
+            SPIEL_CHECK_EQ(goods, 0);
+          }
+          const float expected = goods / totals[kind];
+          const int plane = kFeatureGoodsPlane + 4 * kind + side;
+          SPIEL_CHECK_TRUE(Near(PlaneValue(obs0, plane, tx, ty), expected));
+          SPIEL_CHECK_TRUE(Near(PlaneValue(obs1, plane, tx, ty), expected));
+        }
+        if (std::find(seen.begin(), seen.end(), &feature) != seen.end()) continue;
+        seen.push_back(&feature);
+        for (int kind = 0; kind < GOODS_KINDS; ++kind) {
+          open_goods[kind] += feature.goods[kind];
+        }
+      }
+    }
+  }
+  for (int kind = 0; kind < GOODS_KINDS; ++kind) {
+    const int tokens0 = core.goods_tokens[0][kind];
+    const int tokens1 = core.goods_tokens[1][kind];
+    if (!core.goods_rules) {
+      SPIEL_CHECK_EQ(tokens0 + tokens1, 0);
+    }
+    SPIEL_CHECK_LE(tokens0 + tokens1 + open_goods[kind],
+                   goodsInTable(GOODS_MARKS_BY_KIND[kind]));
+    for (Player player = 0; player < kNumPlayers; ++player) {
+      const std::vector<float>& obs = player == 0 ? obs0 : obs1;
+      SPIEL_CHECK_TRUE(Near(GlobalValue(obs, kGlobalMyGoods + kind),
+                            core.goods_tokens[player][kind] / totals[kind]));
+      SPIEL_CHECK_TRUE(Near(GlobalValue(obs, kGlobalOpponentGoods + kind),
+                            core.goods_tokens[1 - player][kind] / totals[kind]));
+    }
+  }
+  int fast[2];
+  int slow[2];
+  core.getPendingScore(fast);
+  core.getPendingScoreByResolving(slow);
+  SPIEL_CHECK_EQ(fast[0], slow[0]);
+  SPIEL_CHECK_EQ(fast[1], slow[1]);
+}
+
+// Traders & Builders' goods: whoever places the tile that completes a city
+// takes a token for each goods symbol in it, knights or none; at the end the
+// most tokens of each kind score 10, ties both, nobody without a token.
+void GoodsTest() {
+  const uint32_t traders = BASE_ONLY | expansionBit(EXP_TRADERS_BUILDERS);
+
+  // The end-game points, which the pending scores count: wine tied, no
+  // wheat, cloth P0's.
+  {
+    ::Carcassonne game(/*max_turns=*/0, START_TILE_ROTATION, traders);
+    SPIEL_CHECK_TRUE(game.goods_rules);
+    const int tokens[2][GOODS_KINDS] = {{1, 0, 2}, {1, 0, 0}};
+    for (int player = 0; player < 2; ++player) {
+      for (int kind = 0; kind < GOODS_KINDS; ++kind) {
+        game.goods_tokens[player][kind] = tokens[player][kind];
+      }
+    }
+    int fast[2];
+    int slow[2];
+    game.getPendingScore(fast);
+    game.getPendingScoreByResolving(slow);
+    SPIEL_CHECK_EQ(fast[0], 2 * GOODS_POINTS);
+    SPIEL_CHECK_EQ(fast[1], GOODS_POINTS);
+    SPIEL_CHECK_EQ(slow[0], fast[0]);
+    SPIEL_CHECK_EQ(slow[1], fast[1]);
+  }
+
+  // A two-turn game. The start tile (type 20) at the centre has a city north.
+  const int c = BOARD_SIZE / 2;
+  std::shared_ptr<const Game> traders_game = LoadGame(kTradersBuildersGame);
+  for (bool ruled : {true, false}) {
+    ::Carcassonne game(/*max_turns=*/2, START_TILE_ROTATION, traders,
+                       ruled ? RULED_EXPANSIONS : 0u);
+    SPIEL_CHECK_EQ(game.goods_rules, ruled);
+    // P0: type 60 (a corner city with wine) turned twice, its city south and
+    // east, north of the start tile; the start tile's city now holds wine.
+    PlayTurn(&game, 60, c, c - 1, 2, MEEPLE_POS_SKIP);
+    const int start_id = game.getPlacement(c, c).id;
+    SPIEL_CHECK_EQ(static_cast<int>(game.featureAt(start_id, 0).goods[0]),
+                   ruled ? 1 : 0);
+    {
+      CarcassonneState view(traders_game, game);
+      const State& state = view;
+      const std::vector<float> obs = state.ObservationTensor(0);
+      const float wine = ruled ? 1.0f / 9 : 0.0f;
+      SPIEL_CHECK_TRUE(Near(PlaneValue(obs, kFeatureGoodsPlane + 0, c, c), wine));
+      for (int side : {1, 2}) {
+        SPIEL_CHECK_TRUE(
+            Near(PlaneValue(obs, kFeatureGoodsPlane + side, c, c - 1), wine));
+      }
+      // No wheat, no cloth.
+      SPIEL_CHECK_EQ(PlaneValue(obs, kFeatureGoodsPlane + 4, c, c), 0.0f);
+      SPIEL_CHECK_EQ(PlaneValue(obs, kFeatureGoodsPlane + 8, c, c), 0.0f);
+      CheckGoods(state);
+    }
+    // P1 completes the city with a CGGG east of it. Nobody has a knight
+    // there, yet P1 takes the wine as the tile goes down.
+    PlaceTile(&game, 16, c + 1, c - 1, 3);
+    SPIEL_CHECK_EQ(game.goods_tokens[1][0], ruled ? 1 : 0);
+    SPIEL_CHECK_EQ(game.goods_tokens[0][0], 0);
+    SPIEL_CHECK_EQ(static_cast<int>(game.featureAt(start_id, 0).goods[0]), 0);
+    int pending[2];
+    game.getPendingScore(pending);
+    SPIEL_CHECK_EQ(pending[0], 0);
+    SPIEL_CHECK_EQ(pending[1], ruled ? GOODS_POINTS : 0);
+    {
+      CarcassonneState view(traders_game, game);
+      const State& state = view;
+      const std::vector<float> obs1 = state.ObservationTensor(1);
+      SPIEL_CHECK_TRUE(Near(GlobalValue(obs1, kGlobalMyGoods + 0),
+                            ruled ? 1.0f / 9 : 0.0f));
+      SPIEL_CHECK_TRUE(
+          (state.ToString().find("goods=[0, 0, 0 / 1, 0, 0]") != std::string::npos) ==
+          ruled);
+      CheckGoods(state);
+    }
+    game.placeMeeple(MEEPLE_POS_SKIP);
+    SPIEL_CHECK_EQ(game.current_phase, PHASE_TERMINAL);
+    SPIEL_CHECK_EQ(game.player_scores[0], 0);
+    SPIEL_CHECK_EQ(game.player_scores[1], ruled ? GOODS_POINTS : 0);
+  }
+
+  // Random games: every state checked, tokens only ever added. Dealt as
+  // "tiles" there are no goods.
+  std::mt19937 rng(20261011);
+  int tokens_handed_out = 0;
+  for (const char* game_string : {kTradersBuildersGame, kAllExpansionsGame,
+                                  "carcassonne(traders_builders=tiles)"}) {
+    std::shared_ptr<const Game> random_game = LoadGame(game_string);
+    for (int sim = 0; sim < 20; ++sim) {
+      std::unique_ptr<State> state = random_game->NewInitialState();
+      const ::Carcassonne& core =
+          dynamic_cast<const CarcassonneState&>(*state).UnderlyingState();
+      while (true) {
+        if (!state->IsChanceNode()) {
+          CheckGoods(*state);
+        }
+        if (state->IsTerminal()) break;
+        int before[2][GOODS_KINDS];
+        for (int player = 0; player < 2; ++player) {
+          for (int kind = 0; kind < GOODS_KINDS; ++kind) {
+            before[player][kind] = core.goods_tokens[player][kind];
+          }
+        }
+        const std::vector<Action> legal = state->LegalActions();
+        state->ApplyAction(
+            state->IsChanceNode()
+                ? SampleAction(state->ChanceOutcomes(), rng).first
+                : legal[std::uniform_int_distribution<int>(0, legal.size() - 1)(rng)]);
+        for (int player = 0; player < 2; ++player) {
+          for (int kind = 0; kind < GOODS_KINDS; ++kind) {
+            SPIEL_CHECK_GE(core.goods_tokens[player][kind], before[player][kind]);
+            tokens_handed_out += core.goods_tokens[player][kind] - before[player][kind];
+          }
+        }
+      }
+    }
+  }
+  std::cout << "GoodsTest: " << tokens_handed_out << " goods tokens handed out"
+            << std::endl;
+  SPIEL_CHECK_GT(tokens_handed_out, 0);
+}
+
 void ReturnsMatchScoresTest() {
   absl::BitGen gen;
   std::shared_ptr<const Game> game = LoadGame("carcassonne");
@@ -2184,6 +2383,12 @@ void ExpansionOptionsTest() {
     }
     SPIEL_CHECK_EQ(GlobalValue(obs, kGlobalMyPig), builder ? 1.0f : 0.0f);
     SPIEL_CHECK_EQ(GlobalValue(obs, kGlobalOpponentPig), builder ? 1.0f : 0.0f);
+    // ... and plays the goods; nobody holds a token yet.
+    SPIEL_CHECK_EQ(core.goods_rules, builder);
+    for (int kind = 0; kind < GOODS_KINDS; ++kind) {
+      SPIEL_CHECK_EQ(GlobalValue(obs, kGlobalMyGoods + kind), 0.0f);
+      SPIEL_CHECK_EQ(GlobalValue(obs, kGlobalOpponentGoods + kind), 0.0f);
+    }
   }
 }
 
@@ -2626,6 +2831,7 @@ void BasicCarcassonneTests() {
   InnCathedralTest();
   BuilderTest();
   PigTest();
+  GoodsTest();
   ReturnsMatchScoresTest();
   ShortGameMaxTurnsTest();
   LastUnplaceableTileTest();

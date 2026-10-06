@@ -1,6 +1,7 @@
 #include "game.hpp"
 #include "tile.hpp"
 
+#include <algorithm>
 #include <array>
 #include <bitset>
 #include <cstdlib>
@@ -88,10 +89,22 @@ bool Carcassonne::hasValidMove(int tile_id) const {
     return false;
 }
 
+void Carcassonne::accumulateGoodsScore(int *scores) const {
+    for (int kind = 0; kind < GOODS_KINDS; ++kind) {
+        const int most = std::max(goods_tokens[0][kind], goods_tokens[1][kind]);
+        for (int player = 0; player < 2; ++player) {
+            if (most > 0 && goods_tokens[player][kind] == most) {
+                scores[player] += GOODS_POINTS;
+            }
+        }
+    }
+}
+
 void Carcassonne::resolveEndGameScore() {
     features.resolveEndGameScore(player_scores);
     monasteries.resolveEndGameScore(player_scores);
     fields.accumulateScore(player_scores, features);
+    accumulateGoodsScore(player_scores);
 }
 
 void Carcassonne::resolveNoMoreDraws() {
@@ -131,6 +144,8 @@ Carcassonne::Carcassonne(int max_turns, int start_rotation, uint32_t expansions,
     features.inns_cathedrals = big_meeple_rules;
     builder_rules = (this->rules & expansionBit(EXP_TRADERS_BUILDERS)) != 0;
     pig_rules = builder_rules;
+    goods_rules = builder_rules;
+    features.goods_rules = goods_rules;
     if (builder_rules) {
         holding_builders[0] = holding_builders[1] = 1;
         holding_pigs[0] = holding_pigs[1] = 1;
@@ -197,6 +212,10 @@ void Carcassonne::placeTile(int x, int y, int rot) {
     // feature, which sends the builder home, the extra tile stands.
     builder_extra_tile = builder_rules && !builder_second_tile &&
                          features.hasBuilderOf(tile_id, full_deck[tile_id][rot], currentPlayer);
+    // The cities this tile completes hand their goods to whoever placed it.
+    if (goods_rules) {
+        features.collectGoods(tile_id, full_deck[tile_id][rot], goods_tokens[currentPlayer]);
+    }
 }
 
 MeepleMoves Carcassonne::getLegalMeepleMoves() const {
@@ -281,6 +300,7 @@ void Carcassonne::getPendingScore(int pending[2]) const {
     features.accumulatePendingScore(pending);
     monasteries.accumulatePendingScore(pending);
     fields.accumulateScore(pending, features);
+    accumulateGoodsScore(pending);
 }
 
 void Carcassonne::getPendingFieldScore(int pending[2]) const {

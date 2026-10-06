@@ -44,7 +44,7 @@ constexpr uint32_t ALL_EXPANSIONS = (1u << EXPANSION_COUNT) - 1;
 // The expansions whose rules the engine plays: these can be dealt "on" (their
 // tiles and their rules) as well as "tiles" (their tiles only). Inns &
 // Cathedrals: the big meeple, inns and cathedrals. Traders & Builders: the
-// builder and the pig so far (no goods).
+// builder, the pig and the goods.
 constexpr uint32_t RULED_EXPANSIONS =
     expansionBit(EXP_INNS_CATHEDRALS) | expansionBit(EXP_TRADERS_BUILDERS) | expansionBit(EXP_RIVER);
 // Those whose tiles make no sense without their rules: dealt, they are "on".
@@ -73,8 +73,8 @@ struct FieldLayout {
 };
 
 // Marks on one city or road of a tile. Written on any side of that city or
-// road (Tile::featureMarks() joins its sides); the shield and the inn have
-// rules so far.
+// road (Tile::featureMarks() joins its sides); the shield, the inn and the
+// goods have rules so far.
 constexpr uint8_t MARK_SHIELD = 1 << 0;    // city: one more point, two once closed
 constexpr uint8_t MARK_PRINCESS = 1 << 1;  // city (The Princess & the Dragon)
 constexpr uint8_t MARK_WINE = 1 << 2;      // city goods (Traders & Builders)
@@ -82,6 +82,12 @@ constexpr uint8_t MARK_CLOTH = 1 << 3;
 constexpr uint8_t MARK_WHEAT = 1 << 4;
 constexpr uint8_t MARK_INN = 1 << 5;       // road (Inns & Cathedrals): 2 a tile once closed, 0 left open
 constexpr uint8_t GOODS_MARKS = MARK_WINE | MARK_CLOTH | MARK_WHEAT;
+// Traders & Builders: whoever places the tile that completes a city takes a
+// token for each goods symbol in it; at the end the most tokens of a kind (at
+// least one, ties included) score GOODS_POINTS.
+constexpr int GOODS_KINDS = 3;
+constexpr uint8_t GOODS_MARKS_BY_KIND[GOODS_KINDS] = {MARK_WINE, MARK_WHEAT, MARK_CLOTH};
+constexpr int GOODS_POINTS = 10;
 constexpr uint8_t CITY_MARKS = MARK_SHIELD | MARK_PRINCESS | GOODS_MARKS;
 constexpr uint8_t ROAD_MARKS = MARK_INN;
 
@@ -596,6 +602,28 @@ constexpr bool cathedralRowIsOneCity() {
     return true;
 }
 static_assert(cathedralRowIsOneCity(), "CATHEDRAL_TYPE must be the Inns & Cathedrals tile that is one city");
+
+// The goods symbols of kind `mark` in the whole table: one per city piece that
+// carries it (on the piece's lowest side, as FeatureModule counts them), times
+// the copies of its tile.
+constexpr int goodsInTable(uint8_t mark) {
+    int total = 0;
+    for (const TileBlueprint &bp : all_tiles) {
+        for (int side = 0; side < 4; ++side) {
+            bool lowest_side = true;
+            for (int lower = 0; lower < side; ++lower) {
+                lowest_side = lowest_side && bp.tile.link[lower] != bp.tile.link[side];
+            }
+            if (bp.tile.edge[side] == CITY && lowest_side && (bp.tile.featureMarks(side) & mark)) {
+                total += bp.count;
+            }
+        }
+    }
+    return total;
+}
+// The tokens in the Traders & Builders box: one per symbol.
+static_assert(goodsInTable(MARK_WINE) == 9 && goodsInTable(MARK_WHEAT) == 6 && goodsInTable(MARK_CLOTH) == 5,
+              "the table's goods must match the box's tokens");
 
 // A set of physical tiles, indexed by physical id.
 using TileMask = std::bitset<PHYSICAL_TILE_COUNT + 1>;

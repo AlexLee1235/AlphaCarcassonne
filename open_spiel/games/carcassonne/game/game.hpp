@@ -111,6 +111,9 @@ class Feature {
     // cathedrals in the city, one per piece. Left at 0 without the rules.
     uint8_t inns = 0;
     uint8_t cathedrals = 0;
+    // With the Traders & Builders rules: the goods symbols in the city, by
+    // kind (GOODS_MARKS_BY_KIND), until its completion hands them out.
+    uint8_t goods[GOODS_KINDS] = {};
 
     Feature() = default;
     Feature(EdgeType type, int id);
@@ -149,8 +152,10 @@ class FeatureModule {
   public:
     DisjointSet<Feature, std::plus<Feature>, EDGE_SLOT_COUNT> featureMap;
     // Whether placed tiles bring their inns and cathedrals (the Inns &
-    // Cathedrals rules). Set before the first tile.
+    // Cathedrals rules), and their goods (Traders & Builders). Set before the
+    // first tile.
     bool inns_cathedrals = false;
+    bool goods_rules = false;
     FeatureModule();
     int edgeIndex(int tile_id, int side) const;
     void resolveEndGameScore(int *player_scores);
@@ -166,6 +171,9 @@ class FeatureModule {
     // Whether a city or road of tile `tile_id` belongs to a feature that holds
     // `player`'s builder.
     bool hasBuilderOf(int tile_id, const Tile &tile, int player) const;
+    // Hands the goods of every city of tile `tile_id` that is complete to
+    // `tokens` (by kind) and clears them, so each city gives them once.
+    void collectGoods(int tile_id, const Tile &tile, int *tokens);
     // Scores the features of the tile at (x, y) that are complete and gives
     // back their meeples and builders, each to its own supply.
     void settleAfterPlaceMeeple(int x, int y, const BoardModule &board, int *player_scores, int *holding_meeples,
@@ -324,6 +332,9 @@ class Carcassonne {
     void advanceRiver(int x, int y, const Tile &tile);
     bool isLegalPlacement(int tile_id, int x, int y, int rot) const;
     bool hasValidMove(int tile_id) const;
+    // The goods' end-game points as of now: GOODS_POINTS to whoever holds the
+    // most tokens of a kind, ties included, if anyone holds one.
+    void accumulateGoodsScore(int *scores) const;
     void resolveEndGameScore();
     void resolveNoMoreDraws();
 
@@ -371,6 +382,11 @@ class Carcassonne {
     // field, a majority holder scores 4 a completed city instead of 3. It
     // stays till the end, as farmers do.
     bool pig_rules = false;
+    // Traders & Builders: whoever places the tile that completes a city takes
+    // its goods as tokens (FeatureModule::collectGoods), knights or none; at
+    // the end each kind's most tokens score GOODS_POINTS.
+    bool goods_rules = false;
+    int goods_tokens[2][GOODS_KINDS] = {};
 
     // River rules (on whenever the river tiles are dealt). The river is laid
     // first, from the spring at the centre to the lake, each tile continuing it,
@@ -423,7 +439,8 @@ class Carcassonne {
 
     // Points each player still adds if the game ended now: features and
     // monasteries that hold meeples, including features the last tile closed,
-    // which are settled when the current turn ends. Zero once terminal.
+    // which are settled when the current turn ends, fields and the goods'
+    // end-game points. Zero once terminal.
     void getPendingScore(int pending[2]) const;
     // The same, by settling and end-game scoring a copy. Slow; for tests.
     void getPendingScoreByResolving(int pending[2]) const;

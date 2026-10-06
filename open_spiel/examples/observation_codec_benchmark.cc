@@ -91,6 +91,7 @@ const std::vector<PlaneGroup>& PlaneGroups() {
       {"feature inn or cathedral", kFeatureInnCathedralPlane, 4},
       {"feature builder (mine, theirs)", kFeatureMyBuilderPlane, 8},
       {"field pig (mine, theirs)", kFieldMyPigPlane, 2 * HALF_EDGE_COUNT},
+      {"feature goods (wine, wheat, cloth)", kFeatureGoodsPlane, 4 * GOODS_KINDS},
   };
   return groups;
 }

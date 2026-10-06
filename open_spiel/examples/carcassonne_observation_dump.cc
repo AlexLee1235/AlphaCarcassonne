@@ -146,6 +146,11 @@ std::vector<std::string> PlaneNames() {
     names[kFeatureInnCathedralPlane + side] = "feature_inn_or_cathedral" + suffix;
     names[kFeatureMyBuilderPlane + side] = "feature_my_builder" + suffix;
     names[kFeatureOpponentBuilderPlane + side] = "feature_opponent_builder" + suffix;
+    const char* goods[GOODS_KINDS] = {"wine", "wheat", "cloth"};
+    for (int kind = 0; kind < GOODS_KINDS; ++kind) {
+      names[kFeatureGoodsPlane + 4 * kind + side] =
+          std::string("feature_") + goods[kind] + suffix;
+    }
   }
   names[kGlobalFeaturePlane] = "global_vector";
   return names;
@@ -217,6 +222,11 @@ std::vector<std::string> GlobalFeatureNames() {
   names[kGlobalBuilderSecondTile] = "builder_second_tile";
   names[kGlobalMyPig] = "my_holding_pig";
   names[kGlobalOpponentPig] = "opponent_holding_pig";
+  const char* goods[GOODS_KINDS] = {"wine", "wheat", "cloth"};
+  for (int kind = 0; kind < GOODS_KINDS; ++kind) {
+    names[kGlobalMyGoods + kind] = std::string("my_") + goods[kind];
+    names[kGlobalOpponentGoods + kind] = std::string("opponent_") + goods[kind];
+  }
   return names;
 }
 

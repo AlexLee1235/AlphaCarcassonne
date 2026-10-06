@@ -102,17 +102,22 @@ inline constexpr int kFeatureOpponentBuilderPlane = kFeatureMyBuilderPlane + 4;
 // inner field.
 inline constexpr int kFieldMyPigPlane = kFeatureOpponentBuilderPlane + 4;
 inline constexpr int kFieldOpponentPigPlane = kFieldMyPigPlane + HALF_EDGE_COUNT;
-inline constexpr int kSpatialPlanes = kFieldOpponentPigPlane + HALF_EDGE_COUNT;
+// Goods (Traders & Builders) in the city on that side, not yet handed out:
+// wine, wheat, cloth (GOODS_MARKS_BY_KIND), a block of four sides each, / the
+// goods of that kind in the table (9, 6, 5). Whoever places the tile that
+// completes the city takes them.
+inline constexpr int kFeatureGoodsPlane = kFieldOpponentPigPlane + HALF_EDGE_COUNT;
+inline constexpr int kSpatialPlanes = kFeatureGoodsPlane + 4 * GOODS_KINDS;
 inline constexpr int kGlobalFeaturePlane = kSpatialPlanes;
 inline constexpr int kObservationPlanes = kGlobalFeaturePlane + 1;
 static_assert(kLastPlacedPlane == 33);
-static_assert(kSpatialPlanes == 138);
+static_assert(kSpatialPlanes == 150);
 
 // Offsets in the global vector, all from the observing player's side.
 inline constexpr int kGlobalMyScore = 0;           // clip(/100)
 inline constexpr int kGlobalOpponentScore = 1;
 inline constexpr int kGlobalScoreDiff = 2;         // clip(diff / 70)
-inline constexpr int kGlobalMyPending = 3;         // clip(/70), see getPendingScore()
+inline constexpr int kGlobalMyPending = 3;         // clip(/70), see getPendingScore(); goods' points included
 inline constexpr int kGlobalOpponentPending = 4;
 inline constexpr int kGlobalStaticDiff = 5;        // banked + pending diff: clip(/3), clip(/10), clip(/60)
 inline constexpr int kStaticDiffScales = 3;
@@ -166,8 +171,12 @@ inline constexpr int kGlobalBuilderSecondTile = kGlobalBuilderExtraTile + 1;
 // show its field.
 inline constexpr int kGlobalMyPig = kGlobalBuilderSecondTile + 1;
 inline constexpr int kGlobalOpponentPig = kGlobalMyPig + 1;
-inline constexpr int kGlobalFeatures = kGlobalOpponentPig + 1;
-static_assert(kGlobalFeatures == 78 + 2 * CANONICAL_TILE_TYPE_COUNT);
+// Goods tokens held, by kind (wine, wheat, cloth), / the goods of that kind in
+// the table; 0 without their rules.
+inline constexpr int kGlobalMyGoods = kGlobalOpponentPig + 1;
+inline constexpr int kGlobalOpponentGoods = kGlobalMyGoods + GOODS_KINDS;
+inline constexpr int kGlobalFeatures = kGlobalOpponentGoods + GOODS_KINDS;
+static_assert(kGlobalFeatures == 84 + 2 * CANONICAL_TILE_TYPE_COUNT);
 static_assert(kGlobalFeatures <= BOARD_SIZE * BOARD_SIZE);
 inline constexpr int kObservationTensorSize = kObservationPlanes * BOARD_SIZE * BOARD_SIZE;
 

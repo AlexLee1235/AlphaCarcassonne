@@ -121,6 +121,14 @@ void FeatureModule::placeTileOnBoard(int tile_id, int x, int y, int rot, const T
                 feature.cathedrals = 1;
             }
         }
+        // Goods too: each city piece carries at most one symbol.
+        if (goods_rules && lowest_side && tile.edge[i] == CITY) {
+            for (int kind = 0; kind < GOODS_KINDS; ++kind) {
+                if (tile.featureMarks(i) & GOODS_MARKS_BY_KIND[kind]) {
+                    feature.goods[kind] = 1;
+                }
+            }
+        }
         featureMap.getSetData(edgeIndex(tile_id, i)) = feature;
     }
 
@@ -220,6 +228,22 @@ bool FeatureModule::hasBuilderOf(int tile_id, const Tile &tile, int player) cons
         }
     }
     return false;
+}
+
+void FeatureModule::collectGoods(int tile_id, const Tile &tile, int *tokens) {
+    for (int i = 0; i < 4; ++i) {
+        if (tile.edge[i] != CITY) {
+            continue;
+        }
+        Feature &feature = featureMap.getSetData(edgeIndex(tile_id, i));
+        if (feature.opens != 0) {
+            continue;
+        }
+        for (int kind = 0; kind < GOODS_KINDS; ++kind) {
+            tokens[kind] += feature.goods[kind];
+            feature.goods[kind] = 0;
+        }
+    }
 }
 
 void FeatureModule::settleAfterPlaceMeeple(int x, int y, const BoardModule &board, int *player_scores,

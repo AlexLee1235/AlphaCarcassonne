@@ -42,6 +42,9 @@ Feature Feature::operator+(const Feature &other) const {
     res.shields = shields + other.shields;
     res.inns = inns + other.inns;
     res.cathedrals = cathedrals + other.cathedrals;
+    for (int kind = 0; kind < GOODS_KINDS; ++kind) {
+        res.goods[kind] = goods[kind] + other.goods[kind];
+    }
     return res;
 }
 

@@ -12,7 +12,7 @@
 
 `tiles/` 裡的圖已經照這個順序編好號，填表時照著 type 順序一列一列往下填即可。
 
-目前除了河流、旅館與大教堂、建築師與小豬（§8）之外**只做牌的形狀**，擴充的規則一律不算：貨物、龍、公主、魔法門、火山都還沒有效果。
+目前除了河流、旅館與大教堂、商人與建築師（§8）之外**只做牌的形狀**，擴充的規則一律不算：龍、公主、魔法門、火山都還沒有效果。
 
 ---
 
@@ -261,9 +261,9 @@ carcassonne(inns_cathedrals=on,traders_builders=on,river=on,princess_dragon=tile
 - 每個參數是 `off`（預設）、`tiles`（只發牌、不算規則）或 `on`（發牌並套用規則，只有規則做好的擴充才有）。基本版的牌一定都在。
   - 河流：`off`／`on`，沒有只發牌的選項。
   - 旅館與大教堂：`off`／`tiles`／`on`。`on` = 大米寶＋旅館＋大教堂；`tiles` 的旅館、大教堂只是一般的路和城。
-  - 商人與建築師：`off`／`tiles`／`on`。`on` = 建築師＋小豬，貨物還沒做。
+  - 商人與建築師：`off`／`tiles`／`on`。`on` = 建築師＋小豬＋貨物。
   - 公主與龍：`off`／`tiles`。
-- **觀測和動作的維度不隨參數改變**：global vector 為牌表裡的每一種牌都留了位置（78 + 2 × 牌種數），沒發的牌種一律是 0。
+- **觀測和動作的維度不隨參數改變**：global vector 為牌表裡的每一種牌都留了位置（84 + 2 × 牌種數），沒發的牌種一律是 0。
   所以**牌表每加一種牌，維度就變一次**。等牌表定案再開始訓練；舊的 checkpoint 也不能載入，`carcassonne_bot_cli` 會直接報錯。
 - 河流規則（`river=on`）：河源取代起始牌放在中央，基本版的起始牌拿掉不用（牌組 72 + 12 − 1 = 83 張）；先抽完河流牌，湖一定最後，之後才抽一般牌。
   每張河流牌都要接在河的出口上，而且連續兩個彎不能往同一邊轉（中間隔著直流也算），所以河只會在兩個方向間交替、不會流回自己旁邊。
@@ -283,6 +283,9 @@ carcassonne(inns_cathedrals=on,traders_builders=on,river=on,princess_dragon=tile
   inner field 不可能有小豬（它只在放下的當回合出現，還沒有農夫）。小豬不算多數決，放下就留到終局。
   終局時，田的多數（含平手）玩家若有小豬在田上，每座完成的城算 4 分而不是 3 分。動作是另外 8 個（`place_pig(field=N)`）；
   計分寫在 `game/FieldModule.cpp` 的 `accumulateScore`。
+- 貨物（`traders_builders=on`）：城完成時，放下完成那張磚的玩家每個貨物符號拿 1 個 token（酒、麥、布；城裡有沒有他的騎士都一樣）。
+  終局時每種 token 最多的玩家得 10 分，平手都得，雙方都是 0 個就不給。token 在 `game/game.cpp` 的 `placeTile` 發，終局分在 `accumulateGoodsScore`。
+  牌表的貨物數（`goodsInTable`）在 `tile.hpp` 有 static_assert 對 9／6／5，改 T&B 的貨物標記要跟著改。
 - 盤面：牌變多，對局也變大。填完後用下面的指令量全開時的跨度，再決定 `BOARD_SIZE`（目前 21）要不要加大：
   ```bash
   cd tools && make build/diag_board31 && ./build/diag_board31 3000 all

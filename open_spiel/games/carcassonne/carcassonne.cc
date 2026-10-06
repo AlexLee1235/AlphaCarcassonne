@@ -22,6 +22,11 @@ namespace {
 constexpr float kMeepleNormalization = MEEPLES_PER_PLAYER;
 // River tiles on the board count against the 12 river tiles.
 constexpr float kRiverTileNormalization = tileCountIn(expansionBit(EXP_RIVER));
+// Goods, in a city or as tokens, count against the goods of their kind in the
+// table: 9 wine, 6 wheat, 5 cloth.
+constexpr std::array<float, GOODS_KINDS> kGoodsNormalization = {
+    static_cast<float>(goodsInTable(GOODS_MARKS_BY_KIND[0])), static_cast<float>(goodsInTable(GOODS_MARKS_BY_KIND[1])),
+    static_cast<float>(goodsInTable(GOODS_MARKS_BY_KIND[2]))};
 // The remaining tiles are counted against the deck this game deals, and the
 // completed turns against the tiles drawn after the start tile: completed_turns
 // counts the turns of both players, one per tile.
@@ -84,8 +89,8 @@ const GameType kGameType{/*short_name=*/"carcassonne",
                          // without its rules, or, for those whose rules are
                          // played (RULED_EXPANSIONS), "on": tiles and rules.
                          // inns_cathedrals "on" brings the big meeple, inns
-                         // and cathedrals; traders_builders "on" the builder
-                         // and the pig.
+                         // and cathedrals; traders_builders "on" the builder,
+                         // the pig and the goods.
                          // The river is "off" or "on".
                          /*parameter_specification=*/
                          {{"max_turns", GameParameter(0)},
@@ -237,7 +242,8 @@ int RotatePlane(int plane, int k) {
     for (int first : {kShieldPlane, kLegalPlacementPlane, kFeatureOpensPlane, kFeatureScorePlane, kFeatureMyMeeplesPlane,
                       kFeatureOpponentMeeplesPlane, kFeatureSignedScorePlane, kFeatureMyBigMeeplePlane,
                       kFeatureOpponentBigMeeplePlane, kFeatureInnCathedralPlane, kFeatureMyBuilderPlane,
-                      kFeatureOpponentBuilderPlane}) {
+                      kFeatureOpponentBuilderPlane, kFeatureGoodsPlane, kFeatureGoodsPlane + 4,
+                      kFeatureGoodsPlane + 8}) {
         if (plane >= first && plane < first + 4) {
             return first + (plane - first + k) % 4;
         }
@@ -393,6 +399,12 @@ std::string CarcassonneState::ToString() const {
         absl::StrAppend(&expansion_pieces, " pigs=[", game_state_.holding_pigs[0], ", ", game_state_.holding_pigs[1],
                         "]");
     }
+    if (game_state_.goods_rules) {
+        // Wine, wheat, cloth tokens of each player.
+        const int(*tokens)[GOODS_KINDS] = game_state_.goods_tokens;
+        absl::StrAppend(&expansion_pieces, " goods=[", tokens[0][0], ", ", tokens[0][1], ", ", tokens[0][2], " / ",
+                        tokens[1][0], ", ", tokens[1][1], ", ", tokens[1][2], "]");
+    }
     return absl::StrCat("phase=", PhaseToString(game_state_.current_phase), " current_player=", game_state_.currentPlayer,
                         " current_tile_type=", game_state_.currentTileType(), " remaining=", game_state_.getTotalRemaining(),
                         " scores=[", game_state_.player_scores[0], ", ", game_state_.player_scores[1], "] holding=[",
@@ -514,6 +526,10 @@ void CarcassonneState::ObservationTensor(Player player, absl::Span<float> values
                 if (feature.inns > 0 || feature.cathedrals > 0) {
                     SetPlaneValue(values, kFeatureInnCathedralPlane + side, x, y, 1.0f);
                 }
+                for (int kind = 0; kind < GOODS_KINDS; ++kind) {
+                    SetPlaneValue(values, kFeatureGoodsPlane + 4 * kind + side, x, y,
+                                  feature.goods[kind] / kGoodsNormalization[kind]);
+                }
                 SetPlaneValue(values, kFeatureMyBuilderPlane + side, x, y, feature.builders[player]);
                 SetPlaneValue(values, kFeatureOpponentBuilderPlane + side, x, y, feature.builders[opponent]);
             }
@@ -613,6 +629,10 @@ void CarcassonneState::ObservationTensor(Player player, absl::Span<float> values
     global[kGlobalBuilderSecondTile] = game_state_.builder_second_tile ? 1.0f : 0.0f;
     global[kGlobalMyPig] = game_state_.holding_pigs[player];
     global[kGlobalOpponentPig] = game_state_.holding_pigs[opponent];
+    for (int kind = 0; kind < GOODS_KINDS; ++kind) {
+        global[kGlobalMyGoods + kind] = game_state_.goods_tokens[player][kind] / kGoodsNormalization[kind];
+        global[kGlobalOpponentGoods + kind] = game_state_.goods_tokens[opponent][kind] / kGoodsNormalization[kind];
+    }
 }
 
 std::unique_ptr<State> CarcassonneState::Clone() const { return std::unique_ptr<State>(new CarcassonneState(*this)); }
@@ -818,6 +838,9 @@ float ObservationPlaneDenominator(int plane) {
     }
     if (in(kFeatureOpensPlane, 4)) {
         return static_cast<float>(kMaxOpens);
+    }
+    if (in(kFeatureGoodsPlane, 4 * GOODS_KINDS)) {
+        return kGoodsNormalization[(plane - kFeatureGoodsPlane) / 4];
     }
     if (in(kFeatureScorePlane, 4) || in(kFeatureSignedScorePlane, 4)) {
         return kFeatureScoreNormalization;

@@ -48,7 +48,7 @@ using algorithms::torch_az::CompactObservation;
 using algorithms::torch_az::ObservationCodec;
 using Clock = std::chrono::steady_clock;
 
-constexpr int kPlaneSize = BOARD_SIZE * BOARD_SIZE;
+constexpr int kPlaneSize = VIEW_SIZE * VIEW_SIZE;
 
 // Keeps the optimizer from dropping work whose result is never read.
 double g_sink = 0;
@@ -184,8 +184,8 @@ bool Validate(const Corpus& corpus, const ObservationCodec& codec) {
             if (printed_failures++ < 10) {
               absl::PrintF(
                   "  NOT n/%g: plane %d (%s) x=%d y=%d value=%.9g\n",
-                  denominator, plane, group.name, cell % BOARD_SIZE,
-                  cell / BOARD_SIZE, value);
+                  denominator, plane, group.name, cell % VIEW_SIZE,
+                  cell / VIEW_SIZE, value);
             }
             continue;
           }
@@ -508,8 +508,8 @@ int Main(int argc, char** argv) {
   absl::PrintF("collected %d observations from %d games in %.1f s "
                "(observation: %d planes x %d x %d = %d floats)\n",
                corpus.observations.size(), games,
-               Seconds(start, Clock::now()), kObservationPlanes, BOARD_SIZE,
-               BOARD_SIZE, kObservationTensorSize);
+               Seconds(start, Clock::now()), kObservationPlanes, VIEW_SIZE,
+               VIEW_SIZE, kObservationTensorSize);
 
   if (!Validate(corpus, codec)) {
     absl::PrintF("\nvalidation FAILED: the encoding is not lossless; "

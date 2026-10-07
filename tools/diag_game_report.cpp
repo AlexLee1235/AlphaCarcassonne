@@ -127,7 +127,7 @@ std::string ReportGame(const diag::LoggedGame &logged, PlayerReport rep[2]) {
     bool end_credited = false;
     for (const std::string &action : logged.actions) {
         if (g.current_phase != PHASE_MEEPLE) {
-            if (!diag::ApplyLoggedAction(g, action, &error)) return error;
+            if (!diag::ApplyLoggedAction(g, action, &error, logged.board_shift)) return error;
             continue;
         }
         const int pl = g.currentPlayer, pos = ParseMeeplePos(action);
@@ -157,7 +157,7 @@ std::string ReportGame(const diag::LoggedGame &logged, PlayerReport rep[2]) {
         int credited[2] = {0, 0};
         CreditCompletedFeatures(g, pos, rep, credited);
         const int before[2] = {g.player_scores[0], g.player_scores[1]};
-        if (!diag::ApplyLoggedAction(g, action, &error)) return error;
+        if (!diag::ApplyLoggedAction(g, action, &error, logged.board_shift)) return error;
         if (g.current_phase == PHASE_TERMINAL) {
             CreditEndGame(g, rep, credited);
             end_credited = true;

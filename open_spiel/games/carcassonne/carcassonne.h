@@ -20,7 +20,11 @@ namespace carcassonne {
 
 inline constexpr int kNumPlayers = 2;
 inline constexpr int kChanceActionCount = CANONICAL_TILE_TYPE_COUNT;
-inline constexpr int kTileActionCount = BOARD_SIZE * BOARD_SIZE * 4;
+// Tile actions and the observation's cells are those of the view (VIEW_SIZE
+// across), which follows the tiles: (y * VIEW_SIZE + x) * 4 + rot places a tile
+// on cell (x, y) of the view. CarcassonneState::TileAction and TileActionMove
+// convert to and from board cells.
+inline constexpr int kTileActionCount = VIEW_SIZE * VIEW_SIZE * 4;
 // One action per meeple position, -1 (skip) to MEEPLE_POS_COUNT - 2: skip,
 // the 14 spots with a meeple, the same 14 with the big meeple, the builder on
 // sides 0-3, then the pig on the fields of half-edges 0-7.
@@ -177,8 +181,8 @@ inline constexpr int kGlobalMyGoods = kGlobalOpponentPig + 1;
 inline constexpr int kGlobalOpponentGoods = kGlobalMyGoods + GOODS_KINDS;
 inline constexpr int kGlobalFeatures = kGlobalOpponentGoods + GOODS_KINDS;
 static_assert(kGlobalFeatures == 86 + 2 * CANONICAL_TILE_TYPE_COUNT);
-static_assert(kGlobalFeatures <= BOARD_SIZE * BOARD_SIZE);
-inline constexpr int kObservationTensorSize = kObservationPlanes * BOARD_SIZE * BOARD_SIZE;
+static_assert(kGlobalFeatures <= VIEW_SIZE * VIEW_SIZE);
+inline constexpr int kObservationTensorSize = kObservationPlanes * VIEW_SIZE * VIEW_SIZE;
 
 class CarcassonneGame;
 
@@ -205,6 +209,13 @@ class CarcassonneState : public State {
 
     const ::Carcassonne &UnderlyingState() const { return game_state_; }
 
+    // The tile action of this state that places the tile in hand on board cell
+    // (x, y), which must be in the view, turned rot quarter turns; and back.
+    // The view follows the tiles, so the same action is another board cell in
+    // another state.
+    Action TileAction(int x, int y, int rot) const;
+    TileMove TileActionMove(Action action) const;
+
   protected:
     void DoApplyAction(Action action) override;
 
@@ -226,7 +237,7 @@ class CarcassonneGame : public Game {
     double MinUtility() const override { return -1; }
     absl::optional<double> UtilitySum() const override { return 0; }
     double MaxUtility() const override { return 1; }
-    std::vector<int> ObservationTensorShape() const override { return {kObservationPlanes, BOARD_SIZE, BOARD_SIZE}; }
+    std::vector<int> ObservationTensorShape() const override { return {kObservationPlanes, VIEW_SIZE, VIEW_SIZE}; }
     int MaxGameLength() const override {
         const int deck_size = deckSizeOf(expansions_);
         return max_turns_ > 0 ? (deck_size - 1) + 2 * max_turns_ : (deck_size - 1) * 3;
@@ -247,9 +258,10 @@ class CarcassonneGame : public Game {
 
 // Board rotation, for training-data augmentation. Rules, deck and the square
 // board are symmetric under turning the whole position by k quarter turns
-// clockwise about the centre cell: the rotated position has the same value, its
-// observation is a fixed rearrangement of planes and cells, and every legal
-// action maps to exactly one legal action.
+// clockwise about the centre cell, and the view turns with it: the rotated
+// position has the same value, its observation is a fixed rearrangement of
+// planes and cells (about the view's centre cell), and every legal action maps
+// to exactly one legal action.
 inline constexpr int kNumBoardRotations = 4;
 
 // Which sides of the just-placed tile belong to the same feature (see

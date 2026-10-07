@@ -286,7 +286,8 @@ carcassonne(inns_cathedrals=on,traders_builders=on,river=on,princess_dragon=tile
 - 貨物（`traders_builders=on`）：城完成時，放下完成那張磚的玩家每個貨物符號拿 1 個 token（酒、麥、布；城裡有沒有他的騎士都一樣）。
   終局時每種 token 最多的玩家得 10 分，平手都得，雙方都是 0 個就不給。token 在 `game/game.cpp` 的 `placeTile` 發，終局分在 `accumulateGoodsScore`。
   牌表的貨物數（`goodsInTable`）在 `tile.hpp` 有 static_assert 對 9／6／5，改 T&B 的貨物標記要跟著改。
-- 盤面：牌變多，對局也變大。填完後用下面的指令量全開時的跨度，再決定 `BOARD_SIZE`（目前 21）要不要加大：
+- 盤面：牌變多，對局也變大。引擎只在 `VIEW_SIZE`（目前 21）格的視窗裡放磚，視窗每手置中在已放的磚上。
+  填完後量全開時要多大的視窗，再決定 `VIEW_SIZE` 要不要加大（`BOARD_SIZE` 只要容得下視窗能移到的地方）：
   ```bash
-  cd tools && make build/diag_board31 && ./build/diag_board31 3000 all
+  cd tools && make build/diag_board_free && ./build/diag_board_free 3000 all
   ```

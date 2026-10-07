@@ -25,12 +25,20 @@ namespace {
 
 namespace testing = open_spiel::testing;
 
+// (x, y) is a cell of the view.
 float PlaneValue(const std::vector<float>& tensor, int plane, int x, int y) {
-  return tensor[(plane * BOARD_SIZE + y) * BOARD_SIZE + x];
+  return tensor[(plane * VIEW_SIZE + y) * VIEW_SIZE + x];
+}
+
+// The same at board cell (tx, ty), which must be in the view of `core`.
+float BoardPlaneValue(const std::vector<float>& tensor,
+                      const ::Carcassonne& core, int plane, int tx, int ty) {
+  SPIEL_CHECK_TRUE(core.inView(tx, ty));
+  return PlaneValue(tensor, plane, tx - core.view_x0, ty - core.view_y0);
 }
 
 float GlobalValue(const std::vector<float>& tensor, int index) {
-  return tensor[kGlobalFeaturePlane * BOARD_SIZE * BOARD_SIZE + index];
+  return tensor[kGlobalFeaturePlane * VIEW_SIZE * VIEW_SIZE + index];
 }
 
 bool Near(float left, float right) { return std::abs(left - right) < 1e-6f; }
@@ -62,8 +70,8 @@ int TestTerrainIndex(EdgeType edge_type) {
 
 void CheckConstantPlane(const std::vector<float>& tensor, int plane,
                         float expected) {
-  for (int y = 0; y < BOARD_SIZE; ++y) {
-    for (int x = 0; x < BOARD_SIZE; ++x) {
+  for (int y = 0; y < VIEW_SIZE; ++y) {
+    for (int x = 0; x < VIEW_SIZE; ++x) {
       SPIEL_CHECK_TRUE(Near(PlaneValue(tensor, plane, x, y), expected));
     }
   }
@@ -80,8 +88,8 @@ void CheckZeroPlanes(const std::vector<float>& tensor, int first_plane,
 void CheckPlanesEqual(const std::vector<float>& left, int left_plane,
                       const std::vector<float>& right, int right_plane,
                       float sign = 1.0f) {
-  for (int y = 0; y < BOARD_SIZE; ++y) {
-    for (int x = 0; x < BOARD_SIZE; ++x) {
+  for (int y = 0; y < VIEW_SIZE; ++y) {
+    for (int x = 0; x < VIEW_SIZE; ++x) {
       SPIEL_CHECK_TRUE(Near(sign * PlaneValue(left, left_plane, x, y),
                             PlaneValue(right, right_plane, x, y)));
     }
@@ -90,19 +98,20 @@ void CheckPlanesEqual(const std::vector<float>& left, int left_plane,
 
 float PlaneSum(const std::vector<float>& tensor, int plane) {
   float sum = 0.0f;
-  for (int y = 0; y < BOARD_SIZE; ++y) {
-    for (int x = 0; x < BOARD_SIZE; ++x) {
+  for (int y = 0; y < VIEW_SIZE; ++y) {
+    for (int x = 0; x < VIEW_SIZE; ++x) {
       sum += PlaneValue(tensor, plane, x, y);
     }
   }
   return sum;
 }
 
+// The view cell (x, y) of a tile action.
 void DecodeTileActionForTest(Action action, int* x, int* y, int* rot) {
   *rot = action % 4;
   action /= 4;
-  *x = action % BOARD_SIZE;
-  *y = action / BOARD_SIZE;
+  *x = action % VIEW_SIZE;
+  *y = action / VIEW_SIZE;
 }
 
 int DecodeMeepleActionForTest(Action action) {
@@ -168,19 +177,23 @@ void ObservationTensorSmokeTest() {
   SPIEL_CHECK_EQ(shape.size(), 3);
   SPIEL_CHECK_EQ(shape[0], 151);
   SPIEL_CHECK_EQ(shape[0], kObservationPlanes);
-  SPIEL_CHECK_EQ(shape[1], BOARD_SIZE);
-  SPIEL_CHECK_EQ(shape[2], BOARD_SIZE);
-  SPIEL_CHECK_EQ(game->NumDistinctActions(), 4 * BOARD_SIZE * BOARD_SIZE + 41);
+  SPIEL_CHECK_EQ(shape[1], VIEW_SIZE);
+  SPIEL_CHECK_EQ(shape[2], VIEW_SIZE);
+  SPIEL_CHECK_EQ(game->NumDistinctActions(), 4 * VIEW_SIZE * VIEW_SIZE + 41);
 
   SPIEL_CHECK_EQ(state->ObservationTensor(0).size(), kObservationTensorSize);
   SPIEL_CHECK_EQ(state->ObservationTensor(1).size(), kObservationTensorSize);
 
   // The start tile, type 20 (city north, road east-west, grass south), alone
-  // on the centre cell.
-  const int c = BOARD_SIZE / 2;
+  // on the centre cell of the board, and so of the view.
+  const int c = VIEW_SIZE / 2;
   std::vector<float> initial_obs = state->ObservationTensor(0);
   auto* initial_state = dynamic_cast<CarcassonneState*>(state.get());
   SPIEL_CHECK_TRUE(initial_state != nullptr);
+  SPIEL_CHECK_EQ(initial_state->UnderlyingState().view_x0,
+                 BOARD_SIZE / 2 - VIEW_SIZE / 2);
+  SPIEL_CHECK_EQ(initial_state->UnderlyingState().view_y0,
+                 BOARD_SIZE / 2 - VIEW_SIZE / 2);
   SPIEL_CHECK_EQ(PlaneValue(initial_obs, kOccupiedPlane, c, c), 1.0f);
   SPIEL_CHECK_EQ(PlaneSum(initial_obs, kOccupiedPlane), 1.0f);
   SPIEL_CHECK_EQ(PlaneValue(initial_obs, kNorthTerrainPlane + 1, c, c), 1.0f);
@@ -266,7 +279,7 @@ void ObservationTensorSmokeTest() {
   CheckTileInHand(initial_obs, 0);
   CheckLegalMeepleGlobals(initial_obs, {});
   // Only the vector's own cells are used in its plane.
-  for (int i = kGlobalFeatures; i < BOARD_SIZE * BOARD_SIZE; ++i) {
+  for (int i = kGlobalFeatures; i < VIEW_SIZE * VIEW_SIZE; ++i) {
     SPIEL_CHECK_EQ(GlobalValue(initial_obs, i), 0.0f);
   }
 
@@ -299,11 +312,12 @@ void ObservationTensorSmokeTest() {
   SPIEL_CHECK_TRUE(Near(GlobalValue(tile_phase_obs, kGlobalLegalPlacements),
                         tile_actions.size() / 100.0f));
 
-  int placed_x;
-  int placed_y;
-  int placed_rot;
-  DecodeTileActionForTest(tile_actions[0], &placed_x, &placed_y, &placed_rot);
+  // The view follows the tiles, so the placed tile is found by its board cell.
+  const TileMove placed = chance_done->TileActionMove(tile_actions[0]);
+  SPIEL_CHECK_EQ(chance_done->TileAction(placed.x, placed.y, placed.rot),
+                 tile_actions[0]);
   state->ApplyAction(tile_actions[0]);
+  const ::Carcassonne& placed_core = chance_done->UnderlyingState();
   SPIEL_CHECK_EQ(state->CurrentPlayer(), 0);
   std::vector<float> meeple_phase_obs = state->ObservationTensor(0);
   CheckTileInHand(meeple_phase_obs, 0);
@@ -313,10 +327,12 @@ void ObservationTensorSmokeTest() {
   CheckZeroPlanes(meeple_phase_obs, kLegalPlacementPlane, kLegalPlacementPlanes);
   CheckLegalMeepleGlobals(meeple_phase_obs, state->LegalActions());
   SPIEL_CHECK_EQ(PlaneSum(meeple_phase_obs, kLastPlacedPlane), 1.0f);
-  SPIEL_CHECK_EQ(PlaneValue(meeple_phase_obs, kLastPlacedPlane, placed_x, placed_y),
+  SPIEL_CHECK_EQ(BoardPlaneValue(meeple_phase_obs, placed_core, kLastPlacedPlane,
+                                 placed.x, placed.y),
                  1.0f);
   SPIEL_CHECK_EQ(PlaneSum(meeple_phase_obs, kOccupiedPlane), 2.0f);
-  SPIEL_CHECK_EQ(PlaneValue(meeple_phase_obs, kFrontierPlane, placed_x, placed_y),
+  SPIEL_CHECK_EQ(BoardPlaneValue(meeple_phase_obs, placed_core, kFrontierPlane,
+                                 placed.x, placed.y),
                  0.0f);
   SPIEL_CHECK_EQ(GlobalValue(meeple_phase_obs, kGlobalIsPlayer0), 1.0f);
 
@@ -494,13 +510,13 @@ void TiedFeatureTest() {
               if (count == 0 || feature.meeple_count[1] != count) continue;
               ++tied_sides;
               SPIEL_CHECK_TRUE(Near(
-                  PlaneValue(obs, kFeatureMyMeeplesPlane + side, x, y), count / 7.0f));
+                  BoardPlaneValue(obs, core, kFeatureMyMeeplesPlane + side, x, y), count / 7.0f));
               SPIEL_CHECK_TRUE(Near(
-                  PlaneValue(obs, kFeatureOpponentMeeplesPlane + side, x, y),
+                  BoardPlaneValue(obs, core, kFeatureOpponentMeeplesPlane + side, x, y),
                   count / 7.0f));
               // SPIEL_CHECK_EQ's own locals are called x and y.
               SPIEL_CHECK_TRUE(
-                  PlaneValue(obs, kFeatureSignedScorePlane + side, x, y) == 0.0f);
+                  BoardPlaneValue(obs, core, kFeatureSignedScorePlane + side, x, y) == 0.0f);
             }
           }
         }
@@ -977,10 +993,10 @@ void CheckBigMeeples(const State& state) {
         for (Player player = 0; player < kNumPlayers; ++player) {
           const std::vector<float>& obs = player == 0 ? obs0 : obs1;
           const int opponent = 1 - player;
-          SPIEL_CHECK_EQ(PlaneValue(obs, kFeatureMyBigMeeplePlane + side, tx, ty),
+          SPIEL_CHECK_EQ(BoardPlaneValue(obs, core, kFeatureMyBigMeeplePlane + side, tx, ty),
                          static_cast<float>(feature.big_meeples[player]));
           SPIEL_CHECK_EQ(
-              PlaneValue(obs, kFeatureOpponentBigMeeplePlane + side, tx, ty),
+              BoardPlaneValue(obs, core, kFeatureOpponentBigMeeplePlane + side, tx, ty),
               static_cast<float>(feature.big_meeples[opponent]));
         }
         if (std::find(seen.begin(), seen.end(), &feature) != seen.end()) continue;
@@ -1004,8 +1020,8 @@ void CheckBigMeeples(const State& state) {
           ++(big_owner == owner ? bigs : meeples)[owner];
         }
         const float mine = big_owner == -1 ? 0.0f : (big_owner == 0 ? 1.0f : -1.0f);
-        SPIEL_CHECK_EQ(PlaneValue(obs0, kMonasteryBigMeeplePlane, tx, ty), mine);
-        SPIEL_CHECK_EQ(PlaneValue(obs1, kMonasteryBigMeeplePlane, tx, ty), -mine);
+        SPIEL_CHECK_EQ(BoardPlaneValue(obs0, core, kMonasteryBigMeeplePlane, tx, ty), mine);
+        SPIEL_CHECK_EQ(BoardPlaneValue(obs1, core, kMonasteryBigMeeplePlane, tx, ty), -mine);
       }
     }
   }
@@ -1098,14 +1114,14 @@ void BigMeepleTest() {
     const std::vector<float> obs1 = state.ObservationTensor(1);
     // The start tile's west side is on the road, its east side too.
     for (int side : {1, 3}) {
-      SPIEL_CHECK_EQ(PlaneValue(obs0, kFeatureMyBigMeeplePlane + side, c, c), 1.0f);
-      SPIEL_CHECK_EQ(PlaneValue(obs1, kFeatureOpponentBigMeeplePlane + side, c, c),
+      SPIEL_CHECK_EQ(BoardPlaneValue(obs0, game, kFeatureMyBigMeeplePlane + side, c, c), 1.0f);
+      SPIEL_CHECK_EQ(BoardPlaneValue(obs1, game, kFeatureOpponentBigMeeplePlane + side, c, c),
                      1.0f);
       SPIEL_CHECK_TRUE(
-          Near(PlaneValue(obs0, kFeatureMyMeeplesPlane + side, c, c), 2.0f / 7));
+          Near(BoardPlaneValue(obs0, game, kFeatureMyMeeplesPlane + side, c, c), 2.0f / 7));
       SPIEL_CHECK_TRUE(Near(
-          PlaneValue(obs0, kFeatureOpponentMeeplesPlane + side, c, c), 1.0f / 7));
-      SPIEL_CHECK_GT(PlaneValue(obs0, kFeatureSignedScorePlane + side, c, c), 0.0f);
+          BoardPlaneValue(obs0, game, kFeatureOpponentMeeplesPlane + side, c, c), 1.0f / 7));
+      SPIEL_CHECK_GT(BoardPlaneValue(obs0, game, kFeatureSignedScorePlane + side, c, c), 0.0f);
     }
     SPIEL_CHECK_EQ(GlobalValue(obs0, kGlobalMyBigMeeple), 0.0f);
     SPIEL_CHECK_EQ(GlobalValue(obs0, kGlobalOpponentBigMeeple), 1.0f);
@@ -1219,7 +1235,7 @@ void CheckInnCathedralPlanes(const State& state, int* inn_sides,
       const Tile& tile = full_deck[placement.id][placement.rotation];
       for (int side = 0; side < 4; ++side) {
         const float flag =
-            PlaneValue(obs, kFeatureInnCathedralPlane + side, tx, ty);
+            BoardPlaneValue(obs, core, kFeatureInnCathedralPlane + side, tx, ty);
         if (!isFeatureEdge(tile.edge[side])) {
           SPIEL_CHECK_EQ(flag, 0.0f);
           continue;
@@ -1239,7 +1255,7 @@ void CheckInnCathedralPlanes(const State& state, int* inn_sides,
         const bool marked = inns > 0 || cathedrals > 0;
         SPIEL_CHECK_EQ(flag, marked ? 1.0f : 0.0f);
         SPIEL_CHECK_TRUE(
-            Near(PlaneValue(obs, kFeatureScorePlane + side, tx, ty),
+            Near(BoardPlaneValue(obs, core, kFeatureScorePlane + side, tx, ty),
                  std::min(feature.getBaseScore() / 30.0f, 1.0f)));
         if (!marked) {
           SPIEL_CHECK_EQ(feature.getScore(), feature.getBaseScore());
@@ -1247,7 +1263,7 @@ void CheckInnCathedralPlanes(const State& state, int* inn_sides,
           // Left open it would score nothing.
           SPIEL_CHECK_EQ(feature.getScore(), 0);
           SPIEL_CHECK_EQ(
-              PlaneValue(obs, kFeatureSignedScorePlane + side, tx, ty), 0.0f);
+              BoardPlaneValue(obs, core, kFeatureSignedScorePlane + side, tx, ty), 0.0f);
         }
       }
     }
@@ -1284,16 +1300,16 @@ void InnCathedralTest() {
         const State& state = view;
         const std::vector<float> obs = state.ObservationTensor(0);
         for (int side : {1, 3}) {
-          SPIEL_CHECK_EQ(PlaneValue(obs, kFeatureInnCathedralPlane + side, c, c),
+          SPIEL_CHECK_EQ(BoardPlaneValue(obs, game, kFeatureInnCathedralPlane + side, c, c),
                          ruled ? 1.0f : 0.0f);
           SPIEL_CHECK_TRUE(
-              Near(PlaneValue(obs, kFeatureScorePlane + side, c, c), 3.0f / 30));
+              Near(BoardPlaneValue(obs, game, kFeatureScorePlane + side, c, c), 3.0f / 30));
           SPIEL_CHECK_TRUE(
-              Near(PlaneValue(obs, kFeatureSignedScorePlane + side, c, c),
+              Near(BoardPlaneValue(obs, game, kFeatureSignedScorePlane + side, c, c),
                    ruled ? 0.0f : 3.0f / 30));
         }
         // The city has no cathedral.
-        SPIEL_CHECK_EQ(PlaneValue(obs, kFeatureInnCathedralPlane + 0, c, c), 0.0f);
+        SPIEL_CHECK_EQ(BoardPlaneValue(obs, game, kFeatureInnCathedralPlane + 0, c, c), 0.0f);
       }
       PlayTurn(&game, 2, c - 1, c, 3, MEEPLE_POS_SKIP);  // P0 ends it west
       SPIEL_CHECK_EQ(game.player_scores[0], ruled ? 8 : 4);
@@ -1321,15 +1337,15 @@ void InnCathedralTest() {
         CarcassonneState view(inns_game, game);
         const State& state = view;
         const std::vector<float> obs = state.ObservationTensor(0);
-        SPIEL_CHECK_EQ(PlaneValue(obs, kFeatureInnCathedralPlane + 0, c, c),
+        SPIEL_CHECK_EQ(BoardPlaneValue(obs, game, kFeatureInnCathedralPlane + 0, c, c),
                        ruled ? 1.0f : 0.0f);
         for (int side = 0; side < 4; ++side) {
           SPIEL_CHECK_EQ(
-              PlaneValue(obs, kFeatureInnCathedralPlane + side, c, c - 1),
+              BoardPlaneValue(obs, game, kFeatureInnCathedralPlane + side, c, c - 1),
               ruled ? 1.0f : 0.0f);
         }
         // The road has no inn.
-        SPIEL_CHECK_EQ(PlaneValue(obs, kFeatureInnCathedralPlane + 1, c, c), 0.0f);
+        SPIEL_CHECK_EQ(BoardPlaneValue(obs, game, kFeatureInnCathedralPlane + 1, c, c), 0.0f);
       }
       PlayTurn(&game, 16, c, c - 2, 2, MEEPLE_POS_SKIP);      // P1, north
       PlayTurn(&game, 16, c + 1, c - 1, 3, MEEPLE_POS_SKIP);  // P0, east
@@ -1398,10 +1414,10 @@ void CheckBuilders(const State& state) {
         const Feature& feature = core.featureAt(placement.id, side);
         for (Player player = 0; player < kNumPlayers; ++player) {
           const std::vector<float>& obs = player == 0 ? obs0 : obs1;
-          SPIEL_CHECK_EQ(PlaneValue(obs, kFeatureMyBuilderPlane + side, tx, ty),
+          SPIEL_CHECK_EQ(BoardPlaneValue(obs, core, kFeatureMyBuilderPlane + side, tx, ty),
                          static_cast<float>(feature.builders[player]));
           SPIEL_CHECK_EQ(
-              PlaneValue(obs, kFeatureOpponentBuilderPlane + side, tx, ty),
+              BoardPlaneValue(obs, core, kFeatureOpponentBuilderPlane + side, tx, ty),
               static_cast<float>(feature.builders[1 - player]));
         }
         if (std::find(seen.begin(), seen.end(), &feature) != seen.end()) continue;
@@ -1527,8 +1543,8 @@ void BuilderTest() {
     SPIEL_CHECK_EQ(GlobalValue(obs, kGlobalMyBuilder), 0.0f);
     SPIEL_CHECK_EQ(GlobalValue(obs, kGlobalOpponentBuilder), 1.0f);
     for (int side : {1, 3}) {
-      SPIEL_CHECK_EQ(PlaneValue(obs, kFeatureMyBuilderPlane + side, c, c), 1.0f);
-      SPIEL_CHECK_EQ(PlaneValue(obs, kFeatureOpponentBuilderPlane + side, c, c),
+      SPIEL_CHECK_EQ(BoardPlaneValue(obs, game, kFeatureMyBuilderPlane + side, c, c), 1.0f);
+      SPIEL_CHECK_EQ(BoardPlaneValue(obs, game, kFeatureOpponentBuilderPlane + side, c, c),
                      0.0f);
     }
     SPIEL_CHECK_TRUE(state.ToString().find("builder_second_tile") !=
@@ -1625,19 +1641,19 @@ void CheckPigs(const State& state, int* pig_bonuses) {
       const Tile& tile = full_deck[placement.id][placement.rotation];
       for (int half_edge = 0; half_edge < HALF_EDGE_COUNT; ++half_edge) {
         if (tile.field[half_edge] == -1) {
-          SPIEL_CHECK_EQ(PlaneValue(obs0, kFieldMyPigPlane + half_edge, tx, ty), 0.0f);
+          SPIEL_CHECK_EQ(BoardPlaneValue(obs0, core, kFieldMyPigPlane + half_edge, tx, ty), 0.0f);
           SPIEL_CHECK_EQ(
-              PlaneValue(obs0, kFieldOpponentPigPlane + half_edge, tx, ty), 0.0f);
+              BoardPlaneValue(obs0, core, kFieldOpponentPigPlane + half_edge, tx, ty), 0.0f);
           continue;
         }
         const int root = core.fieldRoot(placement.id, tile.field[half_edge]);
         const Field& field = core.fieldAtRoot(root);
         for (Player player = 0; player < kNumPlayers; ++player) {
           const std::vector<float>& obs = player == 0 ? obs0 : obs1;
-          SPIEL_CHECK_EQ(PlaneValue(obs, kFieldMyPigPlane + half_edge, tx, ty),
+          SPIEL_CHECK_EQ(BoardPlaneValue(obs, core, kFieldMyPigPlane + half_edge, tx, ty),
                          static_cast<float>(field.pigs[player]));
           SPIEL_CHECK_EQ(
-              PlaneValue(obs, kFieldOpponentPigPlane + half_edge, tx, ty),
+              BoardPlaneValue(obs, core, kFieldOpponentPigPlane + half_edge, tx, ty),
               static_cast<float>(field.pigs[1 - player]));
         }
         if (std::find(seen_roots.begin(), seen_roots.end(), root) !=
@@ -1795,13 +1811,13 @@ void PigTest() {
     for (int tile_x : {c + 1, c + 2}) {
       for (int half_edge = 0; half_edge < HALF_EDGE_COUNT; ++half_edge) {
         const float south = half_edge >= 3 && half_edge <= 6 ? 1.0f : 0.0f;
-        SPIEL_CHECK_EQ(PlaneValue(obs0, kFieldMyPigPlane + half_edge, tile_x, c),
+        SPIEL_CHECK_EQ(BoardPlaneValue(obs0, game, kFieldMyPigPlane + half_edge, tile_x, c),
                        south);
         SPIEL_CHECK_EQ(
-            PlaneValue(obs1, kFieldOpponentPigPlane + half_edge, tile_x, c),
+            BoardPlaneValue(obs1, game, kFieldOpponentPigPlane + half_edge, tile_x, c),
             south);
         SPIEL_CHECK_EQ(
-            PlaneValue(obs0, kFieldOpponentPigPlane + half_edge, tile_x, c),
+            BoardPlaneValue(obs0, game, kFieldOpponentPigPlane + half_edge, tile_x, c),
             0.0f);
       }
     }
@@ -1885,7 +1901,7 @@ void CheckGoods(const State& state) {
         if (!isFeatureEdge(tile.edge[side])) {
           for (int kind = 0; kind < GOODS_KINDS; ++kind) {
             SPIEL_CHECK_EQ(
-                PlaneValue(obs0, kFeatureGoodsPlane + 4 * kind + side, tx, ty),
+                BoardPlaneValue(obs0, core, kFeatureGoodsPlane + 4 * kind + side, tx, ty),
                 0.0f);
           }
           continue;
@@ -1898,8 +1914,8 @@ void CheckGoods(const State& state) {
           }
           const float expected = goods / totals[kind];
           const int plane = kFeatureGoodsPlane + 4 * kind + side;
-          SPIEL_CHECK_TRUE(Near(PlaneValue(obs0, plane, tx, ty), expected));
-          SPIEL_CHECK_TRUE(Near(PlaneValue(obs1, plane, tx, ty), expected));
+          SPIEL_CHECK_TRUE(Near(BoardPlaneValue(obs0, core, plane, tx, ty), expected));
+          SPIEL_CHECK_TRUE(Near(BoardPlaneValue(obs1, core, plane, tx, ty), expected));
         }
         if (std::find(seen.begin(), seen.end(), &feature) != seen.end()) continue;
         seen.push_back(&feature);
@@ -1978,14 +1994,14 @@ void GoodsTest() {
       const State& state = view;
       const std::vector<float> obs = state.ObservationTensor(0);
       const float wine = ruled ? 1.0f / 9 : 0.0f;
-      SPIEL_CHECK_TRUE(Near(PlaneValue(obs, kFeatureGoodsPlane + 0, c, c), wine));
+      SPIEL_CHECK_TRUE(Near(BoardPlaneValue(obs, game, kFeatureGoodsPlane + 0, c, c), wine));
       for (int side : {1, 2}) {
         SPIEL_CHECK_TRUE(
-            Near(PlaneValue(obs, kFeatureGoodsPlane + side, c, c - 1), wine));
+            Near(BoardPlaneValue(obs, game, kFeatureGoodsPlane + side, c, c - 1), wine));
       }
       // No wheat, no cloth.
-      SPIEL_CHECK_EQ(PlaneValue(obs, kFeatureGoodsPlane + 4, c, c), 0.0f);
-      SPIEL_CHECK_EQ(PlaneValue(obs, kFeatureGoodsPlane + 8, c, c), 0.0f);
+      SPIEL_CHECK_EQ(BoardPlaneValue(obs, game, kFeatureGoodsPlane + 4, c, c), 0.0f);
+      SPIEL_CHECK_EQ(BoardPlaneValue(obs, game, kFeatureGoodsPlane + 8, c, c), 0.0f);
       CheckGoods(state);
     }
     // P1 completes the city with a CGGG east of it. Nobody has a knight
@@ -2142,8 +2158,8 @@ void LastUnplaceableTileTest() {
   SPIEL_CHECK_EQ(core.completed_turns, 70);
   SPIEL_CHECK_EQ(core.getTotalRemaining(), 0);
   SPIEL_CHECK_EQ(core.current_tile_in_hand, 0);
-  SPIEL_CHECK_EQ(core.player_scores[0], 57);
-  SPIEL_CHECK_EQ(core.player_scores[1], 34);
+  SPIEL_CHECK_EQ(core.player_scores[0], 70);
+  SPIEL_CHECK_EQ(core.player_scores[1], 59);
   SPIEL_CHECK_EQ(clone->ObservationTensor(0).size(), kObservationTensorSize);
   SPIEL_CHECK_EQ(clone->ObservationTensor(1).size(), kObservationTensorSize);
   SPIEL_CHECK_EQ(state->ToString(), before);
@@ -2624,12 +2640,13 @@ void RiverRulesTest() {
           }
           const int in_side = (core.river_heading + 2) % 4;
           for (Action legal_action : legal) {
-            int tile_x, tile_y, rot;
-            DecodeTileActionForTest(legal_action, &tile_x, &tile_y, &rot);
-            SPIEL_CHECK_EQ(tile_x, core.river_x);
-            SPIEL_CHECK_EQ(tile_y, core.river_y);
+            const TileMove move =
+                dynamic_cast<const CarcassonneState&>(*state).TileActionMove(
+                    legal_action);
+            SPIEL_CHECK_EQ(static_cast<int>(move.x), core.river_x);
+            SPIEL_CHECK_EQ(static_cast<int>(move.y), core.river_y);
             const int turn =
-                RiverTurn(core, full_deck[core.current_tile_in_hand][rot]);
+                RiverTurn(core, full_deck[core.current_tile_in_hand][move.rot]);
             SPIEL_CHECK_TRUE(turn == 0 || turn != core.river_last_turn);
           }
           for (int rot = 0; rot < 4; ++rot) {
@@ -2713,19 +2730,19 @@ void ExpansionGamesTest() {
             // SPIEL_CHECK_EQ's own locals are called x and y.
             for (int side = 0; side < 4; ++side) {
               const int terrain = kNorthTerrainPlane + side * kTerrainTypes;
-              SPIEL_CHECK_TRUE(PlaneValue(obs, terrain + 3, x, y) ==
+              SPIEL_CHECK_TRUE(BoardPlaneValue(obs, core, terrain + 3, x, y) ==
                                (tile.edge[side] == RIVER ? 1.0f : 0.0f));
               const bool shield = tile.edge[side] == CITY &&
                                   (tile.featureMarks(side) & MARK_SHIELD);
               shield_sides += shield ? 1 : 0;
-              SPIEL_CHECK_TRUE(PlaneValue(obs, kShieldPlane + side, x, y) ==
+              SPIEL_CHECK_TRUE(BoardPlaneValue(obs, core, kShieldPlane + side, x, y) ==
                                (shield ? 1.0f : 0.0f));
               if (tile.edge[side] != RIVER) continue;
               ++river_sides;
               SPIEL_CHECK_TRUE(
-                  PlaneValue(obs, kFeatureOpensPlane + side, x, y) == 0.0f);
+                  BoardPlaneValue(obs, core, kFeatureOpensPlane + side, x, y) == 0.0f);
               SPIEL_CHECK_TRUE(
-                  PlaneValue(obs, kFeatureScorePlane + side, x, y) == 0.0f);
+                  BoardPlaneValue(obs, core, kFeatureScorePlane + side, x, y) == 0.0f);
             }
           }
         }
@@ -2752,11 +2769,77 @@ void ExpansionGamesTest() {
   SPIEL_CHECK_EQ(OpensUnderflowCount(), 0);
 }
 
+// The view follows the tiles: centred on their bounding box, half a cell
+// towards the centre cell when they span an even count, and kept on the board.
+// It holds every tile, and every tile action names a board cell in it and
+// back. Frontier cells outside it are no moves, and games do reach them: the
+// view is narrower than games get, the river's above all.
+void ViewTest() {
+  const auto expected_origin = [](int lo, int hi) {
+    int centre = (lo + hi) / 2;
+    if ((lo + hi) % 2 != 0 && lo + hi < BOARD_SIZE - 1) ++centre;
+    return std::clamp(centre - VIEW_SIZE / 2, 0, BOARD_SIZE - VIEW_SIZE);
+  };
+  std::mt19937 rng(20261008);
+  int view_moves = 0;
+  int outside_frontier = 0;
+  for (const char* game_string : {"carcassonne", kRiverGame}) {
+    std::shared_ptr<const Game> game = LoadGame(game_string);
+    for (int sim = 0; sim < 30; ++sim) {
+      std::unique_ptr<State> state = game->NewInitialState();
+      const auto& carcassonne_state =
+          dynamic_cast<const CarcassonneState&>(*state);
+      const ::Carcassonne& core = carcassonne_state.UnderlyingState();
+      int last_x0 = core.view_x0;
+      int last_y0 = core.view_y0;
+      while (!state->IsTerminal()) {
+        int x0 = BOARD_SIZE, x1 = -1, y0 = BOARD_SIZE, y1 = -1;
+        for (int ty = 0; ty < BOARD_SIZE; ++ty) {
+          for (int tx = 0; tx < BOARD_SIZE; ++tx) {
+            if (core.getPlacement(tx, ty).id != 0) {
+              SPIEL_CHECK_TRUE(core.inView(tx, ty));
+              x0 = std::min(x0, tx);
+              x1 = std::max(x1, tx);
+              y0 = std::min(y0, ty);
+              y1 = std::max(y1, ty);
+            } else if (core.isFrontier(tx, ty) && !core.inView(tx, ty)) {
+              ++outside_frontier;
+            }
+          }
+        }
+        SPIEL_CHECK_EQ(core.view_x0, expected_origin(x0, x1));
+        SPIEL_CHECK_EQ(core.view_y0, expected_origin(y0, y1));
+        view_moves += core.view_x0 != last_x0 || core.view_y0 != last_y0;
+        last_x0 = core.view_x0;
+        last_y0 = core.view_y0;
+        const std::vector<Action> legal = state->LegalActions();
+        if (core.current_phase == PHASE_TILE) {
+          for (Action action : legal) {
+            const TileMove move = carcassonne_state.TileActionMove(action);
+            SPIEL_CHECK_TRUE(core.inView(move.x, move.y));
+            SPIEL_CHECK_EQ(carcassonne_state.TileAction(move.x, move.y, move.rot),
+                           action);
+          }
+        }
+        state->ApplyAction(
+            state->IsChanceNode()
+                ? SampleAction(state->ChanceOutcomes(), rng).first
+                : legal[std::uniform_int_distribution<int>(0, legal.size() - 1)(rng)]);
+      }
+    }
+  }
+  std::cout << "ViewTest: the view moved " << view_moves << " times; "
+            << outside_frontier << " frontier cells seen outside it"
+            << std::endl;
+  SPIEL_CHECK_GT(view_moves, 0);
+  SPIEL_CHECK_GT(outside_frontier, 0);
+}
+
 // Every spatial observation value is n / ObservationPlaneDenominator(plane)
 // for an int8 n, and the global plane is 0 past the global vector: what lets
 // alpha_zero_torch keep observations as int8 (observation_codec.h).
 void ObservationDenominatorTest() {
-  constexpr int kPlaneSize = BOARD_SIZE * BOARD_SIZE;
+  constexpr int kPlaneSize = VIEW_SIZE * VIEW_SIZE;
   for (int plane = 0; plane < kSpatialPlanes; ++plane) {
     SPIEL_CHECK_GT(ObservationPlaneDenominator(plane), 0.0f);
   }
@@ -2815,6 +2898,7 @@ void BasicCarcassonneTests() {
   testing::RandomSimTest(*LoadGame(kInnsCathedralsGame), 20);
   testing::RandomSimTest(*LoadGame(kTradersBuildersGame), 20);
   ObservationTensorSmokeTest();
+  ViewTest();
   RelativePerspectiveTest();
   PendingScoreTest();
   TiedFeatureTest();

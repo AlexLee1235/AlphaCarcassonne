@@ -14,18 +14,16 @@ SRCS     := $(GAME)/Feature.cpp $(GAME)/FeatureModule.cpp $(GAME)/FieldModule.cp
             $(GAME)/BoardModule.cpp $(GAME)/FrontierModule.cpp $(GAME)/DeckModule.cpp \
             $(GAME)/game.cpp
 
-# BOARD_SIZE=25 的副本，用來量「沒有被裁切時」對局有多大；31 給開了擴充、牌變多的時候
-G25      := build/game25
-SRCS25   := $(G25)/Feature.cpp $(G25)/FeatureModule.cpp $(G25)/FieldModule.cpp $(G25)/MonasteryModule.cpp \
-            $(G25)/BoardModule.cpp $(G25)/FrontierModule.cpp $(G25)/DeckModule.cpp \
-            $(G25)/game.cpp
-G31      := build/game31
-SRCS31   := $(subst $(G25),$(G31),$(SRCS25))
+# VIEW_SIZE = BOARD_SIZE = 41 的副本：視窗蓋住整個盤面，什麼都不擋，用來量對局本來會長多大
+GFREE    := build/game_free
+SRCSFREE := $(GFREE)/Feature.cpp $(GFREE)/FeatureModule.cpp $(GFREE)/FieldModule.cpp $(GFREE)/MonasteryModule.cpp \
+            $(GFREE)/BoardModule.cpp $(GFREE)/FrontierModule.cpp $(GFREE)/DeckModule.cpp \
+            $(GFREE)/game.cpp
 # 副本要跟著引擎更新（牌表 tile.hpp 常常在改）
 ENGINE   := $(wildcard $(GAME)/*.hpp $(GAME)/*.cpp)
 
 TOOLS    := diag_value_gap diag_local_decomp diag_board diag_opens diag_occupancy diag_branching diag_luck diag_value_gap_strong diag_pending_scale diag_plane_scale diag_replay_scale diag_game_report
-BINS     := $(addprefix build/,$(TOOLS)) build/diag_board25 build/diag_board31 build/dump_tiles
+BINS     := $(addprefix build/,$(TOOLS)) build/diag_board_free build/dump_tiles
 PYTHON   ?= python3
 
 .PHONY: all run tiles clean
@@ -44,23 +42,15 @@ tiles: build/dump_tiles
 build:
 	mkdir -p build
 
-$(G25)/game.hpp: $(ENGINE) | build
-	mkdir -p $(G25)
-	cp $(GAME)/*.hpp $(GAME)/*.cpp $(G25)/
-	sed 's/constexpr int BOARD_SIZE = [0-9]*;/constexpr int BOARD_SIZE = 25;/' $(GAME)/game.hpp > $(G25)/game.hpp
-	@grep -n 'BOARD_SIZE = ' $(G25)/game.hpp
+$(GFREE)/game.hpp: $(ENGINE) | build
+	mkdir -p $(GFREE)
+	cp $(GAME)/*.hpp $(GAME)/*.cpp $(GFREE)/
+	sed -e 's/constexpr int BOARD_SIZE = [0-9]*;/constexpr int BOARD_SIZE = 41;/' \
+	    -e 's/constexpr int VIEW_SIZE = [0-9]*;/constexpr int VIEW_SIZE = 41;/' $(GAME)/game.hpp > $(GFREE)/game.hpp
+	@grep -n '_SIZE = ' $(GFREE)/game.hpp
 
-$(G31)/game.hpp: $(ENGINE) | build
-	mkdir -p $(G31)
-	cp $(GAME)/*.hpp $(GAME)/*.cpp $(G31)/
-	sed 's/constexpr int BOARD_SIZE = [0-9]*;/constexpr int BOARD_SIZE = 31;/' $(GAME)/game.hpp > $(G31)/game.hpp
-	@grep -n 'BOARD_SIZE = ' $(G31)/game.hpp
-
-build/diag_board25: diag_board.cpp common.hpp $(G25)/game.hpp
-	$(CXX) $(CXXFLAGS) -I$(G25) $< $(SRCS25) -o $@
-
-build/diag_board31: diag_board.cpp common.hpp $(G31)/game.hpp
-	$(CXX) $(CXXFLAGS) -I$(G31) $< $(SRCS31) -o $@
+build/diag_board_free: diag_board.cpp common.hpp $(GFREE)/game.hpp
+	$(CXX) $(CXXFLAGS) -I$(GFREE) $< $(SRCSFREE) -o $@
 
 build/%: %.cpp common.hpp scale_stats.hpp actor_log.hpp $(ENGINE) | build
 	$(CXX) $(CXXFLAGS) -I$(GAME) $< $(SRCS) -o $@
@@ -71,7 +61,7 @@ run: all
 	cd results && ../build/diag_value_gap      | tee diag_value_gap.txt
 	cd results && ../build/diag_local_decomp   | tee diag_local_decomp.txt
 	cd results && ../build/diag_board          | tee diag_board.txt
-	cd results && ../build/diag_board25        | tee diag_board25.txt
+	cd results && ../build/diag_board_free     | tee diag_board_free.txt
 	cd results && ../build/diag_opens          | tee diag_opens.txt
 	cd results && ../build/diag_branching      | tee diag_branching.txt
 	@echo

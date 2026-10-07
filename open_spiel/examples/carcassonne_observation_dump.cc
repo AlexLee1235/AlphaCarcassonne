@@ -28,13 +28,13 @@ namespace carcassonne {
 namespace {
 
 float PlaneValue(const std::vector<float>& tensor, int plane, int x, int y) {
-  return tensor[(plane * BOARD_SIZE + y) * BOARD_SIZE + x];
+  return tensor[(plane * VIEW_SIZE + y) * VIEW_SIZE + x];
 }
 
 bool IsBroadcastPlane(const std::vector<float>& tensor, int plane) {
   const float first = PlaneValue(tensor, plane, 0, 0);
-  for (int y = 0; y < BOARD_SIZE; ++y) {
-    for (int x = 0; x < BOARD_SIZE; ++x) {
+  for (int y = 0; y < VIEW_SIZE; ++y) {
+    for (int x = 0; x < VIEW_SIZE; ++x) {
       if (std::abs(PlaneValue(tensor, plane, x, y) - first) > 1e-6f) {
         return false;
       }
@@ -44,8 +44,8 @@ bool IsBroadcastPlane(const std::vector<float>& tensor, int plane) {
 }
 
 bool IsZeroPlane(const std::vector<float>& tensor, int plane) {
-  for (int y = 0; y < BOARD_SIZE; ++y) {
-    for (int x = 0; x < BOARD_SIZE; ++x) {
+  for (int y = 0; y < VIEW_SIZE; ++y) {
+    for (int x = 0; x < VIEW_SIZE; ++x) {
       if (std::abs(PlaneValue(tensor, plane, x, y)) > 1e-6f) {
         return false;
       }
@@ -235,7 +235,7 @@ void PrintGlobalFeatures(const std::vector<float>& tensor, bool print_zeros) {
   std::cout << "\n--- plane " << kGlobalFeaturePlane
             << ": global_vector (first " << kGlobalFeatures << " cells) ---\n";
   const std::vector<std::string> names = GlobalFeatureNames();
-  const int offset = kGlobalFeaturePlane * BOARD_SIZE * BOARD_SIZE;
+  const int offset = kGlobalFeaturePlane * VIEW_SIZE * VIEW_SIZE;
   for (int i = 0; i < kGlobalFeatures; ++i) {
     const float value = tensor[offset + i];
     if (!print_zeros && std::abs(value) < 1e-6f) continue;
@@ -254,9 +254,9 @@ void PrintPlane(const std::vector<float>& tensor, int plane,
     return;
   }
 
-  for (int y = 0; y < BOARD_SIZE; ++y) {
+  for (int y = 0; y < VIEW_SIZE; ++y) {
     std::cout << "y=" << std::setw(2) << y << " ";
-    for (int x = 0; x < BOARD_SIZE; ++x) {
+    for (int x = 0; x < VIEW_SIZE; ++x) {
       const float value = PlaneValue(tensor, plane, x, y);
       if (std::abs(value) < 1e-6f) {
         std::cout << "   .";
@@ -302,7 +302,7 @@ int Main(int argc, char** argv) {
   std::cout << "seed: " << seed << "\n";
   std::cout << "requested complete turns: " << requested_turns << "\n";
   std::cout << "observation shape: [" << kObservationPlanes << ", "
-            << BOARD_SIZE << ", " << BOARD_SIZE << "]\n";
+            << VIEW_SIZE << ", " << VIEW_SIZE << "]\n";
 
   int turns_completed = 0;
   int actions_applied = 0;

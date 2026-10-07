@@ -28,8 +28,9 @@ except ImportError:
 
 
 ENGINE_BOARD_SIZE = int(_carcassonne_cpp.BOARD_SIZE)
-# The UI shows the whole engine board, so UI and engine coordinates coincide.
-BOARD_SIZE = ENGINE_BOARD_SIZE
+# The UI shows the engine's view, which follows the tiles and holds every tile
+# and every legal move: UI coordinates are engine coordinates less its origin.
+BOARD_SIZE = int(_carcassonne_cpp.VIEW_SIZE)
 START_POS = (ENGINE_BOARD_SIZE // 2, ENGINE_BOARD_SIZE // 2)
 PHASE_CHANCE = int(_carcassonne_cpp.PHASE_CHANCE)
 PHASE_TILE = int(_carcassonne_cpp.PHASE_TILE)
@@ -189,11 +190,11 @@ class BotCliClient:
 
     def _check_board_size(self) -> None:
         shape = self.request({"cmd": "info"}).get("observation_shape", [])
-        if len(shape) != 3 or shape[1] != ENGINE_BOARD_SIZE:
+        if len(shape) != 3 or shape[1] != BOARD_SIZE:
             self.close()
             raise RuntimeError(
                 f"The bot CLI was built for a different board (observation shape {shape}, "
-                f"expected {ENGINE_BOARD_SIZE}x{ENGINE_BOARD_SIZE}). {REBUILD_HINT}"
+                f"expected {BOARD_SIZE}x{BOARD_SIZE}). {REBUILD_HINT}"
             )
 
     def close(self) -> None:
@@ -257,7 +258,7 @@ class CppCarcassonneAdapter:
         self._turns: List[dict] = []
         self.saved_game_path: Optional[Path] = None
         self.save_error = ""
-        self._viewport_origin = self._default_viewport_origin()
+        self._viewport_origin = self._engine_view_origin()
         self._start_bot_clis()
         self._resolve_chance_phase()
         self.state = self._build_state()
@@ -520,12 +521,10 @@ class CppCarcassonneAdapter:
         origin_x, origin_y = self._viewport_origin
         return origin_x + x, origin_y + y
 
-    def _default_viewport_origin(self) -> Tuple[int, int]:
-        max_origin = max(0, ENGINE_BOARD_SIZE - BOARD_SIZE)
-        return (
-            _clamp(START_POS[0] - BOARD_SIZE // 2, 0, max_origin),
-            _clamp(START_POS[1] - BOARD_SIZE // 2, 0, max_origin),
-        )
+    def _engine_view_origin(self) -> Tuple[int, int]:
+        """The origin of the engine's view, which moves as tiles are placed."""
+        origin_x, origin_y = self._engine.view_origin
+        return int(origin_x), int(origin_y)
 
     def _to_ui_coords(self, x: int, y: int) -> Optional[Tuple[int, int]]:
         origin_x, origin_y = self._viewport_origin
@@ -616,6 +615,8 @@ class CppCarcassonneAdapter:
         player = self._engine.current_player + 1
         tile_id = self._current_tile_art_id()
         self._engine.place_tile(x, y, rotation)
+        # Follow the view, out of which no tile can go.
+        self._viewport_origin = self._engine_view_origin()
         self._actions.append(f"place_tile(x={x}, y={y}, rot={rotation})")
         self._latest_tile_marker = ((x, y), player)
         self._remember_tile_move(player, tile_id, x, y, rotation)

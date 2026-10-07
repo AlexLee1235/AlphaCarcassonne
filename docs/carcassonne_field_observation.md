@@ -4,7 +4,7 @@
 以及空格四周朝向它的元件「是不是同一個」。結論是**這次都不加**，先把分析、
 候選做法與成本記下來，將來用消融實驗決定。
 
-本文的平面數與記憶體都以 `BOARD_SIZE = 21`、replay buffer 262,144 筆、
+本文的平面數與記憶體都以觀測 21×21（`VIEW_SIZE = 21`）、replay buffer 262,144 筆、
 觀測以 float 存（`TrainInputs::observations`）計算。
 
 ---

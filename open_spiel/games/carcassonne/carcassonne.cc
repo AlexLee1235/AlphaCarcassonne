@@ -119,23 +119,25 @@ int DecodeChanceAction(Action action) {
     return action + 1;
 }
 
-Action EncodeTileAction(int board_x, int board_y, int rotation) {
-    SPIEL_CHECK_GE(board_x, 0);
-    SPIEL_CHECK_LT(board_x, BOARD_SIZE);
-    SPIEL_CHECK_GE(board_y, 0);
-    SPIEL_CHECK_LT(board_y, BOARD_SIZE);
+// Tile actions by cell of the view; CarcassonneState::TileAction and
+// TileActionMove add the view's position on the board.
+Action EncodeTileAction(int view_x, int view_y, int rotation) {
+    SPIEL_CHECK_GE(view_x, 0);
+    SPIEL_CHECK_LT(view_x, VIEW_SIZE);
+    SPIEL_CHECK_GE(view_y, 0);
+    SPIEL_CHECK_LT(view_y, VIEW_SIZE);
     SPIEL_CHECK_GE(rotation, 0);
     SPIEL_CHECK_LT(rotation, 4);
-    return ((board_y * BOARD_SIZE) + board_x) * 4 + rotation;
+    return ((view_y * VIEW_SIZE) + view_x) * 4 + rotation;
 }
 
-void DecodeTileAction(Action action, int *x, int *y, int *rot) {
+void DecodeTileAction(Action action, int *view_x, int *view_y, int *rot) {
     SPIEL_CHECK_GE(action, 0);
     SPIEL_CHECK_LT(action, kTileActionCount);
     *rot = action % 4;
     action /= 4;
-    *x = action % BOARD_SIZE;
-    *y = action / BOARD_SIZE;
+    *view_x = action % VIEW_SIZE;
+    *view_y = action / VIEW_SIZE;
 }
 
 Action EncodeMeepleAction(int pos) {
@@ -194,8 +196,9 @@ int TerrainIndex(EdgeType edge_type) {
     SpielFatalError("Unexpected edge type for terrain plane.");
 }
 
+// (x, y) is a cell of the view.
 void SetPlaneValue(absl::Span<float> values, int plane, int x, int y, float value) {
-    const int index = (plane * BOARD_SIZE + y) * BOARD_SIZE + x;
+    const int index = (plane * VIEW_SIZE + y) * VIEW_SIZE + x;
     values[index] = value;
 }
 
@@ -217,12 +220,12 @@ int SidePairIndex(int a, int b) {
     SpielFatalError("Not a pair of distinct sides.");
 }
 
-// One quarter turn clockwise maps (x, y) to (N-1-y, x): north (y-1) becomes
-// east (x+1), matching Tile::rotate().
+// One quarter turn clockwise maps view cell (x, y) to (N-1-y, x): north (y-1)
+// becomes east (x+1), matching Tile::rotate().
 void RotateCell(int k, int *x, int *y) {
     for (int i = 0; i < k; ++i) {
         const int old_x = *x;
-        *x = BOARD_SIZE - 1 - *y;
+        *x = VIEW_SIZE - 1 - *y;
         *y = old_x;
     }
 }
@@ -265,16 +268,16 @@ const std::array<std::vector<int>, kNumBoardRotations> &RotationSourceIndices() 
         for (int k = 0; k < kNumBoardRotations; ++k) {
             result[k].resize(kObservationTensorSize);
             for (int plane = 0; plane < kObservationPlanes; ++plane) {
-                for (int y = 0; y < BOARD_SIZE; ++y) {
-                    for (int x = 0; x < BOARD_SIZE; ++x) {
+                for (int y = 0; y < VIEW_SIZE; ++y) {
+                    for (int x = 0; x < VIEW_SIZE; ++x) {
                         int rx = x;
                         int ry = y;
                         // The global vector is not a picture of the board.
                         if (plane != kGlobalFeaturePlane) {
                             RotateCell(k, &rx, &ry);
                         }
-                        result[k][(RotatePlane(plane, k) * BOARD_SIZE + ry) * BOARD_SIZE + rx] =
-                            (plane * BOARD_SIZE + y) * BOARD_SIZE + x;
+                        result[k][(RotatePlane(plane, k) * VIEW_SIZE + ry) * VIEW_SIZE + rx] =
+                            (plane * VIEW_SIZE + y) * VIEW_SIZE + x;
                     }
                 }
             }
@@ -331,19 +334,31 @@ Player CarcassonneState::CurrentPlayer() const {
     return game_state_.currentPlayer;
 }
 
-// The actor logs record games with these strings; tools/actor_log.hpp parses
-// them to replay self-play games.
+Action CarcassonneState::TileAction(int x, int y, int rot) const {
+    SPIEL_CHECK_TRUE(game_state_.inView(x, y));
+    return EncodeTileAction(x - game_state_.view_x0, y - game_state_.view_y0, rot);
+}
+
+TileMove CarcassonneState::TileActionMove(Action action) const {
+    int x;
+    int y;
+    int rot;
+    DecodeTileAction(action, &x, &y, &rot);
+    return {static_cast<uint8_t>(game_state_.view_x0 + x), static_cast<uint8_t>(game_state_.view_y0 + y),
+            static_cast<uint8_t>(rot)};
+}
+
+// The actor logs record games with these strings, tiles by board cell;
+// tools/actor_log.hpp parses them to replay self-play games.
 std::string CarcassonneState::ActionToString(Player player, Action action) const {
     if (player == kChancePlayerId) {
         return absl::StrCat("draw_type(", DecodeChanceAction(action), ")");
     }
 
     if (action < kTileActionCount) {
-        int x;
-        int y;
-        int rot;
-        DecodeTileAction(action, &x, &y, &rot);
-        return absl::StrCat("place_tile(x=", x, ", y=", y, ", rot=", rot, ")");
+        const TileMove move = TileActionMove(action);
+        return absl::StrCat("place_tile(x=", static_cast<int>(move.x), ", y=", static_cast<int>(move.y),
+                            ", rot=", static_cast<int>(move.rot), ")");
     }
 
     const int meeple_pos = DecodeMeepleAction(action);
@@ -367,14 +382,15 @@ std::string CarcassonneState::ActionToString(Player player, Action action) const
     return absl::StrCat(verb, "edge=", spot, ")");
 }
 
+// The board as the view shows it, which holds every tile.
 std::string CarcassonneState::ToString() const {
     std::vector<std::string> board_rows;
-    board_rows.reserve(BOARD_SIZE);
-    for (int y = 0; y < BOARD_SIZE; ++y) {
+    board_rows.reserve(VIEW_SIZE);
+    for (int y = game_state_.view_y0; y < game_state_.view_y0 + VIEW_SIZE; ++y) {
         std::vector<std::string> row;
-        row.reserve(BOARD_SIZE);
-        for (int x = 0; x < BOARD_SIZE; ++x) {
-            const Placement &placement = game_state_.getPlacement(x,y);
+        row.reserve(VIEW_SIZE);
+        for (int x = game_state_.view_x0; x < game_state_.view_x0 + VIEW_SIZE; ++x) {
+            const Placement &placement = game_state_.getPlacement(x, y);
             if (placement.id == 0) {
                 row.push_back(".");
             } else {
@@ -408,7 +424,8 @@ std::string CarcassonneState::ToString() const {
     return absl::StrCat("phase=", PhaseToString(game_state_.current_phase), " current_player=", game_state_.currentPlayer,
                         " current_tile_type=", game_state_.currentTileType(), " remaining=", game_state_.getTotalRemaining(),
                         " scores=[", game_state_.player_scores[0], ", ", game_state_.player_scores[1], "] holding=[",
-                        game_state_.holding_meeples[0], ", ", game_state_.holding_meeples[1], "]", expansion_pieces, "\n",
+                        game_state_.holding_meeples[0], ", ", game_state_.holding_meeples[1], "]", expansion_pieces,
+                        " view=(", game_state_.view_x0, ", ", game_state_.view_y0, ")\n",
                         absl::StrJoin(board_rows, "\n"));
 }
 
@@ -460,12 +477,15 @@ void CarcassonneState::ObservationTensor(Player player, absl::Span<float> values
         SetPlaneValue(values, planes.open_cities, x, y, std::min(cities.open / kFieldOpenCitiesNormalization, 1.0f));
     };
 
-    for (int y = 0; y < BOARD_SIZE; ++y) {
-        for (int x = 0; x < BOARD_SIZE; ++x) {
-            if (game_state_.isFrontier(x, y)) {
+    // (bx, by) is the board cell of view cell (x, y).
+    for (int y = 0; y < VIEW_SIZE; ++y) {
+        for (int x = 0; x < VIEW_SIZE; ++x) {
+            const int bx = game_state_.view_x0 + x;
+            const int by = game_state_.view_y0 + y;
+            if (game_state_.isFrontier(bx, by)) {
                 SetPlaneValue(values, kFrontierPlane, x, y, 1.0f);
             }
-            const Placement &placement = game_state_.getPlacement(x, y);
+            const Placement &placement = game_state_.getPlacement(bx, by);
             if (placement.id == 0) {
                 continue;
             }
@@ -480,12 +500,12 @@ void CarcassonneState::ObservationTensor(Player player, absl::Span<float> values
             if (tile.monastery) {
                 SetPlaneValue(values, kMonasteryPlane, x, y, 1.0f);
                 SetPlaneValue(values, kMonasteryCoveragePlane, x, y,
-                              game_state_.coverage3x3(x, y) / kMonasteryCoverageNormalization);
-                const int owner = game_state_.monasteryOwner(x, y);
+                              game_state_.coverage3x3(bx, by) / kMonasteryCoverageNormalization);
+                const int owner = game_state_.monasteryOwner(bx, by);
                 if (owner != -1) {
                     SetPlaneValue(values, kMonasteryOwnerPlane, x, y, owner == player ? 1.0f : -1.0f);
                 }
-                const int big_owner = game_state_.monasteryBigMeepleOwner(x, y);
+                const int big_owner = game_state_.monasteryBigMeepleOwner(bx, by);
                 if (big_owner != -1) {
                     SetPlaneValue(values, kMonasteryBigMeeplePlane, x, y, big_owner == player ? 1.0f : -1.0f);
                 }
@@ -497,7 +517,7 @@ void CarcassonneState::ObservationTensor(Player player, absl::Span<float> values
                     SetPlaneValue(values, kSideLinkPlane + pair, x, y, 1.0f);
                 }
             }
-            if (game_state_.last_x == x && game_state_.last_y == y) {
+            if (game_state_.last_x == bx && game_state_.last_y == by) {
                 SetPlaneValue(values, kLastPlacedPlane, x, y, 1.0f);
             }
             for (int side = 0; side < 4; ++side) {
@@ -562,11 +582,12 @@ void CarcassonneState::ObservationTensor(Player player, absl::Span<float> values
         std::array<TileMove, kTileActionCount> tile_moves{};
         game_state_.getLegalTileMoves(tile_moves.data(), legal_placements);
         for (int i = 0; i < legal_placements; ++i) {
-            SetPlaneValue(values, kLegalPlacementPlane + tile_moves[i].rot, tile_moves[i].x, tile_moves[i].y, 1.0f);
+            SetPlaneValue(values, kLegalPlacementPlane + tile_moves[i].rot, tile_moves[i].x - game_state_.view_x0,
+                          tile_moves[i].y - game_state_.view_y0, 1.0f);
         }
     }
 
-    absl::Span<float> global = values.subspan(kGlobalFeaturePlane * BOARD_SIZE * BOARD_SIZE, kGlobalFeatures);
+    absl::Span<float> global = values.subspan(kGlobalFeaturePlane * VIEW_SIZE * VIEW_SIZE, kGlobalFeatures);
     const int *scores = game_state_.player_scores;
     int pending[2];
     game_state_.getPendingScore(pending);
@@ -675,7 +696,7 @@ std::vector<Action> CarcassonneState::LegalActions() const {
         game_state_.getLegalTileMoves(tile_moves.data(), count);
         actions.reserve(count);
         for (int i = 0; i < count; ++i) {
-            actions.push_back(EncodeTileAction(tile_moves[i].x, tile_moves[i].y, tile_moves[i].rot));
+            actions.push_back(TileAction(tile_moves[i].x, tile_moves[i].y, tile_moves[i].rot));
         }
         std::sort(actions.begin(), actions.end());
         return actions;
@@ -699,11 +720,8 @@ void CarcassonneState::DoApplyAction(Action action) {
     }
 
     if (game_state_.current_phase == PHASE_TILE) {
-        int x;
-        int y;
-        int rot;
-        DecodeTileAction(action, &x, &y, &rot);
-        game_state_.placeTile(x, y, rot);
+        const TileMove move = TileActionMove(action);
+        game_state_.placeTile(move.x, move.y, move.rot);
         return;
     }
 
@@ -798,7 +816,7 @@ void RotateObservation(absl::Span<const float> observation, int k, const SideGro
     // table leaves in place; rename each legal one instead: the sides of the
     // meeple, the big meeple and the builder, and the half-edges of the
     // meeple, the big meeple and the pig.
-    const int legal_moves = kGlobalFeaturePlane * BOARD_SIZE * BOARD_SIZE + kGlobalLegalMeeple + 1;
+    const int legal_moves = kGlobalFeaturePlane * VIEW_SIZE * VIEW_SIZE + kGlobalLegalMeeple + 1;
     for (int first_side : {0, MEEPLE_POS_BIG, MEEPLE_POS_BUILDER}) {
         const int legal_sides = legal_moves + first_side;
         for (int side = 0; side < 4; ++side) {

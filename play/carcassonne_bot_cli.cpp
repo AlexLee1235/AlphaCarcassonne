@@ -6,7 +6,6 @@
 #include <random>
 #include <stdexcept>
 #include <string>
-#include <tuple>
 
 #include "open_spiel/algorithms/alpha_zero_torch/device_manager.h"
 #include "open_spiel/algorithms/alpha_zero_torch/vpevaluator.h"
@@ -75,17 +74,6 @@ int FallbackSimulations() {
         return std::max(1, std::stoi(az_value));
     }
     return PositiveEnvInt("CARCASSONNE_MCTS_SIMULATIONS", 200);
-}
-
-std::tuple<int, int, int> DecodeTileAction(open_spiel::Action action) {
-    if (action < 0 || action >= open_spiel::carcassonne::kTileActionCount) {
-        throw std::runtime_error("Bot did not return a tile placement action.");
-    }
-    const int rot = action % 4;
-    action /= 4;
-    const int x = action % BOARD_SIZE;
-    const int y = action / BOARD_SIZE;
-    return {x, y, rot};
 }
 
 int DecodeMeepleAction(open_spiel::Action action) {
@@ -319,8 +307,16 @@ class CarcassonneBotCli {
         }
 
         if (mirror_.current_phase == PHASE_TILE) {
-            auto [x, y, rot] = DecodeTileAction(action);
-            json response{{"ok", true}, {"kind", "tile"}, {"x", x}, {"y", y}, {"rot", rot}};
+            if (action < 0 || action >= open_spiel::carcassonne::kTileActionCount) {
+                throw std::runtime_error("Bot did not return a tile placement action.");
+            }
+            // The action names a cell of the view; the reply gives the board cell.
+            const TileMove move = state.TileActionMove(action);
+            json response{{"ok", true},
+                          {"kind", "tile"},
+                          {"x", static_cast<int>(move.x)},
+                          {"y", static_cast<int>(move.y)},
+                          {"rot", static_cast<int>(move.rot)}};
             response.update(values);
             return response;
         }

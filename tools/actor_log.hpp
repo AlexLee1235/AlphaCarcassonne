@@ -21,7 +21,20 @@ struct LoggedGame {
     double returns[2] = {0, 0};
     std::vector<std::string> actions;
     bool truncated = false;  // 行被截斷(例如下載時 log 還在寫)
+    int board_shift = 0;     // 加到 place_tile 的座標上,見 BoardShift
 };
+
+// 盤面從 21x21 加大成 BOARD_SIZE 以前的 log,起始磚在 (10, 10),格子都比現在少
+// BOARD_SIZE / 2 - 10。第一張磚一定貼著起始磚(或河源),看它就分得出來。
+inline int BoardShift(const std::vector<std::string> &actions) {
+    constexpr int kOldCentre = 10;
+    for (const std::string &a : actions) {
+        int x = 0, y = 0, rot = 0;
+        if (sscanf(a.c_str(), "place_tile(x=%d, y=%d, rot=%d)", &x, &y, &rot) == 3)
+            return std::abs(x - kOldCentre) + std::abs(y - kOldCentre) == 1 ? BOARD_SIZE / 2 - kOldCentre : 0;
+    }
+    return 0;
+}
 
 // 一個檔案裡所有 "Game N: Returns: ...; Actions: ..." 行。
 inline std::vector<LoggedGame> ReadActorLog(const std::string &path) {
@@ -52,6 +65,7 @@ inline std::vector<LoggedGame> ReadActorLog(const std::string &path) {
             g.actions.push_back(line.substr(i, end - i + 1));
             i = end + 1;
         }
+        g.board_shift = BoardShift(g.actions);
         games.push_back(std::move(g));
     }
     return games;
@@ -98,7 +112,8 @@ inline int StepAt(const std::vector<std::pair<std::string, int>> &steps, const s
 }
 
 // 把一個 ActionToString 字串套到引擎上。階段不對、看不懂或不合法就回傳 false。
-inline bool ApplyLoggedAction(Carcassonne &g, const std::string &a, std::string *error) {
+// board_shift 是 LoggedGame::board_shift。
+inline bool ApplyLoggedAction(Carcassonne &g, const std::string &a, std::string *error, int board_shift = 0) {
     auto fail = [&](const char *why) {
         *error = std::string(why) + ": " + a;
         return false;
@@ -116,6 +131,8 @@ inline bool ApplyLoggedAction(Carcassonne &g, const std::string &a, std::string 
     }
     if (sscanf(a.c_str(), "place_tile(x=%d, y=%d, rot=%d)", &x, &y, &rot) == 3) {
         if (g.current_phase != PHASE_TILE) return fail("不在放磚階段");
+        x += board_shift;
+        y += board_shift;
         std::vector<TileMove> moves(BOARD_SIZE * BOARD_SIZE * 4);
         int count = 0;
         g.getLegalTileMoves(moves.data(), count);
@@ -174,7 +191,7 @@ ReplayResult Replay(const LoggedGame &logged, OnDecision on_decision, std::strin
             return ReplayResult::kError;
         }
         if (game.current_phase != PHASE_CHANCE) on_decision(static_cast<const Carcassonne &>(game));
-        if (!ApplyLoggedAction(game, action, error)) return ReplayResult::kError;
+        if (!ApplyLoggedAction(game, action, error, logged.board_shift)) return ReplayResult::kError;
     }
     if (game.current_phase != PHASE_TERMINAL) {
         *error = logged.truncated ? "行被截斷" : "沒下完(提前認輸?)";

@@ -20,7 +20,7 @@ namespace algorithms {
 namespace torch_az {
 namespace {
 
-constexpr int kPlaneSize = BOARD_SIZE * BOARD_SIZE;
+constexpr int kPlaneSize = VIEW_SIZE * VIEW_SIZE;
 
 // Calls `f` with the observation of every decision state of `games` random
 // games, from each player's side.

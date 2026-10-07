@@ -23,7 +23,9 @@ constexpr std::array<int, 4> op = {D, L, U, R};
 
 bool Carcassonne::isLegalPlacement(int tile_id, int x, int y, int rot) const {
     const Tile &tile = full_deck[tile_id][rot];
-    if (!board.canPlaceTileAt(x, y, tile)) {
+    // Here, not only in the moves offered: a tile that fits only outside the
+    // view is unplaceable (drawTile discards it).
+    if (!inView(x, y) || !board.canPlaceTileAt(x, y, tile)) {
         return false;
     }
     if (!river_rules || riverEdgeCount(tile) == 0) {
@@ -114,10 +116,37 @@ void Carcassonne::resolveNoMoreDraws() {
     resolveEndGameScore();
 }
 
+namespace {
+
+// The view's first cell along one axis, for tiles spanning lo..hi on it:
+// centred on them; when they span an even count, half a cell towards the
+// centre cell, so that a game rotated about it gets the view rotated too.
+// Kept on the board.
+int viewOrigin(int lo, int hi) {
+    const int twice_centre = lo + hi;
+    int centre = twice_centre / 2;
+    if (twice_centre % 2 != 0 && twice_centre < 2 * (BOARD_SIZE / 2)) {
+        ++centre;
+    }
+    return std::clamp(centre - VIEW_SIZE / 2, 0, BOARD_SIZE - VIEW_SIZE);
+}
+
+} // namespace
+
+void Carcassonne::updateView(int x, int y) {
+    tiles_x0 = std::min(tiles_x0, x);
+    tiles_x1 = std::max(tiles_x1, x);
+    tiles_y0 = std::min(tiles_y0, y);
+    tiles_y1 = std::max(tiles_y1, y);
+    view_x0 = viewOrigin(tiles_x0, tiles_x1);
+    view_y0 = viewOrigin(tiles_y0, tiles_y1);
+}
+
 void Carcassonne::placeTileOnBoard(int tile_id, int x, int y, int rot) {
     const Tile &tile = full_deck[tile_id][rot];
     last_x = x;
     last_y = y;
+    updateView(x, y);
     frontier.placeTileOnBoard(tile_id, x, y, rot, board);
     board.placeTileOnBoard(tile_id, x, y, rot, tile);
     features.placeTileOnBoard(tile_id, x, y, rot, tile, board);

@@ -118,9 +118,10 @@ def test_bot_cli_reports_latest_observation_shape() -> None:
 
     # 101 spatial planes (fields and expansion terrain included) and one global
     # plane; meeple positions -1..13.
-    assert response["observation_shape"] == [151, ENGINE_BOARD_SIZE, ENGINE_BOARD_SIZE]
-    assert response["observation_tensor_size"] == 151 * ENGINE_BOARD_SIZE * ENGINE_BOARD_SIZE
-    assert response["num_distinct_actions"] == ENGINE_BOARD_SIZE * ENGINE_BOARD_SIZE * 4 + 41
+    # The observation and the tile actions cover the view, not the whole board.
+    assert response["observation_shape"] == [151, BOARD_SIZE, BOARD_SIZE]
+    assert response["observation_tensor_size"] == 151 * BOARD_SIZE * BOARD_SIZE
+    assert response["num_distinct_actions"] == BOARD_SIZE * BOARD_SIZE * 4 + 41
 
 
 def test_player_spec_builds_per_player_az_env_without_device() -> None:
@@ -637,17 +638,21 @@ def test_setup_panel_seats_human_against_bot() -> None:
         build_player_specs(1, "az", az_path="  ")
 
 
-def test_ui_shows_the_whole_engine_board() -> None:
+def test_ui_follows_the_engine_view() -> None:
     adapter = CppCarcassonneAdapter(seed=7)
-    assert BOARD_SIZE == ENGINE_BOARD_SIZE
-    assert adapter.view_origin == (0, 0)
-    # Every legal move, edge cells included, is offered to the human for a whole game.
+    assert BOARD_SIZE < ENGINE_BOARD_SIZE
+    # The UI shows the engine's view, which holds every legal move: each one, on
+    # the view's edge cells too, is offered to the human for a whole game.
+    origins = set()
     while not adapter.state.game_over:
+        assert adapter.view_origin == tuple(adapter._engine.view_origin)
+        origins.add(adapter.view_origin)
         engine_moves = sorted(adapter._engine.get_legal_tile_moves())
-        ui_moves = sorted((move.x, move.y, move.rotation) for move in adapter.get_valid_moves())
+        ui_moves = sorted((*adapter.to_engine_coords(move.x, move.y), move.rotation) for move in adapter.get_valid_moves())
         assert ui_moves == engine_moves
         adapter.confirm_tile(adapter.get_valid_moves()[-1])
         adapter.apply_meeple(-1)
+    assert len(origins) > 1
 
 
 def test_adapter_without_auto_run_leaves_bot_turn_to_caller(monkeypatch: pytest.MonkeyPatch) -> None:

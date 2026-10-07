@@ -260,6 +260,8 @@ class CarcassonneUI:
         self.board_zoom = 1.0
         self.board_viewport: Optional[Tuple[float, float]] = None
         self.center_board_pending = True
+        # The engine's view the grid was last drawn from; it moves with the tiles.
+        self.shown_view_origin: Optional[Tuple[int, int]] = None
 
         self._build_setup_panel()
         self._build_game_panel()
@@ -500,6 +502,7 @@ class CarcassonneUI:
             self.engine.close()
         self.engine = None
         self.state = None
+        self.shown_view_origin = None
         self.ai_running = False
         self.selected_move = None
         self.awaiting_meeple = False
@@ -574,6 +577,11 @@ class CarcassonneUI:
         self.records_column.controls = record_controls or [ft.Text("No records.")]
 
         self._render_grid()
+        # The grid shifts under the tiles when the view moves; centre them again
+        # so they stay put on screen.
+        if self.shown_view_origin is not None and self.engine.view_origin != self.shown_view_origin:
+            self.page.run_task(self._show_board, self.board_zoom)
+        self.shown_view_origin = self.engine.view_origin
 
         if self.state.game_over:
             self.status.value = f"Game over. {self._result_text()} {self._saved_text()}"

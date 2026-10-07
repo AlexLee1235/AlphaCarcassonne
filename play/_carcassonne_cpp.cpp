@@ -109,6 +109,7 @@ PYBIND11_MODULE(_carcassonne_cpp, m) {
     m.doc() = "Small pybind11 bridge from the Flet UI to the current Carcassonne core engine.";
 
     m.attr("BOARD_SIZE") = BOARD_SIZE;
+    m.attr("VIEW_SIZE") = VIEW_SIZE;
     m.attr("PHASE_CHANCE") = static_cast<int>(PHASE_CHANCE);
     m.attr("PHASE_TILE") = static_cast<int>(PHASE_TILE);
     m.attr("PHASE_MEEPLE") = static_cast<int>(PHASE_MEEPLE);
@@ -133,6 +134,10 @@ PYBIND11_MODULE(_carcassonne_cpp, m) {
                                [](const Carcassonne &game) { return game.current_tile_in_hand; })
         .def_property_readonly("player_scores", &PlayerScores)
         .def_property_readonly("holding_meeples", &HoldingMeeples)
+        // The first cell of the view, which follows the tiles: every tile and
+        // every legal move is in the VIEW_SIZE x VIEW_SIZE cells from it.
+        .def_property_readonly("view_origin",
+                               [](const Carcassonne &game) { return std::make_tuple(game.view_x0, game.view_y0); })
         .def("get_available_draws", &GetAvailableDraws)
         .def("draw_tile", &Carcassonne::drawTile)
         .def("get_legal_tile_moves", &GetLegalTileMoves)

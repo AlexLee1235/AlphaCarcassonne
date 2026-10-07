@@ -11,10 +11,17 @@
 #include <utility>
 #include <vector>
 
-// 15 cut off 31% of games at the edge and left city edges facing off the
-// board that could never be closed; 21 holds 99.9% of games.
-constexpr int BOARD_SIZE = 21;
+// Tiles go only inside the view: VIEW_SIZE x VIEW_SIZE cells centred on the
+// tiles placed so far (Carcassonne::view_x0, view_y0), which is what the
+// players see and name their moves by. Following the tiles, 21 holds 99.96% of
+// random base games and 98.5% with the river (greedy games: 100%, 99.7%); kept
+// on the start tile it held 95.5% and 28% (tools/diag_board_free). The board
+// only holds wherever the view can wander: 20 cells each way from the start
+// tile on its centre cell.
+constexpr int VIEW_SIZE = 21;
+constexpr int BOARD_SIZE = 41;
 static_assert(BOARD_SIZE % 2 == 1, "the start tile sits on the centre cell");
+static_assert(VIEW_SIZE % 2 == 1 && VIEW_SIZE <= BOARD_SIZE, "the view has a centre cell and fits on the board");
 constexpr int TOTAL_TILE_COUNT = PHYSICAL_TILE_COUNT;
 constexpr int MAX_FRONTIER_CELLS = TOTAL_TILE_COUNT * 2 + 2;
 constexpr int EDGE_SLOT_COUNT = TOTAL_TILE_COUNT * 4;
@@ -328,6 +335,9 @@ class Carcassonne {
     LogModule logs;
 
     void placeTileOnBoard(int tile_id, int x, int y, int rot);
+    // Adds the tile just placed at (x, y) to the bounding box and centres the
+    // view on it.
+    void updateView(int x, int y);
     // Follows the river onto a river tile just placed.
     void advanceRiver(int x, int y, const Tile &tile);
     bool isLegalPlacement(int tile_id, int x, int y, int rot) const;
@@ -341,6 +351,14 @@ class Carcassonne {
   public:
     int last_x = -1;
     int last_y = -1;
+    // The bounding box of the tiles placed so far, and the view: the VIEW_SIZE x
+    // VIEW_SIZE cells from (view_x0, view_y0), centred on that box (see
+    // updateView). Tiles go only inside the view, so it always holds them all.
+    int tiles_x0 = BOARD_SIZE, tiles_x1 = -1, tiles_y0 = BOARD_SIZE, tiles_y1 = -1;
+    int view_x0 = 0, view_y0 = 0;
+    bool inView(int x, int y) const {
+        return x >= view_x0 && x < view_x0 + VIEW_SIZE && y >= view_y0 && y < view_y0 + VIEW_SIZE;
+    }
     GamePhase current_phase = PHASE_CHANCE;
     int player_scores[2] = {0, 0};
     int holding_meeples[2] = {MEEPLES_PER_PLAYER, MEEPLES_PER_PLAYER};

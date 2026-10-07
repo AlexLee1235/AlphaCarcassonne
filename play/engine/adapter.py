@@ -38,10 +38,14 @@ PHASE_TERMINAL = int(_carcassonne_cpp.PHASE_TERMINAL)
 PHYSICAL_TO_CANONICAL_TYPE = list(getattr(_carcassonne_cpp, "PHYSICAL_TO_CANONICAL_TYPE", []))
 # Meeple positions: 0..3 the feature on that side, 4 the monastery, then farmers:
 # MEEPLE_POS_FIELD + half-edge (0..7, clockwise from north-west) and the inner field.
-MEEPLE_POS_SKIP = -1
-MEEPLE_POS_MONASTERY = 4
+MEEPLE_POS_SKIP = int(_carcassonne_cpp.MEEPLE_POS_SKIP)
+MEEPLE_POS_MONASTERY = int(_carcassonne_cpp.MEEPLE_POS_MONASTERY)
 MEEPLE_POS_FIELD = int(_carcassonne_cpp.MEEPLE_POS_FIELD)
 MEEPLE_POS_INNER_FIELD = int(_carcassonne_cpp.MEEPLE_POS_INNER_FIELD)
+# The big meeple, the builder and the pig take the same spots, offset by these (game.hpp).
+MEEPLE_POS_BIG = int(_carcassonne_cpp.MEEPLE_POS_BIG)
+MEEPLE_POS_BUILDER = int(_carcassonne_cpp.MEEPLE_POS_BUILDER)
+MEEPLE_POS_PIG = int(_carcassonne_cpp.MEEPLE_POS_PIG)
 HALF_EDGE_COUNT = int(_carcassonne_cpp.HALF_EDGE_COUNT)
 OPPONENT_MODES = {"player", "random", "mcts", "alphazero", "az"}
 PLAYER_TYPES = {"human", "random", "mcts", "alphazero", "az"}
@@ -70,16 +74,24 @@ def _physical_to_art_id(physical_id: int) -> int:
 def _meeple_action_string(meeple_pos: int) -> str:
     """The meeple move as CarcassonneState::ActionToString writes it in the actor logs."""
     if meeple_pos == MEEPLE_POS_SKIP:
-        arg = "skip"
-    elif meeple_pos == MEEPLE_POS_MONASTERY:
-        arg = "monastery"
-    elif meeple_pos == MEEPLE_POS_INNER_FIELD:
-        arg = "inner_field"
-    elif meeple_pos >= MEEPLE_POS_FIELD:
-        arg = f"field={meeple_pos - MEEPLE_POS_FIELD}"
+        return "place_meeple(skip)"
+    if meeple_pos >= MEEPLE_POS_PIG:
+        verb, spot = "place_pig", MEEPLE_POS_FIELD + meeple_pos - MEEPLE_POS_PIG
+    elif meeple_pos >= MEEPLE_POS_BUILDER:
+        verb, spot = "place_builder", meeple_pos - MEEPLE_POS_BUILDER
+    elif meeple_pos >= MEEPLE_POS_BIG:
+        verb, spot = "place_big_meeple", meeple_pos - MEEPLE_POS_BIG
     else:
-        arg = f"edge={meeple_pos}"
-    return f"place_meeple({arg})"
+        verb, spot = "place_meeple", meeple_pos
+    if spot == MEEPLE_POS_MONASTERY:
+        arg = "monastery"
+    elif spot == MEEPLE_POS_INNER_FIELD:
+        arg = "inner_field"
+    elif spot >= MEEPLE_POS_FIELD:
+        arg = f"field={spot - MEEPLE_POS_FIELD}"
+    else:
+        arg = f"edge={spot}"
+    return f"{verb}({arg})"
 
 
 def _git_revision() -> Optional[str]:

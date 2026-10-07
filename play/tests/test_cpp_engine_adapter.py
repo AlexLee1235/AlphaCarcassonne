@@ -473,6 +473,12 @@ def test_meeple_action_strings_match_the_actor_logs() -> None:
     assert adapter_module._meeple_action_string(4) == "place_meeple(monastery)"
     assert adapter_module._meeple_action_string(MEEPLE_POS_FIELD + 3) == "place_meeple(field=3)"
     assert adapter_module._meeple_action_string(MEEPLE_POS_INNER_FIELD) == "place_meeple(inner_field)"
+    big, builder, pig = adapter_module.MEEPLE_POS_BIG, adapter_module.MEEPLE_POS_BUILDER, adapter_module.MEEPLE_POS_PIG
+    assert adapter_module._meeple_action_string(big + 1) == "place_big_meeple(edge=1)"
+    assert adapter_module._meeple_action_string(big + 4) == "place_big_meeple(monastery)"
+    assert adapter_module._meeple_action_string(big + MEEPLE_POS_FIELD + 2) == "place_big_meeple(field=2)"
+    assert adapter_module._meeple_action_string(builder + 3) == "place_builder(edge=3)"
+    assert adapter_module._meeple_action_string(pig + 5) == "place_pig(field=5)"
 
 
 def test_adapter_saves_a_finished_game(_game_log_dir) -> None:

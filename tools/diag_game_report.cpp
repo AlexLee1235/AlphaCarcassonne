@@ -3,12 +3,13 @@
 //
 //   ./build/diag_game_report <目錄或檔案> [最多逐局印幾局=20]
 //
-// 分數來源:局中完成的城 / 路 / 修道院(+),終局沒完成的城 / 路 / 修道院(~),農田。
+// 分數來源:局中完成的城 / 路 / 修道院(+),終局沒完成的城 / 路 / 修道院(~),農田,貨物獎金。
+// 旅館、大教堂算在城/路裡(getScore() 已含),小豬算在農田裡。
 // 歸因不改引擎:
 //   - 放 meeple 時引擎只結算剛放的那張磚碰到的城/路(settleAfterPlaceMeeple),
-//     所以在放之前看那張磚的城/路邊,已封口(opens == 0)的就依多數(含這手新放的)記 getScore()。
+//     所以在放之前看那張磚的城/路邊,已封口(opens == 0)的就依多數(含這手新放的,大米寶算 2)記 getScore()。
 //   - 修道院 = 這手的分差扣掉城/路(與終局結算)之後的剩餘,必須是 9 的非負倍數。
-//   - 終局照 FeatureModule::resolveEndGameScore 的迴圈分城/路;修道院、農田直接呼叫模組(都不改狀態)。
+//   - 終局照 FeatureModule::resolveEndGameScore 的迴圈分城/路;修道院、農田、貨物直接呼叫(都不改狀態)。
 // 各項加總對不上最終分數、或勝負跟 log 的 Returns 不一致,就印 WARN —— 那一局的數字不能用。
 #include "actor_log.hpp"
 
@@ -17,14 +18,15 @@
 
 namespace {
 
-enum Source { CITY_DONE, ROAD_DONE, MONASTERY_DONE, CITY_END, ROAD_END, MONASTERY_END, FARM, SOURCES };
-const char *kSourceNames[SOURCES] = {"city+", "road+", "mon+", "city~", "road~", "mon~", "farm"};
+enum Source { CITY_DONE, ROAD_DONE, MONASTERY_DONE, CITY_END, ROAD_END, MONASTERY_END, FARM, GOODS, SOURCES };
+const char *kSourceNames[SOURCES] = {"city+", "road+", "mon+", "city~", "road~", "mon~", "farm", "goods"};
 
 struct PlayerReport {
     int points[SOURCES] = {};
     int final_score = 0;
     int turns = 0, hand_sum = 0, empty_hand_turns = 0;
-    int on_feature = 0, on_monastery = 0, farmers = 0, skipped = 0;
+    // 大米寶依位置算進前三類;建築師、小豬另計
+    int on_feature = 0, on_monastery = 0, farmers = 0, skipped = 0, builders_pigs = 0;
     std::vector<int> farmer_turns;  // 自己的第幾手(從 1 起)放下農夫
     int quarter_hand[4] = {}, quarter_turns[4] = {};  // 自己第 1–9、10–18、19–27、28– 手前手上的 meeple
 
@@ -35,13 +37,28 @@ struct PlayerReport {
     }
 };
 
+// 動作字串 → meeple 位置(含大米寶、建築師、小豬的偏移),對應 ActionToString;看不懂回傳 -2。
 int ParseMeeplePos(const std::string &a) {
-    int k = 0;
     if (a == "place_meeple(skip)") return MEEPLE_POS_SKIP;
-    if (a == "place_meeple(monastery)") return MEEPLE_POS_MONASTERY;
-    if (a == "place_meeple(inner_field)") return MEEPLE_POS_INNER_FIELD;
-    if (sscanf(a.c_str(), "place_meeple(field=%d)", &k) == 1) return MEEPLE_POS_FIELD + k;
-    if (sscanf(a.c_str(), "place_meeple(edge=%d)", &k) == 1) return k;
+    struct Verb {
+        const char *prefix;
+        int offset;
+    };
+    const Verb verbs[] = {{"place_meeple(", 0},
+                          {"place_big_meeple(", MEEPLE_POS_BIG},
+                          {"place_builder(", MEEPLE_POS_BUILDER},
+                          {"place_pig(", MEEPLE_POS_PIG - MEEPLE_POS_FIELD}};
+    for (const Verb &verb : verbs) {
+        const size_t len = strlen(verb.prefix);
+        if (a.compare(0, len, verb.prefix) != 0) continue;
+        const std::string arg = a.substr(len);
+        int k = 0;
+        if (arg == "monastery)") return verb.offset + MEEPLE_POS_MONASTERY;
+        if (arg == "inner_field)") return verb.offset + MEEPLE_POS_INNER_FIELD;
+        if (sscanf(arg.c_str(), "field=%d)", &k) == 1) return verb.offset + MEEPLE_POS_FIELD + k;
+        if (sscanf(arg.c_str(), "edge=%d)", &k) == 1) return verb.offset + k;
+        return -2;
+    }
     return -2;
 }
 
@@ -58,39 +75,46 @@ void Credit(int score, const int meeples[2], Source source, PlayerReport rep[2],
 void CreditCompletedFeatures(const Carcassonne &game, int pos, PlayerReport rep[2], int credited[2]) {
     Carcassonne g = game;  // find() 會壓縮路徑
     const int x = g.last_x, y = g.last_y, id = g.board.board[y][x].id, player = g.currentPlayer;
-    const int placed_root = pos >= 0 && pos < 4 ? g.features.featureMap.find(g.features.edgeIndex(id, pos)) : -1;
+    // 新放的 follower 在哪個元件、算多少強度;建築師、小豬不是 follower,不算多數
+    const bool follower = pos != MEEPLE_POS_SKIP && !isBuilderPos(pos) && !isPigPos(pos);
+    const int spot = meepleSpot(pos);
+    const int placed_root =
+        follower && spot >= 0 && spot < 4 ? g.features.featureMap.find(g.features.edgeIndex(id, spot)) : -1;
+    const int placed_strength = isBigMeeplePos(pos) ? 2 : 1;
     int seen[4], seen_count = 0;
     for (int side = 0; side < 4; ++side) {
-        if (g.board.edge[y][x][side] == GRASS) continue;
+        if (!isFeatureEdge(g.board.edge[y][x][side])) continue;
         const int root = g.features.featureMap.find(g.features.edgeIndex(id, side));
         if (std::find(seen, seen + seen_count, root) != seen + seen_count) continue;
         seen[seen_count++] = root;
         const Feature &feature = g.features.featureMap.getSetData(root);
         if (feature.opens != 0) continue;
         int meeples[2] = {feature.meeple_count[0], feature.meeple_count[1]};
-        if (root == placed_root) meeples[player]++;
+        if (root == placed_root) meeples[player] += placed_strength;
         if (meeples[0] == 0 && meeples[1] == 0) continue;
         Credit(feature.getScore(), meeples, feature.type == CITY ? CITY_DONE : ROAD_DONE, rep, credited);
     }
 }
 
-// 終局結算(resolveEndGameScore)的三部分。
+// 終局結算(Carcassonne::resolveEndGameScore)的四部分。
 void CreditEndGame(const Carcassonne &game, PlayerReport rep[2], int credited[2]) {
     Carcassonne g = game;
     for (auto it = g.features.featureMap.begin(); it != g.features.featureMap.end(); ++it) {
         const Feature &feature = *it;
-        if (feature.opens == 0 || feature.type == GRASS) continue;
+        if (feature.opens == 0 || !isFeatureEdge(feature.type)) continue;
         const int meeples[2] = {feature.meeple_count[0], feature.meeple_count[1]};
         if (meeples[0] == 0 && meeples[1] == 0) continue;
         Credit(feature.getScore(), meeples, feature.type == CITY ? CITY_END : ROAD_END, rep, credited);
     }
-    int monastery[2] = {0, 0}, farm[2] = {0, 0};
+    int monastery[2] = {0, 0}, farm[2] = {0, 0}, goods[2] = {0, 0};
     g.monasteries.resolveEndGameScore(monastery);
     g.fields.accumulateScore(farm, g.features);
+    g.accumulateGoodsScore(goods);
     for (int p = 0; p < 2; ++p) {
         rep[p].points[MONASTERY_END] += monastery[p];
         rep[p].points[FARM] += farm[p];
-        credited[p] += monastery[p] + farm[p];
+        rep[p].points[GOODS] += goods[p];
+        credited[p] += monastery[p] + farm[p] + goods[p];
     }
 }
 
@@ -119,9 +143,11 @@ std::string ReportGame(const diag::LoggedGame &logged, PlayerReport rep[2]) {
         me.quarter_turns[quarter]++;
         if (pos == MEEPLE_POS_SKIP) {
             me.skipped++;
-        } else if (pos == MEEPLE_POS_MONASTERY) {
+        } else if (isBuilderPos(pos) || isPigPos(pos)) {
+            me.builders_pigs++;
+        } else if (meepleSpot(pos) == MEEPLE_POS_MONASTERY) {
             me.on_monastery++;
-        } else if (pos >= MEEPLE_POS_FIELD) {
+        } else if (meepleSpot(pos) >= MEEPLE_POS_FIELD) {
             me.farmers++;
             me.farmer_turns.push_back(own_turn[pl]);
         } else {
@@ -164,7 +190,7 @@ std::string ReportGame(const diag::LoggedGame &logged, PlayerReport rep[2]) {
 void PrintHeader() {
     printf("        ");
     for (const char *name : kSourceNames) printf(" %6s", name);
-    printf(" | %5s | farmers(own turn)  feature mon skip | hand avg, by quarter          0-hand\n", "total");
+    printf(" | %5s | farmers(own turn)  feature mon skip b+p | hand avg, by quarter          0-hand\n", "total");
 }
 
 void PrintRow(const char *label, const PlayerReport &r, double games) {
@@ -176,7 +202,8 @@ void PrintRow(const char *label, const PlayerReport &r, double games) {
         if (!turns.empty()) turns += ")";
     }
     printf(" | %5.1f | %4.1f %-13s", r.Total() / games, r.farmers / games, turns.c_str());
-    printf(" %7.1f %3.1f %4.1f | %4.2f,", r.on_feature / games, r.on_monastery / games, r.skipped / games,
+    printf(" %7.1f %3.1f %4.1f %3.1f | %4.2f,", r.on_feature / games, r.on_monastery / games, r.skipped / games,
+           r.builders_pigs / games,
            (double)r.hand_sum / std::max(1, r.turns));
     for (int q = 0; q < 4; ++q) printf(" %4.2f", (double)r.quarter_hand[q] / std::max(1, r.quarter_turns[q]));
     printf("   %3.0f%%\n", 100.0 * r.empty_hand_turns / std::max(1, r.turns));
@@ -192,6 +219,7 @@ void Add(PlayerReport &sum, const PlayerReport &r) {
     sum.on_monastery += r.on_monastery;
     sum.farmers += r.farmers;
     sum.skipped += r.skipped;
+    sum.builders_pigs += r.builders_pigs;
     for (int q = 0; q < 4; ++q) {
         sum.quarter_hand[q] += r.quarter_hand[q];
         sum.quarter_turns[q] += r.quarter_turns[q];

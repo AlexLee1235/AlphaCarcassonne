@@ -17,7 +17,7 @@ from play.cpp_engine import (
     PlayerSpec,
 )
 from play.engine import adapter as adapter_module
-from play.engine.adapter import BotCliClient
+from play.engine.adapter import BotCliClient, expansion_masks, expansion_parameters, game_log_file
 from pathlib import Path
 
 from play.models import BotValue, Move, MoveRecord
@@ -32,7 +32,9 @@ from play.ui.app import (
     parse_ui_config,
     should_show_start_game,
     summarize_ai_status,
+    view_shift_pan,
 )
+from play.ui.app import CELL_SIZE
 
 
 def _resolve_native_to_tile_phase(engine: _carcassonne_cpp.Carcassonne) -> None:
@@ -588,9 +590,13 @@ def test_adapter_accepts_az_alias() -> None:
 class FakeBotCli:
     """Stands in for the bot CLI process: mirrors the game and plays the first legal move."""
 
-    def __init__(self, path=None, env=None):
+    def __init__(self, path=None, env=None, expansion_masks=None):
         self.env = env or {}
-        self.mirror = _carcassonne_cpp.Carcassonne()
+        if expansion_masks is None:
+            self.mirror = _carcassonne_cpp.Carcassonne()
+        else:
+            # Like the real bot CLI, play the same expansions as the UI.
+            self.mirror = _carcassonne_cpp.Carcassonne(expansions=expansion_masks[0], rules=expansion_masks[1])
 
     def close(self) -> None:
         pass
@@ -740,12 +746,26 @@ def test_bot_cli_alphazero_reports_value(monkeypatch: pytest.MonkeyPatch) -> Non
 def test_bot_cli_rejects_binary_built_for_another_board() -> None:
     client = BotCliClient.__new__(BotCliClient)
     closed = []
-    client.request = lambda payload: {"ok": True, "observation_shape": [80, 15, 15]}
     client.close = lambda: closed.append(True)
 
     with pytest.raises(RuntimeError, match="build_ext --inplace"):
-        client._check_board_size()
+        client._check_board_size({"ok": True, "observation_shape": [80, 15, 15]})
     assert closed
+
+
+def test_bot_cli_rejects_binary_that_ignores_the_expansions() -> None:
+    client = BotCliClient.__new__(BotCliClient)
+    closed = []
+    client.close = lambda: closed.append(True)
+    river = expansion_masks({"river": "on"})
+
+    # A bot CLI built before CARCASSONNE_EXPANSIONS reports no masks: fine for a base game only.
+    client._check_expansions({"ok": True}, expansion_masks({}))
+    with pytest.raises(RuntimeError, match="did not pick up the expansions"):
+        client._check_expansions({"ok": True}, river)
+    with pytest.raises(RuntimeError, match="did not pick up the expansions"):
+        client._check_expansions({"ok": True, "expansions": 1, "rules": 0}, river)
+    assert len(closed) == 2
 
 
 def test_bot_cli_reads_value_perspective_from_training_config(
@@ -797,3 +817,132 @@ def test_meeple_alignment_follows_sides_and_half_edges() -> None:
     expected = [(-0.5, -0.7), (0.5, -0.7), (0.7, -0.5), (0.7, 0.5), (0.5, 0.7), (-0.5, 0.7), (-0.7, 0.5), (-0.7, -0.5)]
     for half_edge in range(HALF_EDGE_COUNT):
         assert meeple_alignment(MEEPLE_POS_FIELD + half_edge) == pytest.approx(expected[half_edge])
+
+
+RIVER_TYPES = range(25, 35)
+RIVER_LAKE_TYPE = 26
+
+
+def _expansion_bit(name: str) -> int:
+    return int(_carcassonne_cpp.expansion_bit(list(_carcassonne_cpp.EXPANSION_NAMES).index(name)))
+
+
+def test_expansion_masks_follow_the_game_parameters() -> None:
+    base = int(_carcassonne_cpp.BASE_ONLY)
+    river = _expansion_bit("river")
+    inns = _expansion_bit("inns_cathedrals")
+
+    assert expansion_masks({}) == (base, 0)
+    assert expansion_masks({"river": "on"}) == (base | river, river)
+    assert expansion_masks({"inns_cathedrals": "tiles"}) == (base | inns, 0)
+    assert expansion_masks({"river": "off"}) == (base, 0)
+    for bad in ({"river": "tiles"}, {"river": "x"}, {"lakes": "on"}):
+        with pytest.raises(ValueError):
+            expansion_masks(bad)
+    assert expansion_parameters({"river": "on"}) == "river=on"
+    assert game_log_file({}) == "log-actor-gui.txt"
+    assert game_log_file({"river": "on"}) == "log-actor-gui-river.txt"
+
+
+def _river_game(seed: int) -> CppCarcassonneAdapter:
+    return CppCarcassonneAdapter(seed=seed, expansions={"river": "on"})
+
+
+def test_river_game_starts_at_the_spring_and_lays_the_river_first() -> None:
+    adapter = _river_game(5)
+    assert adapter.expansions == {"river": "on"}
+    assert adapter.state.board[START_POS].tile_id == 25  # the spring replaces the start tile
+    assert "River: on" in adapter.mode_label()
+
+    while len(adapter.move_records) < 12 and not adapter.state.game_over:
+        adapter.confirm_tile(adapter.get_valid_moves()[0])
+        adapter.apply_meeple(-1)
+
+    placed = [record.tile_id for record in reversed(adapter.move_records)]
+    # 12 river tiles with the spring: the other 11 come first and the lake closes them.
+    assert all(tile in RIVER_TYPES for tile in placed[:11])
+    assert placed[10] == RIVER_LAKE_TYPE
+    assert placed[11] not in RIVER_TYPES
+    adapter.close()
+
+
+def test_river_game_plays_to_the_end() -> None:
+    import random
+
+    rng = random.Random(7)
+    adapter = _river_game(7)
+    while not adapter.state.game_over:
+        options = adapter.confirm_tile(rng.choice(adapter.get_valid_moves()))
+        adapter.apply_meeple(rng.choice(options))
+    assert adapter.state.game_over
+    assert sum(adapter.state.scores.values()) > 0
+    adapter.close()
+
+
+def test_bot_cli_plays_with_the_river() -> None:
+    masks = expansion_masks({"river": "on"})
+    engine = _carcassonne_cpp.Carcassonne(expansions=masks[0], rules=masks[1])
+    cli = BotCliClient(env={"CARCASSONNE_EXPANSIONS": "river=on"}, expansion_masks=masks)
+    try:
+        info = cli.request({"cmd": "info"})
+        assert (info["expansions"], info["rules"]) == masks
+        draw_type = list(engine.get_available_draws())[0][0]
+        assert draw_type in RIVER_TYPES
+        engine.draw_tile(draw_type)
+        cli.request({"cmd": "apply_draw", "type": draw_type})
+        response = cli.request({"cmd": "choose", "bot": "random", "seed": 1})
+    finally:
+        cli.close()
+
+    assert response["kind"] == "tile"
+    assert (response["x"], response["y"], response["rot"]) in set(engine.get_legal_tile_moves())
+
+
+def test_bot_cli_reports_a_base_game_without_expansions() -> None:
+    cli = BotCliClient(expansion_masks=expansion_masks({}))
+    try:
+        info = cli.request({"cmd": "info"})
+    finally:
+        cli.close()
+    assert (info["expansions"], info["rules"]) == expansion_masks({})
+
+
+def test_ui_parser_takes_the_river() -> None:
+    assert parse_ui_config([]).expansions == {}
+    assert parse_ui_config(["--river=on"]).expansions == {"river": "on"}
+    with pytest.raises(SystemExit):
+        parse_ui_config(["--river=tiles"])
+
+
+def test_view_shift_pan_moves_the_content_back_by_the_shift() -> None:
+    assert view_shift_pan((10, 10), (11, 9)) == (CELL_SIZE, -CELL_SIZE)
+    assert view_shift_pan((10, 10), (10, 10)) == (0, 0)
+
+
+def test_river_game_view_follows_the_tiles(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(adapter_module, "BotCliClient", FakeBotCli)
+    adapter = CppCarcassonneAdapter(
+        seed=11,
+        player_specs=(PlayerSpec(type="human"), PlayerSpec(type="random")),
+        expansions={"river": "on"},
+    )
+    spring = START_POS
+    shifts = 0
+    while len(adapter.move_records) < 16 and not adapter.state.game_over:
+        before = adapter.view_origin
+        spring_before = (spring[0] - before[0], spring[1] - before[1])
+        adapter.confirm_tile(adapter.get_valid_moves()[0])
+        adapter.apply_meeple(-1)  # the random bot replies on its own
+        after = adapter.view_origin
+        # The UI's view is the engine's, and every tile is inside it.
+        assert after == tuple(adapter._engine.view_origin)
+        for x, y in adapter.state.board:
+            assert 0 <= x - after[0] < BOARD_SIZE and 0 <= y - after[1] < BOARD_SIZE
+        if after != before:
+            shifts += 1
+            # The same tile's grid cell moves by minus the shift; view_shift_pan undoes it.
+            dx, dy = after[0] - before[0], after[1] - before[1]
+            assert (spring[0] - after[0], spring[1] - after[1]) == (spring_before[0] - dx, spring_before[1] - dy)
+            assert view_shift_pan(before, after) == (dx * CELL_SIZE, dy * CELL_SIZE)
+    assert shifts > 0  # the river carries the tiles away from the spring
+    adapter.close()

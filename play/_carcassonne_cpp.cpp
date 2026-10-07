@@ -1,4 +1,5 @@
 #include <array>
+#include <string>
 #include <tuple>
 #include <utility>
 #include <vector>
@@ -123,9 +124,23 @@ PYBIND11_MODULE(_carcassonne_cpp, m) {
     m.attr("MEEPLE_POS_BUILDER") = MEEPLE_POS_BUILDER;
     m.attr("MEEPLE_POS_PIG") = MEEPLE_POS_PIG;
     m.attr("HALF_EDGE_COUNT") = HALF_EDGE_COUNT;
+    // Expansions, as the game parameters name them (EXPANSION_NAMES[0] is the base).
+    m.attr("EXPANSION_NAMES") = std::vector<std::string>(EXPANSION_NAMES, EXPANSION_NAMES + EXPANSION_COUNT);
+    m.attr("BASE_ONLY") = BASE_ONLY;
+    m.attr("RULED_EXPANSIONS") = RULED_EXPANSIONS;
+    m.attr("RULES_REQUIRED_EXPANSIONS") = RULES_REQUIRED_EXPANSIONS;
+    m.def("expansion_bit", [](int expansion) { return expansionBit(static_cast<Expansion>(expansion)); });
 
     py::class_<Carcassonne>(m, "Carcassonne")
         .def(py::init<>())
+        // `expansions`: the expansion_bit() mask of the expansions whose tiles are
+        // dealt, the base included; `rules`: those of them that play their rules.
+        .def(py::init([](uint32_t expansions, uint32_t rules) {
+                 return Carcassonne(0, START_TILE_ROTATION, expansions, rules);
+             }),
+             py::arg("expansions"), py::arg("rules"))
+        .def_property_readonly("expansions", [](const Carcassonne &game) { return game.expansions; })
+        .def_property_readonly("rules", [](const Carcassonne &game) { return game.rules; })
         .def_property_readonly("current_phase", [](const Carcassonne &game) { return static_cast<int>(game.current_phase); })
         .def_property_readonly("is_game_over",
                                [](const Carcassonne &game) { return game.current_phase == PHASE_TERMINAL; })

@@ -3,6 +3,8 @@ from __future__ import annotations
 from .adapter import (
     BOARD_SIZE,
     ENGINE_BOARD_SIZE,
+    EXPANSION_LABELS,
+    EXPANSION_NAMES,
     HALF_EDGE_COUNT,
     MEEPLE_POS_FIELD,
     MEEPLE_POS_INNER_FIELD,
@@ -16,11 +18,15 @@ from .adapter import (
     PlayerSpec,
     START_POS,
     CppCarcassonneAdapter,
+    expansion_masks,
+    expansion_modes,
 )
 
 __all__ = [
     "BOARD_SIZE",
     "ENGINE_BOARD_SIZE",
+    "EXPANSION_LABELS",
+    "EXPANSION_NAMES",
     "HALF_EDGE_COUNT",
     "MEEPLE_POS_FIELD",
     "MEEPLE_POS_INNER_FIELD",
@@ -34,4 +40,6 @@ __all__ = [
     "PlayerSpec",
     "START_POS",
     "CppCarcassonneAdapter",
+    "expansion_masks",
+    "expansion_modes",
 ]

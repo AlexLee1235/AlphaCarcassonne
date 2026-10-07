@@ -14,21 +14,27 @@ try:
     from domain import BotValue, Move, MoveRecord
     from engine import (
         BOARD_SIZE,
+        EXPANSION_LABELS,
+        EXPANSION_NAMES,
         HALF_EDGE_COUNT,
         MEEPLE_POS_FIELD,
         MEEPLE_POS_INNER_FIELD,
         CppCarcassonneAdapter,
         PlayerSpec,
+        expansion_modes,
     )
 except ImportError:  # pragma: no cover - package import fallback
     from ..domain import BotValue, Move, MoveRecord
     from ..engine import (
         BOARD_SIZE,
+        EXPANSION_LABELS,
+        EXPANSION_NAMES,
         HALF_EDGE_COUNT,
         MEEPLE_POS_FIELD,
         MEEPLE_POS_INNER_FIELD,
         CppCarcassonneAdapter,
         PlayerSpec,
+        expansion_modes,
     )
 
 
@@ -38,6 +44,8 @@ BUTTON = getattr(ft, "Button", None) or ft.ElevatedButton
 ALIGN_CENTER = ft.alignment.Alignment(0, 0)
 
 CELL_SIZE = 40
+# The expansions the UI can play so far; the others are listed but stay off.
+PLAYABLE_EXPANSIONS = ("river",)
 MEEPLE_SIZE = 18
 MEEPLE_GLYPH = "■"  # ■
 MIN_BOARD_SCALE = 0.3
@@ -107,6 +115,13 @@ def meeple_alignment(meeple_pos: int) -> Tuple[float, float]:
     return 0.0, 0.0  # the monastery and the inner field
 
 
+def view_shift_pan(old_origin: Tuple[int, int], new_origin: Tuple[int, int]) -> Tuple[float, float]:
+    """The viewer pan that keeps the tiles still on screen when the engine's view moves
+    from old_origin to new_origin. A tile's grid cell moves by -delta; pan() adds d in
+    content units (the screen shows s * (p + d) + t), so d = +delta whatever the zoom."""
+    return (new_origin[0] - old_origin[0]) * CELL_SIZE, (new_origin[1] - old_origin[1]) * CELL_SIZE
+
+
 def _positive_int(value: str) -> int:
     parsed = int(value)
     if parsed < 1:
@@ -120,6 +135,8 @@ class PlayUiConfig:
     p1_spec: PlayerSpec = field(default_factory=PlayerSpec)
     p2_spec: PlayerSpec = field(default_factory=PlayerSpec)
     seed: Optional[int] = None
+    # {expansion name: mode} for the expansions in play.
+    expansions: Dict[str, str] = field(default_factory=dict)
 
     @property
     def player_specs(self) -> Tuple[PlayerSpec, PlayerSpec]:
@@ -141,6 +158,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--p1_max_simulations", type=_positive_int, default=None)
     parser.add_argument("--p2_max_simulations", type=_positive_int, default=None)
     parser.add_argument("--seed", type=int, default=0)
+    for name in PLAYABLE_EXPANSIONS:
+        parser.add_argument(f"--{name}", choices=expansion_modes(name), default="off")
     return parser
 
 
@@ -166,6 +185,7 @@ def parse_ui_config(argv: Optional[Sequence[str]] = None) -> PlayUiConfig:
             max_simulations=args.p2_max_simulations,
         ),
         seed=None if args.seed == 0 else args.seed,
+        expansions={name: getattr(args, name) for name in PLAYABLE_EXPANSIONS if getattr(args, name) != "off"},
     )
 
 
@@ -262,6 +282,7 @@ class CarcassonneUI:
         self.center_board_pending = True
         # The engine's view the grid was last drawn from; it moves with the tiles.
         self.shown_view_origin: Optional[Tuple[int, int]] = None
+        self._view_lock = asyncio.Lock()
 
         self._build_setup_panel()
         self._build_game_panel()
@@ -373,6 +394,18 @@ class CarcassonneUI:
         self.checkpoint_field = ft.TextField(label="Checkpoint (-1 = latest)", value=str(checkpoint), width=300)
         self.simulations_field = ft.TextField(label="Simulations per move", value=str(simulations), width=300)
         self.seed_field = ft.TextField(label="Seed (0 = random)", value=str(self.config.seed or 0), width=300)
+        # One dropdown per expansion; only PLAYABLE_EXPANSIONS can be changed for now.
+        self.expansion_dropdowns: Dict[str, ft.Dropdown] = {}
+        for name in EXPANSION_NAMES[1:]:
+            playable = name in PLAYABLE_EXPANSIONS
+            label = EXPANSION_LABELS.get(name, name) + ("" if playable else " (not yet)")
+            self.expansion_dropdowns[name] = ft.Dropdown(
+                label=label,
+                value=self.config.expansions.get(name, "off") if playable else "off",
+                options=[ft.dropdown.Option(key=mode, text=mode) for mode in expansion_modes(name)],
+                disabled=not playable,
+                width=300,
+            )
         self.setup_error = ft.Text("", color="#d1242f")
 
         self.setup_column = ft.Column(
@@ -385,6 +418,8 @@ class CarcassonneUI:
                 self.checkpoint_field,
                 self.simulations_field,
                 self.seed_field,
+                ft.Text("Expansions", weight=ft.FontWeight.W_600),
+                *self.expansion_dropdowns.values(),
                 BUTTON("Start game", on_click=self.on_setup_start),
                 self.setup_error,
             ],
@@ -419,8 +454,13 @@ class CarcassonneUI:
             self.setup_error.value = str(exc)
             self.page.update()
             return
+        expansions = {
+            name: dropdown.value
+            for name, dropdown in self.expansion_dropdowns.items()
+            if name in PLAYABLE_EXPANSIONS and dropdown.value not in (None, "off")
+        }
         self.setup_error.value = ""
-        self.start_game(specs, None if seed == 0 else seed)
+        self.start_game(specs, None if seed == 0 else seed, expansions)
 
     # ------------------------------------------------------------------ game
 
@@ -484,13 +524,23 @@ class CarcassonneUI:
             expand=True,
         )
 
-    def start_game(self, player_specs: Tuple[PlayerSpec, PlayerSpec], seed: Optional[int]) -> None:
+    def start_game(
+        self,
+        player_specs: Tuple[PlayerSpec, PlayerSpec],
+        seed: Optional[int],
+        expansions: Optional[Dict[str, str]] = None,
+    ) -> None:
         self._close_engine()
         self.player_specs = player_specs
         self.bot_game_started = False
         self.status.value = "Ready."
         # The UI runs bot turns itself (off the UI thread), so the adapter must not.
-        self.engine = CppCarcassonneAdapter(seed=seed, player_specs=player_specs, auto_run_bots=False)
+        self.engine = CppCarcassonneAdapter(
+            seed=seed,
+            player_specs=player_specs,
+            auto_run_bots=False,
+            expansions=self.config.expansions if expansions is None else expansions,
+        )
         self.state = self.engine.state
         self._show_side_panel(setup=False)
         self.refresh()
@@ -577,10 +627,10 @@ class CarcassonneUI:
         self.records_column.controls = record_controls or [ft.Text("No records.")]
 
         self._render_grid()
-        # The grid shifts under the tiles when the view moves; centre them again
-        # so they stay put on screen.
+        # The engine's view moves to stay centred on the tiles, so the grid shifts
+        # under them; pan the other way so they stay put on screen, keeping any zoom.
         if self.shown_view_origin is not None and self.engine.view_origin != self.shown_view_origin:
-            self.page.run_task(self._show_board, self.board_zoom)
+            self.page.run_task(self._pan_board, *view_shift_pan(self.shown_view_origin, self.engine.view_origin))
         self.shown_view_origin = self.engine.view_origin
 
         if self.state.game_over:
@@ -756,15 +806,23 @@ class CarcassonneUI:
         ys = [y - origin_y for _, y in cells]
         return (min(xs) + max(xs) + 1) * CELL_SIZE / 2, (min(ys) + max(ys) + 1) * CELL_SIZE / 2
 
+    # Each of these runs several viewer calls in a row; the lock keeps two of them
+    # (a zoom click and a view shift, say) from interleaving and compounding.
+
     async def _show_board(self, zoom: float) -> None:
-        await self.board_viewer.reset()
-        if zoom != 1.0:
-            await self.board_viewer.zoom(zoom)
-        if self.board_viewport is not None:
-            width, height = self.board_viewport
-            center_x, center_y = self._tiles_center()
-            # pan() moves in content units: the viewport shows s * (p + d), s = zoom.
-            await self.board_viewer.pan(width / 2 / zoom - center_x, height / 2 / zoom - center_y)
+        async with self._view_lock:
+            await self.board_viewer.reset()
+            if zoom != 1.0:
+                await self.board_viewer.zoom(zoom)
+            if self.board_viewport is not None:
+                width, height = self.board_viewport
+                center_x, center_y = self._tiles_center()
+                # pan() moves in content units: the viewport shows s * (p + d), s = zoom.
+                await self.board_viewer.pan(width / 2 / zoom - center_x, height / 2 / zoom - center_y)
+
+    async def _pan_board(self, dx: float, dy: float) -> None:
+        async with self._view_lock:
+            await self.board_viewer.pan(dx, dy)
 
     def _step_zoom(self, factor: float) -> None:
         self.board_zoom = min(MAX_BOARD_SCALE, max(MIN_BOARD_SCALE, self.board_zoom * factor))
@@ -807,6 +865,9 @@ class CarcassonneUI:
             self.selected_move = None
             self.refresh()
             return
+        # The tile is down. The selection names a cell of the view, which may move
+        # now and leave it highlighting an empty cell.
+        self.selected_move = None
 
         if not self.meeple_options:
             self.awaiting_meeple = True

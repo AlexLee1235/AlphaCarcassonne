@@ -48,6 +48,17 @@ MEEPLE_POS_BIG = int(_carcassonne_cpp.MEEPLE_POS_BIG)
 MEEPLE_POS_BUILDER = int(_carcassonne_cpp.MEEPLE_POS_BUILDER)
 MEEPLE_POS_PIG = int(_carcassonne_cpp.MEEPLE_POS_PIG)
 HALF_EDGE_COUNT = int(_carcassonne_cpp.HALF_EDGE_COUNT)
+# Expansions, named as the game parameters name them; EXPANSION_NAMES[0] is the base.
+EXPANSION_NAMES = list(_carcassonne_cpp.EXPANSION_NAMES)
+BASE_ONLY = int(_carcassonne_cpp.BASE_ONLY)
+RULED_EXPANSIONS = int(_carcassonne_cpp.RULED_EXPANSIONS)
+RULES_REQUIRED_EXPANSIONS = int(_carcassonne_cpp.RULES_REQUIRED_EXPANSIONS)
+EXPANSION_LABELS = {
+    "inns_cathedrals": "Inns & Cathedrals",
+    "traders_builders": "Traders & Builders",
+    "river": "River",
+    "princess_dragon": "Princess & Dragon",
+}
 OPPONENT_MODES = {"player", "random", "mcts", "alphazero", "az"}
 PLAYER_TYPES = {"human", "random", "mcts", "alphazero", "az"}
 BOT_TYPES = {"random", "mcts", "alphazero"}
@@ -60,6 +71,48 @@ REBUILD_HINT = "Rebuild it with `python play/setup.py build_ext --inplace` after
 DEFAULT_GAME_LOG_DIR = REPO_ROOT.parent / "games"
 # One line per game in the actor log format, so tools/actor_log.hpp replays them.
 GAME_LOG_FILE = "log-actor-gui.txt"
+
+
+def game_log_file(expansions: Dict[str, str]) -> str:
+    """The actor log for games with these expansions. tools/actor_log.hpp replays base
+    games only, so the others go to their own file: log-actor-gui-river.txt."""
+    if not expansions:
+        return GAME_LOG_FILE
+    parts = [name if mode == "on" else f"{name}-{mode}" for name, mode in sorted(expansions.items())]
+    return f"log-actor-gui-{'-'.join(parts)}.txt"
+
+
+def expansion_modes(name: str) -> Tuple[str, ...]:
+    """The modes an expansion takes, as CarcassonneGame accepts them: "tiles" deals its
+    tiles alone (not for one whose tiles need its rules), "on" adds its rules."""
+    bit = int(_carcassonne_cpp.expansion_bit(EXPANSION_NAMES.index(name)))
+    modes = ["off"]
+    if not RULES_REQUIRED_EXPANSIONS & bit:
+        modes.append("tiles")
+    if RULED_EXPANSIONS & bit:
+        modes.append("on")
+    return tuple(modes)
+
+
+def expansion_masks(modes: Dict[str, str]) -> Tuple[int, int]:
+    """The engine's (expansions, rules) bit masks for {expansion name: mode}."""
+    expansions, rules = BASE_ONLY, 0
+    for name, mode in modes.items():
+        if name not in EXPANSION_NAMES[1:]:
+            raise ValueError(f"Unknown expansion: {name}")
+        if mode not in expansion_modes(name):
+            raise ValueError(f"{name}={mode}; expected one of {', '.join(expansion_modes(name))}")
+        bit = int(_carcassonne_cpp.expansion_bit(EXPANSION_NAMES.index(name)))
+        if mode != "off":
+            expansions |= bit
+        if mode == "on":
+            rules |= bit
+    return expansions, rules
+
+
+def expansion_parameters(modes: Dict[str, str]) -> str:
+    """The expansions as the bot CLI reads them from CARCASSONNE_EXPANSIONS: "river=on"."""
+    return ",".join(f"{name}={mode}" for name, mode in modes.items())
 
 
 def _clamp(value: int, lower: int, upper: int) -> int:
@@ -167,7 +220,12 @@ class PlayerSpec:
 
 
 class BotCliClient:
-    def __init__(self, path: Optional[str] = None, env: Optional[Dict[str, str]] = None):
+    def __init__(
+        self,
+        path: Optional[str] = None,
+        env: Optional[Dict[str, str]] = None,
+        expansion_masks: Optional[Tuple[int, int]] = None,
+    ):
         cli_path = Path(path or os.getenv("CARCASSONNE_BOT_CLI", str(DEFAULT_BOT_CLI)))
         if not cli_path.exists():
             raise RuntimeError(
@@ -186,15 +244,31 @@ class BotCliClient:
             env=process_env,
         )
         self.request({"cmd": "reset"})
-        self._check_board_size()
+        info = self.request({"cmd": "info"})
+        self._check_board_size(info)
+        if expansion_masks is not None:
+            self._check_expansions(info, expansion_masks)
 
-    def _check_board_size(self) -> None:
-        shape = self.request({"cmd": "info"}).get("observation_shape", [])
+    def _check_board_size(self, info: dict) -> None:
+        shape = info.get("observation_shape", [])
         if len(shape) != 3 or shape[1] != BOARD_SIZE:
             self.close()
             raise RuntimeError(
                 f"The bot CLI was built for a different board (observation shape {shape}, "
                 f"expected {BOARD_SIZE}x{BOARD_SIZE}). {REBUILD_HINT}"
+            )
+
+    def _check_expansions(self, info: dict, expected: Tuple[int, int]) -> None:
+        # A bot CLI built before it read CARCASSONNE_EXPANSIONS reports no masks and
+        # would choose its moves for a base game.
+        reported = (info.get("expansions"), info.get("rules"))
+        if reported == (None, None) and expected == (BASE_ONLY, 0):
+            return
+        if reported != expected:
+            self.close()
+            raise RuntimeError(
+                f"The bot CLI did not pick up the expansions (it reports {reported}, "
+                f"expected {expected}). {REBUILD_HINT}"
             )
 
     def close(self) -> None:
@@ -232,7 +306,11 @@ class CppCarcassonneAdapter:
         opponent_mode: str = "player",
         player_specs: Optional[Tuple[PlayerSpec, PlayerSpec]] = None,
         auto_run_bots: bool = True,
+        expansions: Optional[Dict[str, str]] = None,
     ):
+        # {expansion name: mode} for the expansions in play; "off" ones are dropped.
+        self.expansions = {name: mode for name, mode in (expansions or {}).items() if mode != "off"}
+        self.expansion_masks = expansion_masks(self.expansions)
         if seed is None:
             seed = secrets.randbits(32)
         self.seed = seed
@@ -241,7 +319,11 @@ class CppCarcassonneAdapter:
         self.opponent_mode = "player" if self.player_specs[1].is_human else self.player_specs[1].type
         self.ai_status = ""
         self.auto_run_bots = auto_run_bots
-        self._engine = _carcassonne_cpp.Carcassonne()
+        if self.expansions:
+            expansion_bits, rule_bits = self.expansion_masks
+            self._engine = _carcassonne_cpp.Carcassonne(expansions=expansion_bits, rules=rule_bits)
+        else:
+            self._engine = _carcassonne_cpp.Carcassonne()
         self._bot_clis: Dict[int, BotCliClient] = {}
         self._latest_tile_marker: Optional[Tuple[Tuple[int, int], int]] = None
         self.move_records: List[MoveRecord] = []
@@ -332,8 +414,11 @@ class CppCarcassonneAdapter:
         spec = self.player_specs[player]
         if not spec.is_bot:
             return
+        env = spec.bot_env()
+        if self.expansions:
+            env["CARCASSONNE_EXPANSIONS"] = expansion_parameters(self.expansions)
         try:
-            self._bot_clis[player] = BotCliClient(env=spec.bot_env())
+            self._bot_clis[player] = BotCliClient(env=env, expansion_masks=self.expansion_masks)
         except Exception as exc:
             self.ai_status = f"P{player + 1} {spec.label}: {exc}"
 
@@ -361,7 +446,10 @@ class CppCarcassonneAdapter:
         return self.player_specs[player - 1].label
 
     def mode_label(self) -> str:
-        return f"P1 {self.controller_label(1)} vs P2 {self.controller_label(2)}"
+        label = f"P1 {self.controller_label(1)} vs P2 {self.controller_label(2)}"
+        for name, mode in self.expansions.items():
+            label += f" · {EXPANSION_LABELS.get(name, name)}: {mode}"
+        return label
 
     def _current_player_index(self) -> int:
         return int(self._engine.current_player)
@@ -475,7 +563,8 @@ class CppCarcassonneAdapter:
             scores = [int(score) for score in self._engine.player_scores]
             returns = [(scores[p] > scores[1 - p]) - (scores[p] < scores[1 - p]) for p in range(2)]
 
-            log_path = directory / GAME_LOG_FILE
+            log_file = game_log_file(self.expansions)
+            log_path = directory / log_file
             game_number = 1
             if log_path.exists():
                 with log_path.open(encoding="utf-8") as log:
@@ -494,7 +583,8 @@ class CppCarcassonneAdapter:
                 "players": [asdict(spec) for spec in self.player_specs],
                 "bot_cli": os.getenv("CARCASSONNE_BOT_CLI", str(DEFAULT_BOT_CLI)),
                 "git": _git_revision(),
-                "log_file": GAME_LOG_FILE,
+                "expansions": self.expansions,
+                "log_file": log_file,
                 "log_game": game_number,
                 "scores": scores,
                 "returns": returns,

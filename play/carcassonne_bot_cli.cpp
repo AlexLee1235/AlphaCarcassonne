@@ -4,6 +4,7 @@
 #include <iostream>
 #include <memory>
 #include <random>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 
@@ -163,15 +164,35 @@ void ValidateModelConfig(const open_spiel::Game &game,
     }
 }
 
+// The expansion game parameters from CARCASSONNE_EXPANSIONS, comma-separated
+// name=mode pairs such as "river=on"; CarcassonneGame checks the names and modes.
+open_spiel::GameParameters ExpansionParameters() {
+    open_spiel::GameParameters params;
+    std::stringstream pairs(EnvString("CARCASSONNE_EXPANSIONS", ""));
+    std::string pair;
+    while (std::getline(pairs, pair, ',')) {
+        if (pair.empty()) {
+            continue;
+        }
+        const size_t equals = pair.find('=');
+        if (equals == std::string::npos || equals == 0 || equals + 1 == pair.size()) {
+            throw std::runtime_error("CARCASSONNE_EXPANSIONS: expected name=mode, got " + pair);
+        }
+        params[pair.substr(0, equals)] = open_spiel::GameParameter(pair.substr(equals + 1));
+    }
+    return params;
+}
+
 class CarcassonneBotCli {
   public:
     CarcassonneBotCli()
-        : game_(std::make_shared<open_spiel::carcassonne::CarcassonneGame>(open_spiel::GameParameters{})) {}
+        : game_(std::make_shared<open_spiel::carcassonne::CarcassonneGame>(ExpansionParameters())),
+          mirror_(NewMirror()) {}
 
     json Handle(const json &request) {
         const std::string command = request.value("cmd", "");
         if (command == "reset") {
-            mirror_ = Carcassonne();
+            mirror_ = NewMirror();
             return Ok();
         }
         if (command == "info") {
@@ -198,12 +219,19 @@ class CarcassonneBotCli {
   private:
     json Ok() const { return json{{"ok", true}}; }
 
+    // The game state the UI starts from: the same expansions and rules as game_.
+    Carcassonne NewMirror() const {
+        return Carcassonne(0, START_TILE_ROTATION, game_->Expansions(), game_->Rules());
+    }
+
     json Info() const {
         const std::vector<int> shape = game_->ObservationTensorShape();
         json info{{"ok", true},
                   {"observation_shape", shape},
                   {"observation_tensor_size", game_->ObservationTensorSize()},
-                  {"num_distinct_actions", game_->NumDistinctActions()}};
+                  {"num_distinct_actions", game_->NumDistinctActions()},
+                  {"expansions", game_->Expansions()},
+                  {"rules", game_->Rules()}};
         const std::string az_path = EnvString("CARCASSONNE_AZ_PATH", "");
         if (!az_path.empty()) {
             info["value_is_current_player"] = ResolveValueIsCurrentPlayer(az_path);
@@ -328,7 +356,7 @@ class CarcassonneBotCli {
         throw std::runtime_error("Bot returned an action for an unsupported phase.");
     }
 
-    std::shared_ptr<const open_spiel::Game> game_;
+    std::shared_ptr<const open_spiel::carcassonne::CarcassonneGame> game_;
     Carcassonne mirror_;
     std::unique_ptr<open_spiel::algorithms::torch_az::DeviceManager> az_device_manager_;
     std::shared_ptr<open_spiel::algorithms::torch_az::VPNetEvaluator> az_evaluator_;

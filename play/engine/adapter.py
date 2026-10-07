@@ -5,7 +5,8 @@ import random
 import secrets
 import os
 import subprocess
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -37,6 +38,8 @@ PHASE_TERMINAL = int(_carcassonne_cpp.PHASE_TERMINAL)
 PHYSICAL_TO_CANONICAL_TYPE = list(getattr(_carcassonne_cpp, "PHYSICAL_TO_CANONICAL_TYPE", []))
 # Meeple positions: 0..3 the feature on that side, 4 the monastery, then farmers:
 # MEEPLE_POS_FIELD + half-edge (0..7, clockwise from north-west) and the inner field.
+MEEPLE_POS_SKIP = -1
+MEEPLE_POS_MONASTERY = 4
 MEEPLE_POS_FIELD = int(_carcassonne_cpp.MEEPLE_POS_FIELD)
 MEEPLE_POS_INNER_FIELD = int(_carcassonne_cpp.MEEPLE_POS_INNER_FIELD)
 HALF_EDGE_COUNT = int(_carcassonne_cpp.HALF_EDGE_COUNT)
@@ -44,8 +47,14 @@ OPPONENT_MODES = {"player", "random", "mcts", "alphazero", "az"}
 PLAYER_TYPES = {"human", "random", "mcts", "alphazero", "az"}
 BOT_TYPES = {"random", "mcts", "alphazero"}
 DEFAULT_MAX_SIMULATIONS = 200
-DEFAULT_BOT_CLI = Path(__file__).resolve().parents[1] / "bin" / "carcassonne_bot_cli"
+REPO_ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_BOT_CLI = REPO_ROOT / "play" / "bin" / "carcassonne_bot_cli"
 REBUILD_HINT = "Rebuild it with `python play/setup.py build_ext --inplace` after the OpenSpiel CMake build."
+# Finished games go here (CARCASSONNE_GAME_LOG_DIR overrides it): next to the
+# training run directories, outside the repo, so switching branches leaves them alone.
+DEFAULT_GAME_LOG_DIR = REPO_ROOT.parent / "games"
+# One line per game in the actor log format, so tools/actor_log.hpp replays them.
+GAME_LOG_FILE = "log-actor-gui.txt"
 
 
 def _clamp(value: int, lower: int, upper: int) -> int:
@@ -56,6 +65,36 @@ def _physical_to_art_id(physical_id: int) -> int:
     if physical_id <= 0:
         return 0
     return PHYSICAL_TO_CANONICAL_TYPE[physical_id]
+
+
+def _meeple_action_string(meeple_pos: int) -> str:
+    """The meeple move as CarcassonneState::ActionToString writes it in the actor logs."""
+    if meeple_pos == MEEPLE_POS_SKIP:
+        arg = "skip"
+    elif meeple_pos == MEEPLE_POS_MONASTERY:
+        arg = "monastery"
+    elif meeple_pos == MEEPLE_POS_INNER_FIELD:
+        arg = "inner_field"
+    elif meeple_pos >= MEEPLE_POS_FIELD:
+        arg = f"field={meeple_pos - MEEPLE_POS_FIELD}"
+    else:
+        arg = f"edge={meeple_pos}"
+    return f"place_meeple({arg})"
+
+
+def _git_revision() -> Optional[str]:
+    # Not --dirty: checking the working tree takes seconds on /mnt/c, and this runs as the game ends.
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return result.stdout.strip() or None
 
 
 def _normalize_player_type(player_type: str) -> str:
@@ -183,6 +222,7 @@ class CppCarcassonneAdapter:
     ):
         if seed is None:
             seed = secrets.randbits(32)
+        self.seed = seed
         self._rng = random.Random(seed)
         self.player_specs = self._resolve_player_specs(opponent_mode, player_specs)
         self.opponent_mode = "player" if self.player_specs[1].is_human else self.player_specs[1].type
@@ -198,6 +238,13 @@ class CppCarcassonneAdapter:
         self.last_bot_value: Optional[BotValue] = None
         self._turn = 1
         self._pending_meeple_options: List[int] = []
+        # The game as it is saved when it ends: every action in the actor log
+        # format, and one entry per completed turn.
+        self._started_at = datetime.now()
+        self._actions: List[str] = []
+        self._turns: List[dict] = []
+        self.saved_game_path: Optional[Path] = None
+        self.save_error = ""
         self._viewport_origin = self._default_viewport_origin()
         self._start_bot_clis()
         self._resolve_chance_phase()
@@ -384,7 +431,74 @@ class CppCarcassonneAdapter:
                 raw_value=bot_value.raw_value if bot_value else None,
             ),
         )
+        # Scores and meeples after the turn; the last turn's include the end-game scoring.
+        self._turns.append(
+            {
+                "turn": self._turn,
+                "player": player,
+                "tile_id": tile_id,
+                "x": x,
+                "y": y,
+                "rotation": rotation,
+                "meeple_pos": meeple_pos,
+                "score_deltas": [score_deltas[1], score_deltas[2]],
+                "scores": [int(score) for score in self._engine.player_scores],
+                "meeples": [int(count) for count in self._engine.holding_meeples],
+                "value": bot_value.value if bot_value else None,
+                "raw_value": bot_value.raw_value if bot_value else None,
+            }
+        )
         self._pending_tile_move = None
+
+    def _save_game(self) -> None:
+        """Writes the finished game under CARCASSONNE_GAME_LOG_DIR: a JSON record of it, and a
+        line in log-actor-gui.txt that tools/actor_log.hpp replays like a self-play game."""
+        if self.saved_game_path is not None:
+            return
+        try:
+            directory = Path(os.getenv("CARCASSONNE_GAME_LOG_DIR") or DEFAULT_GAME_LOG_DIR)
+            directory.mkdir(parents=True, exist_ok=True)
+            finished_at = datetime.now()
+            scores = [int(score) for score in self._engine.player_scores]
+            returns = [(scores[p] > scores[1 - p]) - (scores[p] < scores[1 - p]) for p in range(2)]
+
+            log_path = directory / GAME_LOG_FILE
+            game_number = 1
+            if log_path.exists():
+                with log_path.open(encoding="utf-8") as log:
+                    game_number += sum(1 for line in log if line.strip())
+
+            labels = "_vs_".join(spec.label for spec in self.player_specs)
+            path = directory / f"{finished_at:%Y%m%d-%H%M%S}_{labels}.json"
+            suffix = 2
+            while path.exists():
+                path = directory / f"{finished_at:%Y%m%d-%H%M%S}_{labels}_{suffix}.json"
+                suffix += 1
+            record = {
+                "started_at": self._started_at.isoformat(timespec="seconds"),
+                "finished_at": finished_at.isoformat(timespec="seconds"),
+                "seed": self.seed,
+                "players": [asdict(spec) for spec in self.player_specs],
+                "bot_cli": os.getenv("CARCASSONNE_BOT_CLI", str(DEFAULT_BOT_CLI)),
+                "git": _git_revision(),
+                "log_file": GAME_LOG_FILE,
+                "log_game": game_number,
+                "scores": scores,
+                "returns": returns,
+                "turns": self._turns,
+                "actions": self._actions,
+            }
+            path.write_text(json.dumps(record, indent=1) + "\n", encoding="utf-8")
+
+            stamp = f"{finished_at:%Y-%m-%d %H:%M:%S}.{finished_at.microsecond // 1000:03d}"
+            with log_path.open("a", encoding="utf-8") as log:
+                log.write(
+                    f"[{stamp}] Game {game_number}: Returns: {returns[0]} {returns[1]}; "
+                    f"Actions: {' '.join(self._actions)}\n"
+                )
+            self.saved_game_path = path
+        except Exception as exc:
+            self.save_error = f"Could not save the game: {exc}"
 
     @property
     def view_origin(self) -> Tuple[int, int]:
@@ -425,6 +539,7 @@ class CppCarcassonneAdapter:
                 break
             draw_type = self._sample_draw_type(draws)
             self._engine.draw_tile(draw_type)
+            self._actions.append(f"draw_type({draw_type})")
             self._sync_bots({"cmd": "apply_draw", "type": draw_type})
 
     def can_pan(self, dx: int, dy: int) -> bool:
@@ -469,12 +584,7 @@ class CppCarcassonneAdapter:
         if (engine_x, engine_y, move.rotation) not in legal:
             raise ValueError(f"Invalid move: ({move.x}, {move.y}, r={move.rotation})")
 
-        player = self._engine.current_player + 1
-        tile_id = self._current_tile_art_id()
-        self._engine.place_tile(engine_x, engine_y, move.rotation)
-        self._latest_tile_marker = ((engine_x, engine_y), player)
-        self._remember_tile_move(player, tile_id, engine_x, engine_y, move.rotation)
-        self._sync_bots({"cmd": "apply_tile", "x": engine_x, "y": engine_y, "rot": move.rotation})
+        self._place_tile(engine_x, engine_y, move.rotation)
         self._pending_meeple_options = list(self._engine.get_legal_meeple_moves())
         self.state = self._build_state()
         return list(self._pending_meeple_options)
@@ -483,16 +593,33 @@ class CppCarcassonneAdapter:
         if meeple_pos not in self._pending_meeple_options:
             raise ValueError(f"Invalid meeple position: {meeple_pos}")
 
-        score_before = self._score_snapshot()
-        self._engine.place_meeple(meeple_pos)
-        self._sync_bots({"cmd": "apply_meeple", "pos": meeple_pos})
-        self._record_completed_turn(meeple_pos, self._score_deltas(score_before))
         self._pending_meeple_options = []
-        self._turn += 1
-        self._resolve_chance_phase()
+        self._place_meeple(meeple_pos)
         if self.auto_run_bots:
             self.run_ai_turns()
         self.state = self._build_state()
+
+    def _place_tile(self, x: int, y: int, rotation: int) -> None:
+        """Places the tile in hand for the player to move and passes it on to the bots."""
+        player = self._engine.current_player + 1
+        tile_id = self._current_tile_art_id()
+        self._engine.place_tile(x, y, rotation)
+        self._actions.append(f"place_tile(x={x}, y={y}, rot={rotation})")
+        self._latest_tile_marker = ((x, y), player)
+        self._remember_tile_move(player, tile_id, x, y, rotation)
+        self._sync_bots({"cmd": "apply_tile", "x": x, "y": y, "rot": rotation})
+
+    def _place_meeple(self, meeple_pos: int) -> None:
+        """Ends the turn with the meeple move, draws the next tile, and saves the game if it is over."""
+        score_before = self._score_snapshot()
+        self._engine.place_meeple(meeple_pos)
+        self._actions.append(_meeple_action_string(meeple_pos))
+        self._sync_bots({"cmd": "apply_meeple", "pos": meeple_pos})
+        self._record_completed_turn(meeple_pos, self._score_deltas(score_before))
+        self._turn += 1
+        self._resolve_chance_phase()
+        if self._engine.is_game_over:
+            self._save_game()
 
     def run_ai_turns(self, max_turns: Optional[int] = None) -> int:
         self.ai_status = ""
@@ -511,22 +638,11 @@ class CppCarcassonneAdapter:
                     continue
                 if self._engine.current_phase == PHASE_TILE:
                     x, y, rotation = self._choose_bot_tile_move(player)
-                    player_ui = player + 1
-                    tile_id = self._current_tile_art_id()
-                    self._engine.place_tile(x, y, rotation)
-                    self._latest_tile_marker = ((x, y), player_ui)
-                    self._remember_tile_move(player_ui, tile_id, x, y, rotation)
-                    self._sync_bots({"cmd": "apply_tile", "x": x, "y": y, "rot": rotation})
+                    self._place_tile(x, y, rotation)
                     continue
                 if self._engine.current_phase == PHASE_MEEPLE:
-                    meeple_pos = self._choose_bot_meeple_move(player)
-                    score_before = self._score_snapshot()
-                    self._engine.place_meeple(meeple_pos)
-                    self._sync_bots({"cmd": "apply_meeple", "pos": meeple_pos})
-                    self._record_completed_turn(meeple_pos, self._score_deltas(score_before))
+                    self._place_meeple(self._choose_bot_meeple_move(player))
                     ai_turns += 1
-                    self._turn += 1
-                    self._resolve_chance_phase()
                     if max_turns is not None and ai_turns >= max_turns:
                         break
                     continue

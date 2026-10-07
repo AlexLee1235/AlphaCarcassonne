@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from play import _carcassonne_cpp
@@ -460,6 +462,49 @@ def test_adapter_random_vs_random_auto_finishes() -> None:
         assert not adapter.get_valid_moves()
         assert len(adapter.move_records) > 1
         assert adapter.move_records[0].player in (1, 2)
+    finally:
+        adapter.close()
+
+
+def test_meeple_action_strings_match_the_actor_logs() -> None:
+    assert adapter_module._meeple_action_string(-1) == "place_meeple(skip)"
+    assert adapter_module._meeple_action_string(2) == "place_meeple(edge=2)"
+    assert adapter_module._meeple_action_string(4) == "place_meeple(monastery)"
+    assert adapter_module._meeple_action_string(MEEPLE_POS_FIELD + 3) == "place_meeple(field=3)"
+    assert adapter_module._meeple_action_string(MEEPLE_POS_INNER_FIELD) == "place_meeple(inner_field)"
+
+
+def test_adapter_saves_a_finished_game(_game_log_dir) -> None:
+    adapter = CppCarcassonneAdapter(
+        seed=7,
+        player_specs=(PlayerSpec(type="random"), PlayerSpec(type="random")),
+    )
+    try:
+        assert adapter.state.game_over
+        assert adapter.save_error == ""
+        path = adapter.saved_game_path
+        assert path is not None and path.parent == _game_log_dir
+        record = json.loads(path.read_text(encoding="utf-8"))
+        assert record["seed"] == 7
+        assert [p["type"] for p in record["players"]] == ["random", "random"]
+        assert record["scores"] == [adapter.state.scores[1], adapter.state.scores[2]]
+        assert record["turns"][-1]["scores"] == record["scores"]
+        assert len(record["turns"]) == len(adapter.move_records)
+
+        actions = record["actions"]
+        draws = [a for a in actions if a.startswith("draw_type(")]
+        tiles = [a for a in actions if a.startswith("place_tile(")]
+        meeples = [a for a in actions if a.startswith("place_meeple(")]
+        assert len(draws) + len(tiles) + len(meeples) == len(actions)
+        assert len(tiles) == len(meeples) == len(record["turns"])
+        assert len(draws) >= len(tiles)
+
+        lines = (_game_log_dir / adapter_module.GAME_LOG_FILE).read_text(encoding="utf-8").splitlines()
+        returns = record["returns"]
+        assert len(lines) == 1 and record["log_game"] == 1
+        assert lines[0].startswith("[")
+        assert f"] Game 1: Returns: {returns[0]} {returns[1]}; Actions: " in lines[0]
+        assert lines[0].endswith("; Actions: " + " ".join(actions))
     finally:
         adapter.close()
 

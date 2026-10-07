@@ -576,7 +576,7 @@ class CarcassonneUI:
         self._render_grid()
 
         if self.state.game_over:
-            self.status.value = f"Game over. {self._result_text()}"
+            self.status.value = f"Game over. {self._result_text()} {self._saved_text()}"
             self.awaiting_meeple = False
 
         self.page.update()
@@ -604,6 +604,11 @@ class CarcassonneUI:
         if seat is None:
             return f"P{winner} wins."
         return "You win!" if winner == seat else "You lose."
+
+    def _saved_text(self) -> str:
+        if self.engine.saved_game_path is not None:
+            return f"Saved to {self.engine.saved_game_path}"
+        return self.engine.save_error
 
     def _render_grid(self) -> None:
         for y, row in enumerate(self.grid_rows):

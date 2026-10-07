@@ -19,7 +19,7 @@ SRCS25   := $(G25)/Feature.cpp $(G25)/FeatureModule.cpp $(G25)/FieldModule.cpp $
             $(G25)/BoardModule.cpp $(G25)/FrontierModule.cpp $(G25)/DeckModule.cpp \
             $(G25)/game.cpp
 
-TOOLS    := diag_value_gap diag_local_decomp diag_board diag_opens diag_occupancy diag_branching diag_luck diag_value_gap_strong diag_pending_scale diag_plane_scale diag_replay_scale
+TOOLS    := diag_value_gap diag_local_decomp diag_board diag_opens diag_occupancy diag_branching diag_luck diag_value_gap_strong diag_pending_scale diag_plane_scale diag_replay_scale diag_game_report
 BINS     := $(addprefix build/,$(TOOLS)) build/diag_board25
 
 .PHONY: all run clean

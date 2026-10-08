@@ -125,6 +125,28 @@ std::vector<std::vector<int>> GoodsTokens(const Carcassonne &game) {
     return result;
 }
 
+// Every piece on the board: (x, y, owner, kind, spot), kind a PieceKind and
+// spot its Piece::spot (-1 .. 13), on board cells.
+std::vector<std::tuple<int, int, int, int, int>> GetPieces(const Carcassonne &game) {
+    std::vector<std::tuple<int, int, int, int, int>> result;
+    for (const Piece &piece : game.pieces) {
+        result.emplace_back(piece.x, piece.y, piece.owner, static_cast<int>(piece.kind), piece.spot);
+    }
+    return result;
+}
+
+template <typename CellList> std::vector<std::tuple<int, int>> CellsToList(const CellList &cells) {
+    std::vector<std::tuple<int, int>> result;
+    for (const auto &cell : cells) {
+        result.emplace_back(cell.first, cell.second);
+    }
+    return result;
+}
+
+template <typename IntList> std::vector<int> IntsToList(const IntList &values) {
+    return std::vector<int>(values.begin(), values.end());
+}
+
 } // namespace
 
 PYBIND11_MODULE(_carcassonne_cpp, m) {
@@ -136,6 +158,17 @@ PYBIND11_MODULE(_carcassonne_cpp, m) {
     m.attr("PHASE_TILE") = static_cast<int>(PHASE_TILE);
     m.attr("PHASE_MEEPLE") = static_cast<int>(PHASE_MEEPLE);
     m.attr("PHASE_TERMINAL") = static_cast<int>(PHASE_TERMINAL);
+    m.attr("PHASE_DRAGON") = static_cast<int>(PHASE_DRAGON);
+    m.attr("PHASE_SPOT") = static_cast<int>(PHASE_SPOT);
+    // The Princess & the Dragon's choices by cell (Carcassonne::chooseCell).
+    m.attr("SPOT_PORTAL") = static_cast<int>(SPOT_PORTAL);
+    m.attr("SPOT_PRINCESS") = static_cast<int>(SPOT_PRINCESS);
+    m.attr("SPOT_FAIRY") = static_cast<int>(SPOT_FAIRY);
+    m.attr("DRAGON_STEPS") = DRAGON_STEPS;
+    m.attr("PIECE_MEEPLE") = static_cast<int>(PIECE_MEEPLE);
+    m.attr("PIECE_BIG_MEEPLE") = static_cast<int>(PIECE_BIG_MEEPLE);
+    m.attr("PIECE_BUILDER") = static_cast<int>(PIECE_BUILDER);
+    m.attr("PIECE_PIG") = static_cast<int>(PIECE_PIG);
     m.attr("PHYSICAL_TO_CANONICAL_TYPE") = PhysicalToCanonicalType();
     m.attr("MEEPLE_POS_SKIP") = MEEPLE_POS_SKIP;
     m.attr("MEEPLE_POS_MONASTERY") = MEEPLE_POS_MONASTERY;
@@ -194,5 +227,38 @@ PYBIND11_MODULE(_carcassonne_cpp, m) {
         .def("get_legal_meeple_moves", &GetLegalMeepleMoves)
         .def("place_meeple", &Carcassonne::placeMeeple)
         .def("get_placed_tiles", &GetPlacedTiles)
-        .def("get_meeple_tokens", &GetMeepleTokens);
+        .def("get_meeple_tokens", &GetMeepleTokens)
+        .def("get_pieces", &GetPieces)
+        // The Princess & the Dragon.
+        .def_readonly("dragon_rules", &Carcassonne::dragon_rules)
+        .def_readonly("portal_rules", &Carcassonne::portal_rules)
+        .def_readonly("princess_rules", &Carcassonne::princess_rules)
+        .def_readonly("fairy_rules", &Carcassonne::fairy_rules)
+        // The dragon's cell, (-1, -1) until the first volcano; in PHASE_DRAGON the
+        // steps taken and the cells visited in this move, its start included.
+        .def_property_readonly("dragon_cell",
+                               [](const Carcassonne &game) { return std::make_tuple(game.dragon_x, game.dragon_y); })
+        .def_readonly("dragon_steps", &Carcassonne::dragon_steps)
+        .def_property_readonly("dragon_visited",
+                               [](const Carcassonne &game) { return CellsToList(game.dragon_visited); })
+        .def("get_legal_dragon_moves", [](const Carcassonne &game) { return IntsToList(game.getLegalDragonMoves()); })
+        .def("move_dragon", &Carcassonne::moveDragon)
+        .def("get_legal_portal_cells", [](const Carcassonne &game) { return CellsToList(game.getLegalPortalCells()); })
+        .def("get_legal_princess_cells",
+             [](const Carcassonne &game) { return CellsToList(game.getLegalPrincessCells()); })
+        .def("get_legal_fairy_cells", [](const Carcassonne &game) { return CellsToList(game.getLegalFairyCells()); })
+        .def("choose_cell",
+             [](Carcassonne &game, int choice, int x, int y) { game.chooseCell(static_cast<SpotChoice>(choice), x, y); })
+        // PHASE_SPOT: which choice, on which cell, and its moves.
+        .def_property_readonly("spot_choice", [](const Carcassonne &game) { return static_cast<int>(game.spot_choice); })
+        .def_property_readonly("spot_cell",
+                               [](const Carcassonne &game) { return std::make_tuple(game.spot_x, game.spot_y); })
+        .def("get_legal_spot_moves", [](const Carcassonne &game) { return IntsToList(game.getLegalSpotMoves()); })
+        .def("choose_spot", &Carcassonne::chooseSpot)
+        // The fairy: its cell ((-1, -1) in the supply), the spot of the meeple it
+        // stands next to (-1 for none) and that meeple's owner (-1 for none).
+        .def_property_readonly("fairy_cell",
+                               [](const Carcassonne &game) { return std::make_tuple(game.fairy_x, game.fairy_y); })
+        .def_readonly("fairy_spot", &Carcassonne::fairy_spot)
+        .def_property_readonly("fairy_owner", &Carcassonne::fairyOwner);
 }

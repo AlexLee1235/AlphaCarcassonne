@@ -35,7 +35,7 @@ python3 ../erf.py            ck.npz
 |---|---|---|---|
 | `diag_value_gap` | 每個決策點的 `banked` vs `static`（= banked + 終局待結分）分差，預測最終勝者的準確率 | §2.1 | **最後一手 0.717 vs 0.992**；E\|pending\| 穩定在 6 分，而平均最終分差只有 8.62 |
 | `diag_local_decomp` | 「完美 per-cell CNN + 全域求和」在現有 80 plane 下能否重建 pending | §2.2 | **exact 99.17%**、MAE 0.008 → 資訊是夠的，問題在架構與監督 |
-| `diag_board` / `diag_board_free` | 視窗擋掉多少、相對起始磚的延伸、各種視窗放法要多大、每手合法落點、終局待結分組成 | §3.6 | 21 格視窗每手依外框置中：基本版 **99.96%**、河流 **98.5%** 放得下（固定在起始磚上只有 95.5% / 28%） |
+| `diag_board` / `diag_board_free` | 視窗擋掉多少、相對起始磚的延伸、各種視窗放法要多大、每手合法落點、終局待結分組成 | §3.6 | 21 格視窗每手依外框置中：基本版 **99.96%**、河流 **98.5%** 放得下（固定在起始磚上只有 95.5% / 28%）；擴充全開只有 **31%**（隨機）／41%（greedy），27 格才 99% |
 | `diag_opens` | (A) 有盾磚型的城市元件數 (B) `opens` vs 最終封口率 | §3.2 / §3.3 | (A) 全部只有 1 個 → 盾不用廣播 (B) opens=1 封口率是 opens=2 的 **7.6 倍** → opens 必須加 |
 | `diag_occupancy` | 每格「有磚」的機率熱圖，並輸出 `occupancy.csv` | §2.4-c | 中心 100% / 角 0.5% → **185×** 失衡 |
 | `readckpt.py` | 純 numpy 讀 libtorch checkpoint → `.npz` | — | 589,217 個 float，對得上 2.43MB |
@@ -59,7 +59,7 @@ python3 ../erf.py            ck.npz
 **`diag_board` / `diag_board_free`** — 引擎只在 `VIEW_SIZE`（21）格的視窗裡放磚，視窗每手置中在已放磚的外框上。
 `diag_board_free` 是把視窗開到整個盤面（41）的副本，量對局本來會長多大，
 並算出三種放法各要多大的視窗：固定在起始磚上、每手依外框置中（引擎現在的做法）、依終局外框置中（下限）。
-`diag_board` 用 repo 的引擎，看實際的視窗擋掉多少。第二個參數 `base`／`river`／`all` 選牌組，第三個 `greedy` 換成強玩家代理。
+`diag_board` 用 repo 的引擎，看實際的視窗擋掉多少。第二個參數選牌組（見下面的備註），第三個 `greedy` 換成強玩家代理。
 視窗邊會製造**永遠填不掉的假開口**，污染 `opens` 的語意；以前 15×15 的固定盤面有 97.7% 的對局碰到邊。
 
 **`diag_opens`** — 決定「元件盾牌數」和「opens」該不該廣播。
@@ -95,6 +95,15 @@ head 有沒有在做空間求和（`cos(eff, 1)`）、每個位置的權重有�
 - **隨機對局的 caveat**：所有 C++ 診斷都用均勻隨機下法。結構性的結論
   （資訊夠不夠、跨度會不會超出、opens 的單調性）不受影響，但**絕對數值**
   （例如封口率）跟真實 self-play 分佈不同，會被低估。
+- **牌組參數**：`diag_board`、`diag_pending_scale`、`diag_plane_scale`、`diag_branching` 收一個牌組參數：
+  `base`、`river`、`all`（所有擴充都 `on`），或像 `inns_cathedrals=on,princess_dragon=tiles` 的寫法
+  （同 OpenSpiel 的遊戲參數，`common.hpp` 的 `DeckArg`）。它們的對局迴圈用 `diag::RandomStep`／`diag::GreedyStep`，
+  會走所有決策階段（放磚、放 meeple、魔法門／公主／仙女選格、選位置、龍）。其他工具只下基本版。
+- **actor log 的規則**：`actor_log.hpp` 重播時，訓練的 log 照同目錄 `config.json` 的 `"game"`，
+  GUI 的 log 照檔名（`log-actor-gui-river.txt` 等）建一樣規則的對局。
+- **greedy**（`diag::GreedyStep`）：每個決策選 banked + pending 分差最大的。2026-10-09 以前 pending 用
+  `resolveEndGameScore` 的複本算，放磚後剛完成、還沒結算的城、路不算分，greedy 因此不愛完成自己的城、路；
+  那之前量的 greedy 數字（CLAUDE.md §4.2 等）偏了，要重量。
 - **改成 global pooling 之後**（`model.cc` 的 value head 已改成 32 filters +
   mean ⊕ max pooling）：兩支工具都會依 checkpoint 的形狀自動判斷架構。
   - `check_value_head.py`：舊架構的 `cos(eff,1)` 與「每格權重 vs 占用率」失去意義

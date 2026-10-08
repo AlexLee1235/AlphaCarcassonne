@@ -26,10 +26,10 @@ int main(int argc, char **argv) {
                     const double banked = diag::BankedDiff(game, cur);
                     recs.push_back({cur, banked, banked + diag::PendingDiff(game, cur)});
                     if (mode == 0) { if (!diag::RandomPlaceTile(game, rng)) break; }
-                    else diag::GreedyPlaceTile(game, cur);
+                    else diag::GreedyStep(game);
                 } else {
                     if (mode == 0) { if (!diag::RandomPlaceMeeple(game, rng)) break; }
-                    else diag::GreedyPlaceMeeple(game, game.currentPlayer);
+                    else diag::GreedyStep(game);
                 }
             }
             int s0 = game.player_scores[0], s1 = game.player_scores[1];

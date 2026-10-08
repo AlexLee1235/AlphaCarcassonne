@@ -20,16 +20,19 @@ from play.cpp_engine import (
     PlayerSpec,
     meeple_piece,
     meeple_spot,
+    piece_meeple_pos,
 )
 from play.engine import adapter as adapter_module
 from play.engine.adapter import BotCliClient, expansion_masks, expansion_parameters, game_log_file
 from pathlib import Path
 
-from play.models import BotValue, Move, MoveRecord
+from play.models import BotValue, GameState, Move, MoveRecord
 from play.ui.app import (
     BIG_MEEPLE_SIZE,
     MEEPLE_SIZE,
     build_player_specs,
+    dragon_status,
+    fairy_status,
     format_bot_value,
     format_goods,
     format_move_record,
@@ -39,10 +42,13 @@ from play.ui.app import (
     meeple_button_labels,
     meeple_marker,
     offered_pieces,
+    offered_tabs,
     parse_ui_config,
     pieces_in_hand,
+    spot_button_label,
     should_show_start_game,
     summarize_ai_status,
+    turn_extras,
     view_shift_pan,
 )
 from play.ui.app import CELL_SIZE
@@ -364,71 +370,70 @@ def test_adapter_maps_active_meeple_into_board_snapshot() -> None:
     assert marked[(record.x, record.y)].meeple_markers == [(1, playable_options[0])]
 
 
-class FakeMeepleEngine:
-    def __init__(self, tiles, tokens):
+class FakePiecesEngine:
+    """The board as _build_board reads it: the tiles, and the pieces standing on them."""
+
+    def __init__(self, tiles, pieces):
         self.tiles = tiles
-        self.tokens = tokens
+        self.pieces = pieces
 
     def get_placed_tiles(self):
         return [(x, y, 1, 0) for x, y in self.tiles]
 
-    def get_meeple_tokens(self):
-        return self.tokens
+    def get_pieces(self):
+        return self.pieces
 
 
 def _meeple_record(player: int, x: int, y: int, meeple_pos: int) -> MoveRecord:
     return MoveRecord(player=player, tile_id=1, x=x, y=y, rotation=0, meeple_pos=meeple_pos)
 
 
-def test_adapter_draws_meeple_only_where_it_was_placed() -> None:
+def test_adapter_draws_each_piece_where_the_engine_has_it() -> None:
     sx, sy = START_POS
-    road = [(sx, sy), (sx + 1, sy), (sx + 2, sy)]
+    tiles = [(sx + dx, sy) for dx in range(3)]
     adapter = CppCarcassonneAdapter(seed=42)
-    # The engine marks the claimed road on every tile it runs through.
-    adapter._engine = FakeMeepleEngine(road, [(0, x, y, 1) for x, y in road] + [(0, x, y, 3) for x, y in road])
-    adapter.move_records = [_meeple_record(1, sx + 1, sy, 3), _meeple_record(2, sx + 2, sy, -1)]
+    adapter._engine = FakePiecesEngine(
+        tiles,
+        [
+            # (x, y, owner, kind, spot)
+            (sx + 2, sy, 1, _carcassonne_cpp.PIECE_PIG, MEEPLE_POS_FIELD + 6),
+            (sx, sy, 0, _carcassonne_cpp.PIECE_MEEPLE, 3),
+            # A portal's big farmer on a tile that already held a piece.
+            (sx, sy, 1, _carcassonne_cpp.PIECE_BIG_MEEPLE, MEEPLE_POS_FIELD + 2),
+            (sx + 1, sy, 0, _carcassonne_cpp.PIECE_BUILDER, 1),
+        ],
+    )
+    # The tile placements say nothing about where pieces stand.
+    adapter.move_records = [_meeple_record(2, sx + 1, sy, 0)]
 
     board = adapter._build_board()
 
-    assert {pos: tile.meeple_markers for pos, tile in board.items() if tile.meeple_markers} == {(sx + 1, sy): [(1, 3)]}
-    assert (board[(sx + 1, sy)].meeple_owner, board[(sx + 1, sy)].meeple_pos) == (1, 3)
+    assert {pos: tile.meeple_markers for pos, tile in board.items() if tile.meeple_markers} == {
+        (sx, sy): [(1, 3), (2, MEEPLE_POS_BIG + MEEPLE_POS_FIELD + 2)],
+        (sx + 1, sy): [(1, MEEPLE_POS_BUILDER + 1)],
+        (sx + 2, sy): [(2, MEEPLE_POS_PIG + 6)],
+    }
 
 
-def test_adapter_hides_meeple_returned_by_a_completed_feature() -> None:
+def test_adapter_draws_no_piece_the_engine_sent_home() -> None:
     sx, sy = START_POS
     adapter = CppCarcassonneAdapter(seed=42)
-    adapter._engine = FakeMeepleEngine([(sx, sy), (sx + 1, sy)], [])
-    adapter.move_records = [_meeple_record(1, sx + 1, sy, 0), _meeple_record(2, sx, sy, 4)]
+    # Scored, eaten by the dragon or sent home by the princess: gone from the engine's pieces.
+    adapter._engine = FakePiecesEngine([(sx, sy), (sx + 1, sy)], [])
+    adapter.move_records = [_meeple_record(1, sx + 1, sy, 0), _meeple_record(2, sx, sy, MEEPLE_POS_FIELD)]
 
     assert not any(tile.meeple_markers for tile in adapter._build_board().values())
 
 
-def test_adapter_keeps_farmers_although_they_have_no_token() -> None:
-    sx, sy = START_POS
-    adapter = CppCarcassonneAdapter(seed=42)
-    # get_meeple_tokens() only covers roads, cities and monasteries; farmers never leave.
-    adapter._engine = FakeMeepleEngine([(sx, sy), (sx + 1, sy)], [])
-    farmer = MEEPLE_POS_FIELD + 3
-    adapter.move_records = [_meeple_record(2, sx + 1, sy, farmer), _meeple_record(1, sx, sy, 2)]
-
-    board = adapter._build_board()
-
-    assert board[(sx + 1, sy)].meeple_markers == [(2, farmer)]
-    assert board[(sx, sy)].meeple_markers == []  # the road meeple was scored and returned
-
-
-def test_adapter_keeps_each_player_meeple_on_a_shared_feature() -> None:
-    sx, sy = START_POS
-    city = [(sx, sy), (sx + 1, sy)]
-    adapter = CppCarcassonneAdapter(seed=42)
-    tokens = [(player, x, y, pos) for player in (0, 1) for x, y in city for pos in (1, 3)]
-    adapter._engine = FakeMeepleEngine(city, tokens)
-    adapter.move_records = [_meeple_record(2, sx + 1, sy, 3), _meeple_record(1, sx, sy, 1)]
-
-    board = adapter._build_board()
-
-    assert board[(sx, sy)].meeple_markers == [(1, 1)]
-    assert board[(sx + 1, sy)].meeple_markers == [(2, 3)]
+def test_piece_meeple_pos_inverts_meeple_piece_and_spot() -> None:
+    kinds = {
+        "meeple": _carcassonne_cpp.PIECE_MEEPLE,
+        "big": _carcassonne_cpp.PIECE_BIG_MEEPLE,
+        "builder": _carcassonne_cpp.PIECE_BUILDER,
+        "pig": _carcassonne_cpp.PIECE_PIG,
+    }
+    for pos in range(MEEPLE_POS_PIG + HALF_EDGE_COUNT):
+        assert piece_meeple_pos(kinds[meeple_piece(pos)], meeple_spot(pos)) == pos
 
 
 def test_adapter_random_opponent_auto_plays_back_to_human() -> None:
@@ -621,10 +626,21 @@ class FakeBotCli:
             self.mirror.place_tile(payload["x"], payload["y"], payload["rot"])
         elif command == "apply_meeple":
             self.mirror.place_meeple(payload["pos"])
+        elif command == "apply_cell":
+            self.mirror.choose_cell(adapter_module.SPOT_CHOICES.index(payload["choice"]), payload["x"], payload["y"])
+        elif command == "apply_spot":
+            self.mirror.choose_spot(payload["pos"])
+        elif command == "apply_dragon":
+            self.mirror.move_dragon(payload["side"])
         elif command == "choose":
-            if self.mirror.current_phase == _carcassonne_cpp.PHASE_TILE:
+            phase = self.mirror.current_phase
+            if phase == _carcassonne_cpp.PHASE_TILE:
                 x, y, rot = list(self.mirror.get_legal_tile_moves())[0]
                 return {"ok": True, "kind": "tile", "x": x, "y": y, "rot": rot}
+            if phase == _carcassonne_cpp.PHASE_SPOT:
+                return {"ok": True, "kind": "spot", "pos": list(self.mirror.get_legal_spot_moves())[0]}
+            if phase == _carcassonne_cpp.PHASE_DRAGON:
+                return {"ok": True, "kind": "dragon", "side": list(self.mirror.get_legal_dragon_moves())[0]}
             return {"ok": True, "kind": "meeple", "pos": list(self.mirror.get_legal_meeple_moves())[0]}
         return {"ok": True}
 
@@ -1026,36 +1042,6 @@ def test_native_binding_reports_the_expansion_pieces() -> None:
     assert [meeple_spot(pos) for pos in moves] == [-1, 3, 4, MEEPLE_POS_INNER_FIELD, 2, MEEPLE_POS_FIELD + 5]
 
 
-def test_adapter_draws_expansion_pieces_while_they_are_on_the_board() -> None:
-    sx, sy = START_POS
-    tiles = [(sx + dx, sy) for dx in range(4)]
-    big_on_city = MEEPLE_POS_BIG + 1
-    builder = MEEPLE_POS_BUILDER + 3
-    pig = MEEPLE_POS_PIG + 2
-    big_farmer = MEEPLE_POS_BIG + MEEPLE_POS_FIELD + 6
-    adapter = CppCarcassonneAdapter(seed=42)
-    adapter.move_records = [
-        _meeple_record(1, sx, sy, big_on_city),
-        _meeple_record(1, sx + 1, sy, builder),
-        _meeple_record(2, sx + 2, sy, pig),
-        _meeple_record(2, sx + 3, sy, big_farmer),
-    ]
-
-    # The big meeple's city and the builder's road were completed: both went home.
-    adapter._engine = FakeMeepleEngine(tiles, [])
-    board = adapter._build_board()
-    assert {pos: tile.meeple_markers for pos, tile in board.items() if tile.meeple_markers} == {
-        (sx + 2, sy): [(2, pig)],  # pigs and farmers stay till the end
-        (sx + 3, sy): [(2, big_farmer)],
-    }
-
-    # Still open: the big meeple's side and the builder's side hold their owner's tokens.
-    adapter._engine = FakeMeepleEngine(tiles, [(0, sx, sy, 1), (0, sx + 1, sy, 3)])
-    board = adapter._build_board()
-    assert board[(sx, sy)].meeple_markers == [(1, big_on_city)]
-    assert board[(sx + 1, sy)].meeple_markers == [(1, builder)]
-
-
 def _markers_by_piece(state) -> dict:
     counts = {(player, kind): 0 for player in (1, 2) for kind in PIECES_PER_PLAYER}
     for tile in state.board.values():
@@ -1112,15 +1098,15 @@ def test_tiles_only_expansions_have_no_extra_pieces() -> None:
 
 
 def test_ui_parser_takes_every_expansion() -> None:
-    argv = ["--inns_cathedrals=on", "--traders_builders=tiles", "--river=on", "--princess_dragon=tiles"]
+    argv = ["--inns_cathedrals=on", "--traders_builders=tiles", "--river=on", "--princess_dragon=on"]
     assert parse_ui_config(argv).expansions == {
         "inns_cathedrals": "on",
         "traders_builders": "tiles",
         "river": "on",
-        "princess_dragon": "tiles",
+        "princess_dragon": "on",
     }
     with pytest.raises(SystemExit):
-        parse_ui_config(["--princess_dragon=on"])  # the UI does not play the dragon yet
+        parse_ui_config(["--river=tiles"])  # the river's tiles need its rules
 
 
 def test_bot_cli_plays_a_game_with_every_expansion() -> None:
@@ -1136,3 +1122,250 @@ def test_bot_cli_plays_a_game_with_every_expansion() -> None:
         assert pieces == {"meeple", "big", "builder", "pig"}
     finally:
         adapter.close()
+
+
+# ---- The Princess & the Dragon
+
+PD_ON = {"princess_dragon": "on"}
+ALL_RULES = {"inns_cathedrals": "on", "traders_builders": "on", "river": "on", "princess_dragon": "on"}
+STRAIGHT_ROAD, CITY_THREE_SIDES = 21, 4  # base tiles: road north-south; city north, east and west
+VOLCANO_ROAD, DRAGON_ROAD, PRINCESS_CITY, PORTAL_CITY = 88, 86, 93, 99
+
+
+def _scripted_draws(monkeypatch: pytest.MonkeyPatch, types) -> None:
+    """Deals `types` in this order (each must have a legal placement), then the first type available."""
+    queue = list(types)
+
+    def sample(self, draws):
+        available = [type_id for type_id, _ in draws]
+        if not queue:
+            return available[0]
+        wanted = queue.pop(0)
+        assert wanted in available, (wanted, available)
+        return wanted
+
+    monkeypatch.setattr(CppCarcassonneAdapter, "_sample_draw_type", sample)
+
+
+def _ui_move(adapter: CppCarcassonneAdapter, x: int, y: int, rotation: int) -> Move:
+    origin_x, origin_y = adapter.view_origin
+    return Move(x=x - origin_x, y=y - origin_y, rotation=rotation)
+
+
+def _ui_cell(adapter: CppCarcassonneAdapter, x: int, y: int):
+    origin_x, origin_y = adapter.view_origin
+    return x - origin_x, y - origin_y
+
+
+def _place(adapter: CppCarcassonneAdapter, x: int, y: int, rotation: int, meeple_pos: int = -1) -> None:
+    adapter.confirm_tile(_ui_move(adapter, x, y, rotation))
+    adapter.apply_meeple(meeple_pos)
+
+
+def test_native_binding_reports_the_princess_and_dragon() -> None:
+    engine = _native_game(PD_ON)
+    assert engine.dragon_rules and engine.portal_rules and engine.princess_rules and engine.fairy_rules
+    assert tuple(engine.dragon_cell) == (-1, -1) and tuple(engine.fairy_cell) == (-1, -1)
+    assert engine.fairy_owner == -1 and engine.get_pieces() == []
+    assert not _native_game({"princess_dragon": "tiles"}).dragon_rules
+
+
+def test_the_dragon_eats_the_pieces_on_its_way(monkeypatch: pytest.MonkeyPatch) -> None:
+    _scripted_draws(monkeypatch, [STRAIGHT_ROAD, VOLCANO_ROAD, DRAGON_ROAD])
+    sx, sy = START_POS  # the start tile: a city north, a road east to west
+    adapter = CppCarcassonneAdapter(seed=1, expansions=PD_ON)
+    assert adapter.state.choice_kinds == ("portal", "princess", "fairy")
+    assert adapter.state.dragon is None
+
+    # P1: the road on east, with a meeple on it.
+    _place(adapter, sx + 1, sy, 1, meeple_pos=1)
+    assert adapter.state.board[(sx + 1, sy)].meeple_markers == [(1, 1)]
+    # P2: a volcano further east brings the dragon; nothing goes on a volcano.
+    assert adapter.confirm_tile(_ui_move(adapter, sx + 2, sy, 1)) == [-1]
+    adapter.apply_meeple(-1)
+    assert adapter.state.dragon == (sx + 2, sy)
+
+    # P1: a dragon tile west of the start. After its meeple phase the dragon moves
+    # along the tiles, P1 first and then the players in turn.
+    _place(adapter, sx - 1, sy, 1)
+    assert adapter.decision() == "dragon" and adapter.state.current_player == 1
+    assert adapter.dragon_options() == [(3, _ui_cell(adapter, sx + 1, sy))]
+    adapter.apply_dragon(3)
+    # It ate P1's meeple.
+    assert adapter.state.meeples_remaining[1] == 7
+    assert not adapter.state.board[(sx + 1, sy)].meeple_markers
+    assert adapter.state.dragon_visited == [(sx + 2, sy), (sx + 1, sy)]
+    assert adapter.decision() == "dragon" and adapter.state.current_player == 2
+    with pytest.raises(ValueError):
+        adapter.apply_dragon(1)  # back east, where it has been
+    adapter.apply_dragon(3)
+    adapter.apply_dragon(3)  # P1 again, onto the dragon tile, from which it can go nowhere
+
+    assert adapter.state.dragon == (sx - 1, sy)
+    assert adapter.decision() == "tile" and adapter.state.current_player == 2
+    record = adapter.move_records[0]
+    assert record.player == 1
+    assert record.actions == ("place_meeple(skip)",) + ("move_dragon(dir=W)",) * 3
+    assert turn_extras(record.actions) == "dragon WWW"
+    adapter.close()
+
+
+def test_the_fairy_scores_its_owner_a_point_each_turn(monkeypatch: pytest.MonkeyPatch) -> None:
+    _scripted_draws(monkeypatch, [STRAIGHT_ROAD] * 5)
+    sx, sy = START_POS
+    adapter = CppCarcassonneAdapter(seed=1, expansions=PD_ON)
+    _place(adapter, sx + 1, sy, 1)  # P1
+    _place(adapter, sx + 2, sy, 1, meeple_pos=1)  # P2, a meeple on the road
+    _place(adapter, sx - 1, sy, 1)  # P1
+
+    # P2 places no piece and moves the fairy next to their meeple instead.
+    adapter.confirm_tile(_ui_move(adapter, sx + 3, sy, 1))
+    road_cells = [_ui_cell(adapter, x, sy) for x in (sx + 1, sx + 2)]
+    assert adapter.cell_options()["fairy"] == [road_cells[1]]
+    adapter.apply_cell("fairy", *road_cells[1])
+    assert adapter.state.fairy == (sx + 2, sy, 1) and adapter.state.fairy_owner == 2
+    assert adapter.move_records[0].actions == (f"move_fairy(x={sx + 2}, y={sy})",)
+
+    # The point comes at the start of P2's next turn: as P1's turn ends.
+    _place(adapter, sx - 2, sy, 1)
+    assert adapter.move_records[0].score_deltas == {1: 0, 2: 1}
+    adapter.close()
+
+
+def test_the_princess_sends_a_knight_home_and_a_portal_places_a_meeple_anywhere(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _scripted_draws(monkeypatch, [CITY_THREE_SIDES, PRINCESS_CITY, PORTAL_CITY])
+    sx, sy = START_POS
+    adapter = CppCarcassonneAdapter(seed=1, expansions=PD_ON)
+    # P1: a city on the start's, open east and west, with a knight in it.
+    _place(adapter, sx, sy - 1, 2, meeple_pos=1)
+    assert adapter.state.meeples_remaining[1] == 6
+
+    # P2: the princess's tile continues that city; P2 sends P1's knight home with her.
+    adapter.confirm_tile(_ui_move(adapter, sx + 1, sy - 1, 0))
+    knight_cell = _ui_cell(adapter, sx, sy - 1)
+    assert adapter.cell_options() == {"princess": [knight_cell]}
+    adapter.apply_cell("princess", *knight_cell)
+    assert adapter.state.meeples_remaining[1] == 7
+    assert not adapter.state.board[(sx, sy - 1)].meeple_markers
+    assert adapter.move_records[0].actions == (f"princess(x={sx}, y={sy - 1})",)
+
+    # P1: a magic portal; the meeple goes on the start tile's road. That tile has
+    # more than one free spot, so the spot is chosen next.
+    adapter.confirm_tile(_ui_move(adapter, sx - 1, sy - 1, 0))
+    start_cell = _ui_cell(adapter, sx, sy)
+    assert start_cell in adapter.cell_options()["portal"]
+    adapter.apply_cell("portal", *start_cell)
+    assert adapter.decision() == "spot"
+    choice, spots = adapter.spot_options()
+    assert choice == "portal" and 1 in spots
+    adapter.apply_spot(1)
+    assert adapter.state.board[(sx, sy)].meeple_markers == [(1, 1)]
+    assert not adapter.state.board[(sx - 1, sy - 1)].meeple_markers
+    record = adapter.move_records[0]
+    assert (record.meeple_pos, record.actions) == (1, (f"portal(x={sx}, y={sy})", "place_meeple(edge=1)"))
+    assert turn_extras(record.actions) == f"portal({sx},{sy})"
+    adapter.close()
+
+
+def _random_move(adapter: CppCarcassonneAdapter, rng) -> str:
+    """Any legal move of the human to decide, choices by cell and dragon steps included."""
+    decision = adapter.decision()
+    if decision == "tile":
+        adapter.confirm_tile(rng.choice(adapter.get_valid_moves()))
+    elif decision == "piece":
+        cells = adapter.cell_options()
+        if cells and rng.random() < 0.5:
+            choice = rng.choice(sorted(cells))
+            adapter.apply_cell(choice, *rng.choice(cells[choice]))
+            return choice
+        adapter.apply_meeple(rng.choice(adapter.meeple_options()))
+    elif decision == "spot":
+        adapter.apply_spot(rng.choice(adapter.spot_options()[1]))
+    elif decision == "dragon":
+        adapter.apply_dragon(rng.choice(adapter.dragon_options())[0])
+    return decision
+
+
+def test_games_with_every_rule_draw_every_piece_the_engine_has() -> None:
+    import random
+
+    seen = set()
+    for seed in range(3):
+        rng = random.Random(seed)
+        adapter = CppCarcassonneAdapter(seed=seed, expansions=ALL_RULES)
+        while not adapter.state.game_over:
+            seen.add(_random_move(adapter, rng))
+            state = adapter.state
+            markers = _markers_by_piece(state)
+            assert sum(markers.values()) == len(adapter._engine.get_pieces())
+            for owner in (1, 2):
+                assert markers[(owner, "meeple")] == PIECES_PER_PLAYER["meeple"] - state.meeples_remaining[owner]
+                for kind in ("big", "builder", "pig"):
+                    assert markers[(owner, kind)] == PIECES_PER_PLAYER[kind] - state.pieces_remaining[owner][kind]
+        assert sum(adapter.state.scores.values()) > 0
+        adapter.close()
+    assert {"tile", "piece", "spot", "dragon"} <= seen
+    assert seen & {"portal", "princess", "fairy"}
+
+
+def test_a_bot_plays_every_decision_against_a_human(monkeypatch: pytest.MonkeyPatch) -> None:
+    import random
+
+    # The bot takes the first legal move of its own copy of the game; any drift
+    # between the copies makes the adapter refuse its move.
+    monkeypatch.setattr(adapter_module, "BotCliClient", FakeBotCli)
+    rng = random.Random(3)
+    adapter = CppCarcassonneAdapter(
+        seed=3, player_specs=(PlayerSpec(type="human"), PlayerSpec(type="random")), expansions=ALL_RULES
+    )
+    while not adapter.state.game_over:
+        assert adapter.decision() is not None, adapter.ai_status
+        _random_move(adapter, rng)
+    assert any(action.startswith("move_dragon") for action in adapter._actions)
+    adapter.close()
+
+
+def test_bot_cli_plays_a_game_with_every_rule() -> None:
+    adapter = CppCarcassonneAdapter(
+        seed=4,
+        player_specs=(PlayerSpec(type="random"), PlayerSpec(type="random")),
+        expansions=ALL_RULES,
+    )
+    try:
+        assert adapter.state.game_over, adapter.ai_status
+        assert any(action.startswith("move_dragon") for action in adapter._actions)
+        assert any(action.startswith(("portal(", "princess(", "move_fairy(")) for action in adapter._actions)
+    finally:
+        adapter.close()
+
+
+def test_princess_and_dragon_side_panel_texts() -> None:
+    assert spot_button_label("portal", 1) == "Right"
+    assert spot_button_label("portal", MEEPLE_POS_BIG + 4) == "Big: Center"
+    assert spot_button_label("princess", 2) == "Knight: Down"
+    assert spot_button_label("fairy", MEEPLE_POS_FIELD) == "Next to: Farmer: Top-left"
+    assert turn_extras(("move_fairy(x=3, y=4)",)) == "fairy(3,4)"
+    assert turn_extras(("place_meeple(edge=0)",)) == ""
+    assert offered_tabs([-1, 2, MEEPLE_POS_BIG], {"fairy": [(1, 1)], "portal": []}) == ["meeple", "big", "fairy"]
+
+    def state(**fields) -> GameState:
+        return GameState(
+            board={},
+            current_player=2,
+            holding_tile_id=None,
+            draw_pile=[],
+            deck_counts={},
+            scores={1: 0, 2: 0},
+            meeples_remaining={1: 7, 2: 7},
+            **fields,
+        )
+
+    assert dragon_status(state()) == "Dragon: not in play yet (a volcano brings it)"
+    assert dragon_status(state(dragon=(3, 4))) == "Dragon: on the board"
+    moving = state(dragon=(3, 4), phase=adapter_module.PHASE_DRAGON, dragon_steps=2)
+    assert dragon_status(moving) == "Dragon: moving, step 3/6, P2 to move"
+    assert fairy_status(state()) == "Fairy: in the supply"
+    assert fairy_status(state(fairy=(1, 2, -1))) == "Fairy: on the board, next to no one"
+    assert fairy_status(state(fairy=(1, 2, 0), fairy_owner=1)) == "Fairy: next to P1's meeple"

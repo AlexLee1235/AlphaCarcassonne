@@ -1,7 +1,7 @@
 // 正規化尺度的量測(CLAUDE.md §4)。diag_pending_scale、diag_plane_scale、
 // diag_replay_scale 共用這裡的取樣,保證三支工具量的是同一個東西,只差對局分佈。
 //
-// 用法:每個決策點(tile 期與 meeple 期)呼叫 Collector::Decision(),每局結束
+// 用法:每個決策點(放磚、放 meeple、選格、選位置、龍)呼叫 Collector::Decision(),每局結束
 // 呼叫 Collector::EndGame()。「最後一手」是每局最後一個決策點。
 #pragma once
 
@@ -124,24 +124,19 @@ class Collector {
     bool has_last_decision_ = false;
 };
 
-// 雙方都亂下,或雙方都 greedy(最大化 banked + pending,強玩家代理,§2.1 警告框)。
-inline void PlayGames(int games, bool greedy, std::mt19937 &rng, Collector *c) {
+// 雙方都亂下,或雙方都 greedy(diag::GreedyStep,最大化 banked + pending,強玩家代理,§2.1 警告框)。
+// rules 是牌組與規則(diag::DeckArg)。
+inline void PlayGames(int games, bool greedy, std::mt19937 &rng, Collector *c,
+                      const diag::GameRules &rules = diag::GameRules()) {
     for (int g = 0; g < games; ++g) {
-        Carcassonne game;
+        Carcassonne game = diag::NewGame(rules);
         while (game.current_phase != PHASE_TERMINAL) {
             if (game.current_phase == PHASE_CHANCE) {
                 if (!diag::SampleDraw(game, rng)) break;
                 continue;
             }
             c->Decision(game);
-            const int me = game.currentPlayer;
-            if (game.current_phase == PHASE_TILE) {
-                if (greedy) diag::GreedyPlaceTile(game, me);
-                else if (!diag::RandomPlaceTile(game, rng)) break;
-            } else {
-                if (greedy) diag::GreedyPlaceMeeple(game, me);
-                else if (!diag::RandomPlaceMeeple(game, rng)) break;
-            }
+            if (!(greedy ? diag::GreedyStep(game) : diag::RandomStep(game, rng))) break;
         }
         c->EndGame();
     }

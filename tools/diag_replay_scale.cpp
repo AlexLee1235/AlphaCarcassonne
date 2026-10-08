@@ -9,10 +9,12 @@
 //
 // 用法: ./diag_replay_scale <訓練目錄> [分段數=2]
 //   訓練目錄要有 log-actor-*.txt;有 log-learner.txt 才能依步數分段。
+//   牌組與規則照 config.json 的 "game"(actor_log.hpp)。
 #include "actor_log.hpp"
 #include "scale_stats.hpp"
 
 #include <functional>
+#include <map>
 
 namespace {
 
@@ -76,6 +78,9 @@ int main(int argc, char **argv) {
         }
     }
     printf("讀到 %zu 局:重播成功 %zu,失敗 %d,沒下完 %d\n", games.size(), ok.size(), errors, unfinished);
+    std::map<std::string, int> decks;
+    for (const diag::LoggedGame &g : games) decks[diag::GameName(g.rules)]++;
+    for (const auto &[name, count] : decks) printf("  牌組 %s: %d 局\n", name.c_str(), count);
     if (errors > 0) printf("!! 有對局重播失敗:log 與現在的規則或動作格式不一致,下面的數字只含成功的局\n");
     if (ok.empty()) return 1;
 

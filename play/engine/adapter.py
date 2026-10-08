@@ -36,6 +36,18 @@ PHASE_CHANCE = int(_carcassonne_cpp.PHASE_CHANCE)
 PHASE_TILE = int(_carcassonne_cpp.PHASE_TILE)
 PHASE_MEEPLE = int(_carcassonne_cpp.PHASE_MEEPLE)
 PHASE_TERMINAL = int(_carcassonne_cpp.PHASE_TERMINAL)
+# The Princess & the Dragon: the dragon's steps, and the second step of a choice by cell.
+PHASE_DRAGON = int(_carcassonne_cpp.PHASE_DRAGON)
+PHASE_SPOT = int(_carcassonne_cpp.PHASE_SPOT)
+# The phases that are part of a player's turn after its tile.
+PIECE_PHASES = (PHASE_MEEPLE, PHASE_SPOT, PHASE_DRAGON)
+# The choices by cell, in the engine's SpotChoice order, as the bot CLI names them.
+SPOT_CHOICES = ("portal", "princess", "fairy")
+assert [int(_carcassonne_cpp.SPOT_PORTAL), int(_carcassonne_cpp.SPOT_PRINCESS), int(_carcassonne_cpp.SPOT_FAIRY)] == [0, 1, 2]
+DRAGON_STEPS = int(_carcassonne_cpp.DRAGON_STEPS)
+# The dragon's steps by side: 0 N, 1 E, 2 S, 3 W.
+SIDE_LETTERS = "NESW"
+SIDE_STEPS = ((0, -1), (1, 0), (0, 1), (-1, 0))
 PHYSICAL_TO_CANONICAL_TYPE = list(getattr(_carcassonne_cpp, "PHYSICAL_TO_CANONICAL_TYPE", []))
 # Meeple positions: 0..3 the feature on that side, 4 the monastery, then farmers:
 # MEEPLE_POS_FIELD + half-edge (0..7, clockwise from north-west) and the inner field.
@@ -85,19 +97,14 @@ def game_log_file(expansions: Dict[str, str]) -> str:
     return f"log-actor-gui-{'-'.join(parts)}.txt"
 
 
-# Expansions the engine plays "on" but the UI cannot yet: The Princess & the Dragon's
-# dragon moves in a phase of its own, which the UI and the bot CLI do not drive.
-UI_UNPLAYED_RULES = {"princess_dragon"}
-
-
 def expansion_modes(name: str) -> Tuple[str, ...]:
-    """The modes an expansion takes in the UI, as CarcassonneGame accepts them: "tiles"
-    deals its tiles alone (not for one whose tiles need its rules), "on" adds its rules."""
+    """The modes an expansion takes, as CarcassonneGame accepts them: "tiles" deals its
+    tiles alone (not for one whose tiles need its rules), "on" adds its rules."""
     bit = int(_carcassonne_cpp.expansion_bit(EXPANSION_NAMES.index(name)))
     modes = ["off"]
     if not RULES_REQUIRED_EXPANSIONS & bit:
         modes.append("tiles")
-    if RULED_EXPANSIONS & bit and name not in UI_UNPLAYED_RULES:
+    if RULED_EXPANSIONS & bit:
         modes.append("on")
     return tuple(modes)
 
@@ -150,27 +157,57 @@ def meeple_piece(meeple_pos: int) -> str:
     return "meeple"
 
 
+def piece_meeple_pos(kind: int, spot: int) -> int:
+    """The meeple move that puts a piece of this kind (PieceKind) on this spot, the
+    inverse of meeple_piece() and meeple_spot()."""
+    if kind == _carcassonne_cpp.PIECE_BIG_MEEPLE:
+        return MEEPLE_POS_BIG + spot
+    if kind == _carcassonne_cpp.PIECE_BUILDER:
+        return MEEPLE_POS_BUILDER + spot
+    if kind == _carcassonne_cpp.PIECE_PIG:
+        return MEEPLE_POS_PIG + spot - MEEPLE_POS_FIELD
+    return spot
+
+
+def _spot_argument(spot: int) -> str:
+    if spot == MEEPLE_POS_MONASTERY:
+        return "monastery"
+    if spot == MEEPLE_POS_INNER_FIELD:
+        return "inner_field"
+    if spot >= MEEPLE_POS_FIELD:
+        return f"field={spot - MEEPLE_POS_FIELD}"
+    return f"edge={spot}"
+
+
+# The moves below are written as CarcassonneState::ActionToString writes them in the actor logs.
+
+
 def _meeple_action_string(meeple_pos: int) -> str:
-    """The meeple move as CarcassonneState::ActionToString writes it in the actor logs."""
     if meeple_pos == MEEPLE_POS_SKIP:
         return "place_meeple(skip)"
-    if meeple_pos >= MEEPLE_POS_PIG:
-        verb, spot = "place_pig", MEEPLE_POS_FIELD + meeple_pos - MEEPLE_POS_PIG
-    elif meeple_pos >= MEEPLE_POS_BUILDER:
-        verb, spot = "place_builder", meeple_pos - MEEPLE_POS_BUILDER
-    elif meeple_pos >= MEEPLE_POS_BIG:
-        verb, spot = "place_big_meeple", meeple_pos - MEEPLE_POS_BIG
-    else:
-        verb, spot = "place_meeple", meeple_pos
-    if spot == MEEPLE_POS_MONASTERY:
-        arg = "monastery"
-    elif spot == MEEPLE_POS_INNER_FIELD:
-        arg = "inner_field"
-    elif spot >= MEEPLE_POS_FIELD:
-        arg = f"field={spot - MEEPLE_POS_FIELD}"
-    else:
-        arg = f"edge={spot}"
-    return f"{verb}({arg})"
+    verb = {"pig": "place_pig", "builder": "place_builder", "big": "place_big_meeple"}.get(
+        meeple_piece(meeple_pos), "place_meeple"
+    )
+    return f"{verb}({_spot_argument(meeple_spot(meeple_pos))})"
+
+
+def _cell_action_string(choice: str, x: int, y: int) -> str:
+    verb = {"portal": "portal", "princess": "princess", "fairy": "move_fairy"}[choice]
+    return f"{verb}(x={x}, y={y})"
+
+
+def _spot_action_string(choice: str, pos: int) -> str:
+    """The second step of a choice by cell: a portal's meeple move, or the princess's
+    knight or the fairy's meeple by its spot."""
+    if choice == "princess":
+        return f"remove_knight({_spot_argument(pos)})"
+    if choice == "fairy":
+        return f"fairy_meeple({_spot_argument(pos)})"
+    return _meeple_action_string(pos)
+
+
+def _dragon_action_string(side: int) -> str:
+    return f"move_dragon(dir={SIDE_LETTERS[side]})"
 
 
 def _git_revision() -> Optional[str]:
@@ -357,7 +394,11 @@ class CppCarcassonneAdapter:
         self._pending_bot_value: Optional[BotValue] = None
         self.last_bot_value: Optional[BotValue] = None
         self._turn = 1
-        self._pending_meeple_options: List[int] = []
+        # The turn under way: the moves after its tile, the meeple move among them
+        # (a portal's too) and the scores before its tile.
+        self._turn_actions: List[str] = []
+        self._turn_meeple_pos = MEEPLE_POS_SKIP
+        self._scores_before_turn: Dict[int, int] = {}
         # The game as it is saved when it ends: every action in the actor log
         # format, and one entry per completed turn.
         self._started_at = datetime.now()
@@ -483,7 +524,9 @@ class CppCarcassonneAdapter:
         return self.player_specs[self._current_player_index()]
 
     def is_ai_turn(self) -> bool:
-        if self._engine.is_game_over or self._pending_meeple_options:
+        """Whether a bot is to decide. In the dragon's move the players take turns, so
+        that can change in the middle of a turn."""
+        if self._engine.is_game_over:
             return False
         return self._current_player_spec().is_bot
 
@@ -513,14 +556,34 @@ class CppCarcassonneAdapter:
             self.last_bot_value = self._pending_bot_value
         return int(response["x"]), int(response["y"]), int(response["rot"])
 
-    def _choose_bot_meeple_move(self, player: int) -> int:
+    def _is_legal_bot_move(self, response: dict) -> bool:
+        """Whether a bot's move after its tile is legal here. The bot CLI decides on its
+        own copy of the game, so a move that is not means the two have drifted apart."""
+        engine, kind = self._engine, response["kind"]
+        if kind == "meeple":
+            return int(response["pos"]) in engine.get_legal_meeple_moves()
+        if kind == "spot":
+            return int(response["pos"]) in engine.get_legal_spot_moves()
+        if kind == "dragon":
+            return int(response["side"]) in engine.get_legal_dragon_moves()
+        cells = {
+            "portal": engine.get_legal_portal_cells,
+            "princess": engine.get_legal_princess_cells,
+            "fairy": engine.get_legal_fairy_cells,
+        }.get(str(response["choice"]))
+        return cells is not None and (int(response["x"]), int(response["y"])) in cells()
+
+    def _choose_bot_piece_move(self, player: int) -> dict:
+        """The bot's move after its tile: a meeple move or a choice by cell in the meeple
+        phase, a spot in PHASE_SPOT, a dragon step in PHASE_DRAGON."""
         spec = self.player_specs[player]
         if not spec.is_bot:
             raise ValueError(f"P{player + 1} is not a bot.")
         response = self._bot_request(player, self._choose_payload(spec))
-        if response.get("kind") != "meeple":
-            raise RuntimeError(f"Expected meeple action from bot CLI, got {response.get('kind')}.")
-        return int(response["pos"])
+        expected = {PHASE_MEEPLE: ("meeple", "cell"), PHASE_SPOT: ("spot",), PHASE_DRAGON: ("dragon",)}
+        if response.get("kind") not in expected[self._engine.current_phase]:
+            raise RuntimeError(f"Unexpected {response.get('kind')} move from the bot CLI.")
+        return response
 
     def _score_snapshot(self) -> Dict[int, int]:
         scores = self._engine.player_scores
@@ -536,10 +599,11 @@ class CppCarcassonneAdapter:
     def _remember_tile_move(self, player: int, tile_id: int, x: int, y: int, rotation: int) -> None:
         self._pending_tile_move = (player, tile_id, x, y, rotation)
 
-    def _record_completed_turn(self, meeple_pos: int, score_deltas: Dict[int, int]) -> None:
+    def _record_completed_turn(self, score_deltas: Dict[int, int]) -> None:
         if self._pending_tile_move is None:
             return
         player, tile_id, x, y, rotation = self._pending_tile_move
+        meeple_pos, actions = self._turn_meeple_pos, tuple(self._turn_actions)
         bot_value, self._pending_bot_value = self._pending_bot_value, None
         if bot_value is not None and bot_value.player != player:
             bot_value = None
@@ -555,6 +619,7 @@ class CppCarcassonneAdapter:
                 score_deltas=score_deltas,
                 value=bot_value.value if bot_value else None,
                 raw_value=bot_value.raw_value if bot_value else None,
+                actions=actions,
             ),
         )
         # Scores and meeples after the turn; the last turn's include the end-game scoring.
@@ -567,6 +632,7 @@ class CppCarcassonneAdapter:
                 "y": y,
                 "rotation": rotation,
                 "meeple_pos": meeple_pos,
+                "actions": list(actions),
                 "score_deltas": [score_deltas[1], score_deltas[2]],
                 "scores": [int(score) for score in self._engine.player_scores],
                 "meeples": [int(count) for count in self._engine.holding_meeples],
@@ -691,8 +757,65 @@ class CppCarcassonneAdapter:
         self._viewport_origin = next_origin
         return True
 
+    def decision(self) -> Optional[str]:
+        """What a human player to move decides: "tile", "piece" (the meeple phase:
+        a meeple move or a choice by cell), "spot" or "dragon"; None while a bot is
+        to move and once the game is over."""
+        if self._engine.is_game_over or self._current_player_spec().is_bot:
+            return None
+        phase = self._engine.current_phase
+        return {PHASE_TILE: "tile", PHASE_MEEPLE: "piece", PHASE_SPOT: "spot", PHASE_DRAGON: "dragon"}.get(phase)
+
+    def meeple_options(self) -> List[int]:
+        """The meeple moves of a human's meeple phase, skip included."""
+        if self.decision() != "piece":
+            return []
+        return [int(pos) for pos in self._engine.get_legal_meeple_moves()]
+
+    def cell_options(self) -> Dict[str, List[Tuple[int, int]]]:
+        """A human's choices by cell in the meeple phase, {choice: UI cells}, for the
+        choices that have one."""
+        if self.decision() != "piece":
+            return {}
+        found = {
+            "portal": self._engine.get_legal_portal_cells(),
+            "princess": self._engine.get_legal_princess_cells(),
+            "fairy": self._engine.get_legal_fairy_cells(),
+        }
+        options: Dict[str, List[Tuple[int, int]]] = {}
+        for choice, cells in found.items():
+            ui_cells = [cell for cell in (self._to_ui_coords(x, y) for x, y in cells) if cell is not None]
+            if ui_cells:
+                options[choice] = ui_cells
+        return options
+
+    def spot_options(self) -> Tuple[str, List[int]]:
+        """In PHASE_SPOT, the choice by cell under way and its moves on the cell."""
+        if self.decision() != "spot":
+            return "", []
+        return SPOT_CHOICES[self._engine.spot_choice], [int(pos) for pos in self._engine.get_legal_spot_moves()]
+
+    def spot_cell(self) -> Optional[Tuple[int, int]]:
+        """In PHASE_SPOT, the UI cell the choice by cell took."""
+        if self.decision() != "spot":
+            return None
+        return self._to_ui_coords(*self._engine.spot_cell)
+
+    def dragon_options(self) -> List[Tuple[int, Tuple[int, int]]]:
+        """In a human's dragon step, (side, UI cell) for each cell the dragon can enter."""
+        if self.decision() != "dragon":
+            return []
+        dragon_x, dragon_y = self._engine.dragon_cell
+        options = []
+        for side in self._engine.get_legal_dragon_moves():
+            step_x, step_y = SIDE_STEPS[side]
+            cell = self._to_ui_coords(dragon_x + step_x, dragon_y + step_y)
+            if cell is not None:
+                options.append((int(side), cell))
+        return options
+
     def get_valid_moves(self) -> List[Move]:
-        if self.is_ai_turn() or self._pending_meeple_options or self._engine.current_phase != PHASE_TILE:
+        if self.decision() != "tile":
             return []
 
         visible_moves: List[Move] = []
@@ -715,16 +838,35 @@ class CppCarcassonneAdapter:
             raise ValueError(f"Invalid move: ({move.x}, {move.y}, r={move.rotation})")
 
         self._place_tile(engine_x, engine_y, move.rotation)
-        self._pending_meeple_options = list(self._engine.get_legal_meeple_moves())
         self.state = self._build_state()
-        return list(self._pending_meeple_options)
+        return self.meeple_options()
 
     def apply_meeple(self, meeple_pos: int) -> None:
-        if meeple_pos not in self._pending_meeple_options:
+        if meeple_pos not in self.meeple_options():
             raise ValueError(f"Invalid meeple position: {meeple_pos}")
-
-        self._pending_meeple_options = []
         self._place_meeple(meeple_pos)
+        self._after_human_move()
+
+    def apply_cell(self, choice: str, x: int, y: int) -> None:
+        """A choice by cell for the meeple phase, on UI cell (x, y)."""
+        if (x, y) not in self.cell_options().get(choice, []):
+            raise ValueError(f"Invalid {choice} cell: ({x}, {y})")
+        self._choose_cell(choice, *self.to_engine_coords(x, y))
+        self._after_human_move()
+
+    def apply_spot(self, pos: int) -> None:
+        if pos not in self.spot_options()[1]:
+            raise ValueError(f"Invalid spot: {pos}")
+        self._choose_spot(pos)
+        self._after_human_move()
+
+    def apply_dragon(self, side: int) -> None:
+        if side not in [option for option, _ in self.dragon_options()]:
+            raise ValueError(f"The dragon cannot go {SIDE_LETTERS[side]}.")
+        self._move_dragon(side)
+        self._after_human_move()
+
+    def _after_human_move(self) -> None:
         if self.auto_run_bots:
             self.run_ai_turns()
         self.state = self._build_state()
@@ -733,6 +875,8 @@ class CppCarcassonneAdapter:
         """Places the tile in hand for the player to move and passes it on to the bots."""
         player = self._engine.current_player + 1
         tile_id = self._current_tile_art_id()
+        self._scores_before_turn = self._score_snapshot()
+        self._turn_actions, self._turn_meeple_pos = [], MEEPLE_POS_SKIP
         self._engine.place_tile(x, y, rotation)
         # Follow the view, out of which no tile can go.
         self._viewport_origin = self._engine_view_origin()
@@ -741,13 +885,38 @@ class CppCarcassonneAdapter:
         self._remember_tile_move(player, tile_id, x, y, rotation)
         self._sync_bots({"cmd": "apply_tile", "x": x, "y": y, "rot": rotation})
 
+    # The moves after the tile, for whoever makes them. Each passes the move on to the
+    # bots and ends the turn if it was the last one.
+
     def _place_meeple(self, meeple_pos: int) -> None:
-        """Ends the turn with the meeple move, draws the next tile, and saves the game if it is over."""
-        score_before = self._score_snapshot()
         self._engine.place_meeple(meeple_pos)
-        self._actions.append(_meeple_action_string(meeple_pos))
-        self._sync_bots({"cmd": "apply_meeple", "pos": meeple_pos})
-        self._record_completed_turn(meeple_pos, self._score_deltas(score_before))
+        self._turn_meeple_pos = meeple_pos
+        self._after_piece_move(_meeple_action_string(meeple_pos), {"cmd": "apply_meeple", "pos": meeple_pos})
+
+    def _choose_cell(self, choice: str, x: int, y: int) -> None:
+        self._engine.choose_cell(SPOT_CHOICES.index(choice), x, y)
+        self._after_piece_move(_cell_action_string(choice, x, y), {"cmd": "apply_cell", "choice": choice, "x": x, "y": y})
+
+    def _choose_spot(self, pos: int) -> None:
+        choice = SPOT_CHOICES[self._engine.spot_choice]
+        self._engine.choose_spot(pos)
+        if choice == "portal":
+            self._turn_meeple_pos = pos
+        self._after_piece_move(_spot_action_string(choice, pos), {"cmd": "apply_spot", "pos": pos})
+
+    def _move_dragon(self, side: int) -> None:
+        self._engine.move_dragon(side)
+        self._after_piece_move(_dragon_action_string(side), {"cmd": "apply_dragon", "side": side})
+
+    def _after_piece_move(self, action: str, bot_payload: dict) -> None:
+        """Logs the move and passes it on; once the turn is over, records it, draws the
+        next tile, and saves the game if it is over."""
+        self._actions.append(action)
+        self._turn_actions.append(action)
+        self._sync_bots(bot_payload)
+        if self._engine.current_phase in PIECE_PHASES:
+            return
+        self._record_completed_turn(self._score_deltas(self._scores_before_turn))
         self._turn += 1
         self._resolve_chance_phase()
         if self._engine.is_game_over:
@@ -759,26 +928,45 @@ class CppCarcassonneAdapter:
             return 0
 
         ai_turns = 0
+        moves = 0
         last_label = ""
         try:
+            # Until a human is to decide: the next turn, or a step of the dragon's move.
             while not self._engine.is_game_over and self._current_player_spec().is_bot:
                 player = self._current_player_index()
                 spec = self.player_specs[player]
                 last_label = f"P{player + 1} {spec.label}"
-                if self._engine.current_phase == PHASE_CHANCE:
+                phase = self._engine.current_phase
+                if phase == PHASE_CHANCE:
                     self._resolve_chance_phase()
                     continue
-                if self._engine.current_phase == PHASE_TILE:
+                if phase == PHASE_TILE:
                     x, y, rotation = self._choose_bot_tile_move(player)
+                    if (x, y, rotation) not in set(self._engine.get_legal_tile_moves()):
+                        raise RuntimeError(f"{last_label} chose an illegal tile placement: the bot CLI is out of sync.")
                     self._place_tile(x, y, rotation)
+                    moves += 1
                     continue
-                if self._engine.current_phase == PHASE_MEEPLE:
-                    self._place_meeple(self._choose_bot_meeple_move(player))
+                if phase not in PIECE_PHASES:
+                    break
+                turn = self._turn
+                response = self._choose_bot_piece_move(player)
+                if not self._is_legal_bot_move(response):
+                    raise RuntimeError(f"{last_label} chose an illegal move {response}: the bot CLI is out of sync.")
+                kind = response["kind"]
+                if kind == "meeple":
+                    self._place_meeple(int(response["pos"]))
+                elif kind == "cell":
+                    self._choose_cell(str(response["choice"]), int(response["x"]), int(response["y"]))
+                elif kind == "spot":
+                    self._choose_spot(int(response["pos"]))
+                else:
+                    self._move_dragon(int(response["side"]))
+                moves += 1
+                if self._turn != turn:
                     ai_turns += 1
                     if max_turns is not None and ai_turns >= max_turns:
                         break
-                    continue
-                break
         except Exception as exc:
             self.ai_status = str(exc)
             self.state = self._build_state()
@@ -786,6 +974,8 @@ class CppCarcassonneAdapter:
 
         if ai_turns:
             self.ai_status = f"{last_label} played {ai_turns} bot turn(s)."
+        elif moves:
+            self.ai_status = f"{last_label} moved the dragon."
         self.state = self._build_state()
         return ai_turns
 
@@ -799,27 +989,19 @@ class CppCarcassonneAdapter:
                 rotation=rotation,
                 tile_owner=latest_owner if (x, y) == latest_pos else None,
             )
-        # The engine only knows meeple counts per feature, so get_meeple_tokens() marks every
-        # edge of a claimed road/city. Draw each piece where it was actually placed (from
-        # move_records) and use the tokens only to tell whether it is still on the board:
-        # completing a feature or monastery clears its token and returns the meeple.
-        # - A big meeple counts in the same tokens as a meeple.
-        # - A builder goes on a road or city that holds one of its owner's meeples, which
-        #   stays there till the feature is completed and both go home: it has a token as
-        #   long as the builder is there.
-        # - Farmers and pigs have no token and are never returned, so they always stay.
-        live_tokens = set(self._engine.get_meeple_tokens())
-        for record in self.move_records:
-            if record.meeple_pos == MEEPLE_POS_SKIP:
-                continue
-            spot = meeple_spot(record.meeple_pos)
-            if spot < MEEPLE_POS_FIELD and (record.player - 1, record.x, record.y, spot) not in live_tokens:
-                continue
-            tile = board.get((record.x, record.y))
+        # Every piece on the board, where it stands (Carcassonne::pieces): pieces leave it
+        # when their road, city or monastery is scored, when the dragon eats them and when
+        # the princess sends a knight home, and a portal's meeple goes on an earlier tile.
+        for x, y, owner, kind, spot in self._engine.get_pieces():
+            tile = board.get((x, y))
             if tile is None:
-                raise RuntimeError(f"Meeple record {record} has no matching tile snapshot")
-            tile.meeple_markers.append((record.player, record.meeple_pos))
-            tile.meeple_owner, tile.meeple_pos = record.player, record.meeple_pos
+                raise RuntimeError(f"A piece at ({x}, {y}) has no tile under it")
+            tile.meeple_markers.append((owner + 1, piece_meeple_pos(kind, spot)))
+        for tile in board.values():
+            # In a fixed order: the engine reorders its pieces as they leave.
+            tile.meeple_markers.sort()
+            if tile.meeple_markers:
+                tile.meeple_owner, tile.meeple_pos = tile.meeple_markers[-1]
         return board
 
     def _build_state(self) -> GameState:
@@ -840,6 +1022,11 @@ class CppCarcassonneAdapter:
         goods = {}
         if self._engine.goods_rules:
             goods = {player + 1: tuple(int(n) for n in tokens) for player, tokens in enumerate(self._engine.goods_tokens)}
+        engine = self._engine
+        choices = (("portal", engine.portal_rules), ("princess", engine.princess_rules), ("fairy", engine.fairy_rules))
+        dragon_x, dragon_y = engine.dragon_cell
+        fairy_x, fairy_y = engine.fairy_cell
+        in_dragon_move = engine.current_phase == PHASE_DRAGON
 
         return GameState(
             board=self._build_board(),
@@ -857,4 +1044,11 @@ class CppCarcassonneAdapter:
             },
             goods=goods,
             builder_extra_tile=bool(self._engine.builder_second_tile) and not game_over,
+            phase=int(engine.current_phase),
+            choice_kinds=tuple(name for name, rules in choices if rules),
+            dragon=(int(dragon_x), int(dragon_y)) if dragon_x >= 0 else None,
+            dragon_visited=[(int(x), int(y)) for x, y in engine.dragon_visited] if in_dragon_move else [],
+            dragon_steps=int(engine.dragon_steps) if in_dragon_move else 0,
+            fairy=(int(fairy_x), int(fairy_y), int(engine.fairy_spot)) if fairy_x >= 0 else None,
+            fairy_owner=int(engine.fairy_owner) + 1 if engine.fairy_owner >= 0 else None,
         )

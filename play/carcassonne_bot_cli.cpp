@@ -79,10 +79,22 @@ int FallbackSimulations() {
 
 int DecodeMeepleAction(open_spiel::Action action) {
     if (action < open_spiel::carcassonne::kMeepleActionOffset ||
-        action >= open_spiel::carcassonne::kNumDistinctPlayerActions) {
+        action >= open_spiel::carcassonne::kDragonActionOffset) {
         throw std::runtime_error("Bot did not return a meeple action.");
     }
     return action - open_spiel::carcassonne::kMeepleActionOffset - 1;
+}
+
+// The Princess & the Dragon's choices by cell, as the UI names them.
+constexpr const char *kSpotChoiceNames[] = {"portal", "princess", "fairy"};
+
+SpotChoice ParseSpotChoice(const std::string &name) {
+    for (int choice = 0; choice < 3; ++choice) {
+        if (name == kSpotChoiceNames[choice]) {
+            return static_cast<SpotChoice>(choice);
+        }
+    }
+    throw std::runtime_error("Unknown choice by cell: " + name);
 }
 
 open_spiel::algorithms::torch_az::ModelConfig LoadModelConfig(const std::string &path,
@@ -208,6 +220,19 @@ class CarcassonneBotCli {
         }
         if (command == "apply_meeple") {
             mirror_.placeMeeple(request.at("pos").get<int>());
+            return Ok();
+        }
+        if (command == "apply_cell") {
+            mirror_.chooseCell(ParseSpotChoice(request.at("choice").get<std::string>()), request.at("x").get<int>(),
+                               request.at("y").get<int>());
+            return Ok();
+        }
+        if (command == "apply_spot") {
+            mirror_.chooseSpot(request.at("pos").get<int>());
+            return Ok();
+        }
+        if (command == "apply_dragon") {
+            mirror_.moveDragon(request.at("side").get<int>());
             return Ok();
         }
         if (command == "choose") {
@@ -348,12 +373,31 @@ class CarcassonneBotCli {
             response.update(values);
             return response;
         }
-        if (mirror_.current_phase == PHASE_MEEPLE) {
-            json response{{"ok", true}, {"kind", "meeple"}, {"pos", DecodeMeepleAction(action)}};
-            response.update(values);
-            return response;
+        json response;
+        if (mirror_.current_phase == PHASE_MEEPLE && action < open_spiel::carcassonne::kCellActionCount) {
+            // A magic portal, the princess or the fairy, by cell; the reply gives the board cell.
+            const auto [x, y] = state.CellActionCell(action);
+            const int plane = action % open_spiel::carcassonne::kCellActionPlanes;
+            response = json{{"ok", true},
+                            {"kind", "cell"},
+                            {"choice", kSpotChoiceNames[plane - open_spiel::carcassonne::kPortalCellPlane]},
+                            {"x", x},
+                            {"y", y}};
+        } else if (mirror_.current_phase == PHASE_MEEPLE) {
+            response = json{{"ok", true}, {"kind", "meeple"}, {"pos", DecodeMeepleAction(action)}};
+        } else if (mirror_.current_phase == PHASE_SPOT) {
+            response = json{{"ok", true}, {"kind", "spot"}, {"pos", DecodeMeepleAction(action)}};
+        } else if (mirror_.current_phase == PHASE_DRAGON) {
+            if (action < open_spiel::carcassonne::kDragonActionOffset ||
+                action >= open_spiel::carcassonne::kNumDistinctPlayerActions) {
+                throw std::runtime_error("Bot did not return a dragon step.");
+            }
+            response = json{{"ok", true}, {"kind", "dragon"}, {"side", action - open_spiel::carcassonne::kDragonActionOffset}};
+        } else {
+            throw std::runtime_error("Bot returned an action for an unsupported phase.");
         }
-        throw std::runtime_error("Bot returned an action for an unsupported phase.");
+        response.update(values);
+        return response;
     }
 
     std::shared_ptr<const open_spiel::carcassonne::CarcassonneGame> game_;

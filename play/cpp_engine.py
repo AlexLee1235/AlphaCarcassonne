@@ -15,6 +15,12 @@ try:
     MEEPLE_POS_PIG,
     MEEPLE_POS_SKIP,
         PHASE_CHANCE,
+        PHASE_DRAGON,
+        PHASE_SPOT,
+        DRAGON_STEPS,
+        SIDE_LETTERS,
+        SIDE_STEPS,
+        SPOT_CHOICES,
         PHASE_MEEPLE,
         PHASE_TERMINAL,
         PHASE_TILE,
@@ -28,6 +34,7 @@ try:
     expansion_modes,
     meeple_piece,
     meeple_spot,
+    piece_meeple_pos,
     )
 except ImportError:  # pragma: no cover - package import fallback
     from .engine.adapter import (
@@ -44,6 +51,12 @@ except ImportError:  # pragma: no cover - package import fallback
     MEEPLE_POS_PIG,
     MEEPLE_POS_SKIP,
         PHASE_CHANCE,
+        PHASE_DRAGON,
+        PHASE_SPOT,
+        DRAGON_STEPS,
+        SIDE_LETTERS,
+        SIDE_STEPS,
+        SPOT_CHOICES,
         PHASE_MEEPLE,
         PHASE_TERMINAL,
         PHASE_TILE,
@@ -57,6 +70,7 @@ except ImportError:  # pragma: no cover - package import fallback
     expansion_modes,
     meeple_piece,
     meeple_spot,
+    piece_meeple_pos,
     )
 
 __all__ = [
@@ -73,6 +87,12 @@ __all__ = [
     "MEEPLE_POS_PIG",
     "MEEPLE_POS_SKIP",
     "PHASE_CHANCE",
+    "PHASE_DRAGON",
+    "PHASE_SPOT",
+    "DRAGON_STEPS",
+    "SIDE_LETTERS",
+    "SIDE_STEPS",
+    "SPOT_CHOICES",
     "PHASE_MEEPLE",
     "PHASE_TERMINAL",
     "PHASE_TILE",
@@ -86,4 +106,5 @@ __all__ = [
     "expansion_modes",
     "meeple_piece",
     "meeple_spot",
+    "piece_meeple_pos",
 ]

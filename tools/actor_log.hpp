@@ -2,8 +2,11 @@
 //
 // alpha_zero.cc 的 PlayGame 每局結束寫一行
 //   [2026-10-04 09:20:45.850] Game 1: Returns: -1 1; Actions: draw_type(16) place_tile(x=10, y=11, rot=1) ...
-// 動作含抽牌,字串是 CarcassonneState::ActionToString 的格式,ApplyLoggedAction 照它解析。
+// 動作含抽牌,字串是 CarcassonneState::ActionToString 的格式,ParseLoggedMove 照它解析。
 // 格式若改了,解析或合法性檢查會失敗,不會默默重播錯。
+//
+// 牌組與規則:訓練的 log 看同目錄 config.json 的 "game"(alpha_zero.cc 寫的);
+// GUI 的 log 寫在檔名裡(play/engine/adapter.py 的 game_log_file)。
 #pragma once
 
 #include "common.hpp"
@@ -11,6 +14,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <sstream>
 #include <string>
 
 namespace diag {
@@ -21,7 +25,9 @@ struct LoggedGame {
     double returns[2] = {0, 0};
     std::vector<std::string> actions;
     bool truncated = false;  // 行被截斷(例如下載時 log 還在寫)
-    int board_shift = 0;     // 加到 place_tile 的座標上,見 BoardShift
+    int board_shift = 0;     // 加到 place_tile 與選格的座標上,見 BoardShift
+    GameRules rules;         // 這局的牌組與規則,見 LogGameString
+    std::string rules_error; // 讀不出規則時的原因;不是空的就不重播
 };
 
 // 盤面從 21x21 加大成 BOARD_SIZE 以前的 log,起始磚在 (10, 10),格子都比現在少
@@ -36,11 +42,63 @@ inline int BoardShift(const std::vector<std::string> &actions) {
     return 0;
 }
 
+// GUI 的 log 檔名帶著擴充:log-actor-gui.txt 是基本版,
+// log-actor-gui-inns_cathedrals-tiles-river.txt 是 inns_cathedrals=tiles、river=on
+// (擴充名照字母排,後面跟著 tiles 或 off,沒跟就是 on)。不是 GUI 的檔名就回傳 false。
+inline bool GuiLogGameString(const std::string &file, std::string *game) {
+    const std::string prefix = "log-actor-gui", suffix = ".txt";
+    if (file.rfind(prefix, 0) != 0 || file.size() < prefix.size() + suffix.size() ||
+        file.compare(file.size() - suffix.size(), suffix.size(), suffix) != 0)
+        return false;
+    std::vector<std::string> tokens;
+    std::stringstream rest(file.substr(prefix.size(), file.size() - prefix.size() - suffix.size()));
+    for (std::string token; std::getline(rest, token, '-');)
+        if (!token.empty()) tokens.push_back(token);
+    game->clear();
+    for (size_t i = 0; i < tokens.size(); ++i) {
+        std::string mode = "on";
+        if (i + 1 < tokens.size() && (tokens[i + 1] == "tiles" || tokens[i + 1] == "off")) mode = tokens[++i];
+        *game += (game->empty() ? "" : ",") + tokens[i] + "=" + mode;
+    }
+    return true;
+}
+
+// 訓練目錄 config.json 裡的 "game"。沒有這個檔回傳 false。
+inline bool RunGameString(const std::string &dir, std::string *game) {
+    std::ifstream in(dir + "/config.json");
+    if (!in) return false;
+    std::stringstream buffer;
+    buffer << in.rdbuf();
+    const std::string text = buffer.str();
+    const size_t key = text.find("\"game\"");
+    const size_t colon = key == std::string::npos ? key : text.find(':', key);
+    const size_t open = colon == std::string::npos ? colon : text.find('"', colon);
+    const size_t close = open == std::string::npos ? open : text.find('"', open + 1);
+    if (close == std::string::npos) return false;
+    *game = text.substr(open + 1, close - open - 1);
+    return true;
+}
+
+// 一個 log 檔的遊戲字串:GUI 看檔名,其他看同目錄的 config.json;都沒有就當基本版,並在 *note 說明。
+inline std::string LogGameString(const std::string &path, std::string *note) {
+    const std::filesystem::path p(path);
+    std::string game;
+    if (GuiLogGameString(p.filename().string(), &game)) return game;
+    const std::string dir = p.parent_path().empty() ? "." : p.parent_path().string();
+    if (RunGameString(dir, &game)) return game;
+    *note = p.filename().string() + " 旁邊沒有 config.json,當成基本版";
+    return "";
+}
+
 // 一個檔案裡所有 "Game N: Returns: ...; Actions: ..." 行。
 inline std::vector<LoggedGame> ReadActorLog(const std::string &path) {
     std::vector<LoggedGame> games;
     std::ifstream in(path);
     const std::string file = std::filesystem::path(path).filename().string();
+    std::string note, rules_error;
+    GameRules rules;
+    if (!ParseGameString(LogGameString(path, &note), &rules, &rules_error)) rules_error = file + ": " + rules_error;
+    if (!note.empty()) fprintf(stderr, "%s\n", note.c_str());
     std::string line;
     while (std::getline(in, line)) {
         if (!line.empty() && line.back() == '\r') line.pop_back();
@@ -66,6 +124,8 @@ inline std::vector<LoggedGame> ReadActorLog(const std::string &path) {
             i = end + 1;
         }
         g.board_shift = BoardShift(g.actions);
+        g.rules = rules;
+        g.rules_error = rules_error;
         games.push_back(std::move(g));
     }
     return games;
@@ -111,123 +171,129 @@ inline int StepAt(const std::vector<std::pair<std::string, int>> &steps, const s
     return step;
 }
 
+inline const char *PhaseName(GamePhase phase) {
+    switch (phase) {
+    case PHASE_CHANCE: return "抽牌";
+    case PHASE_TILE: return "放磚";
+    case PHASE_MEEPLE: return "放 meeple";
+    case PHASE_TERMINAL: return "終局";
+    case PHASE_DRAGON: return "龍移動";
+    case PHASE_SPOT: return "選位置";
+    }
+    return "?";
+}
+
+// 把一個決策的 ActionToString 字串解析成 Move,並確認它在 g 合法。
+// 看不懂、階段不對或不合法就回傳 false。board_shift 是 LoggedGame::board_shift。
+inline bool ParseLoggedMove(const Carcassonne &g, const std::string &a, Move *move, std::string *error,
+                            int board_shift = 0) {
+    auto fail = [&](const std::string &why) {
+        *error = why + ": " + a;
+        return false;
+    };
+    // 選格:魔法門要放 meeple 的格、公主要移走騎士的格、仙女要去的格
+    const std::pair<const char *, SpotChoice> cells[] = {{"portal(x=%d, y=%d)", SPOT_PORTAL},
+                                                         {"princess(x=%d, y=%d)", SPOT_PRINCESS},
+                                                         {"move_fairy(x=%d, y=%d)", SPOT_FAIRY}};
+    Move m;
+    int k = 0, x = 0, y = 0, rot = 0;
+    char dir = 0;
+    const auto cell = std::find_if(std::begin(cells), std::end(cells),
+                                   [&](const auto &c) { return sscanf(a.c_str(), c.first, &x, &y) == 2; });
+    if (sscanf(a.c_str(), "place_tile(x=%d, y=%d, rot=%d)", &x, &y, &rot) == 3) {
+        m.kind = Move::TILE;
+        m.x = x + board_shift, m.y = y + board_shift, m.rot = rot;
+    } else if (cell != std::end(cells)) {
+        m.kind = Move::CELL;
+        m.choice = cell->second;
+        m.x = x + board_shift, m.y = y + board_shift;
+    } else if (sscanf(a.c_str(), "move_dragon(dir=%c)", &dir) == 1) {
+        const char *sides = "NESW";
+        const char *side = dir == 0 ? nullptr : std::strchr(sides, dir);
+        if (side == nullptr) return fail("看不懂的龍的方向");
+        m.kind = Move::DRAGON;
+        m.side = static_cast<int>(side - sides);
+    } else {
+        // 放 meeple 與其他棋子;選格之後的第二段(魔法門放的 meeple、公主移走的騎士、仙女的 meeple)
+        struct Verb {
+            const char *prefix;
+            int offset;  // 加到位置上:大米寶、建築師、小豬放在同樣的位置再往後
+        };
+        const Verb verbs[] = {{"place_meeple(", 0},
+                              {"place_big_meeple(", MEEPLE_POS_BIG},
+                              {"place_builder(", MEEPLE_POS_BUILDER},
+                              {"place_pig(", MEEPLE_POS_PIG - MEEPLE_POS_FIELD},
+                              {"remove_knight(", 0},
+                              {"fairy_meeple(", 0}};
+        const Verb *verb = nullptr;
+        for (const Verb &v : verbs)
+            if (a.rfind(v.prefix, 0) == 0) verb = &v;
+        if (verb == nullptr || a.back() != ')') return fail("看不懂的動作");
+        const std::string name = verb->prefix;
+        const std::string arg = a.substr(name.size(), a.size() - name.size() - 1);
+        const bool pig = name == "place_pig(", builder = name == "place_builder(";
+        int pos;
+        if (arg == "skip" && name == "place_meeple(") pos = MEEPLE_POS_SKIP;
+        else if (sscanf(arg.c_str(), "edge=%d", &k) == 1 && !pig) pos = k;
+        else if (arg == "monastery" && !pig && !builder) pos = MEEPLE_POS_MONASTERY;
+        else if (arg == "inner_field" && !pig && !builder) pos = MEEPLE_POS_INNER_FIELD;
+        else if (sscanf(arg.c_str(), "field=%d", &k) == 1 && !builder) pos = MEEPLE_POS_FIELD + k;
+        else return fail("看不懂的位置");
+        if (pos != MEEPLE_POS_SKIP) pos += verb->offset;
+        m.pos = pos;
+        if (name == "remove_knight(" || name == "fairy_meeple(") {
+            m.kind = Move::SPOT;
+            m.choice = name == "remove_knight(" ? SPOT_PRINCESS : SPOT_FAIRY;
+        } else if (g.current_phase == PHASE_SPOT) {
+            m.kind = Move::SPOT;  // 魔法門的第二段
+            m.choice = SPOT_PORTAL;
+        } else {
+            m.kind = Move::MEEPLE;
+        }
+    }
+    const std::vector<Move> legal = LegalMoves(g);
+    if (std::find(legal.begin(), legal.end(), m) == legal.end())
+        return fail(std::string("不合法(現在是") + PhaseName(g.current_phase) + "階段)");
+    *move = m;
+    return true;
+}
+
 // 把一個 ActionToString 字串套到引擎上。階段不對、看不懂或不合法就回傳 false。
 // board_shift 是 LoggedGame::board_shift。
 inline bool ApplyLoggedAction(Carcassonne &g, const std::string &a, std::string *error, int board_shift = 0) {
-    auto fail = [&](const char *why) {
-        *error = std::string(why) + ": " + a;
-        return false;
-    };
-    int k = 0, x = 0, y = 0, rot = 0;
+    int k = 0;
     if (sscanf(a.c_str(), "draw_type(%d)", &k) == 1) {
-        if (g.current_phase != PHASE_CHANCE) return fail("不在抽牌階段");
+        if (g.current_phase != PHASE_CHANCE) {
+            *error = "不在抽牌階段: " + a;
+            return false;
+        }
         ChanceBranch draws[CANONICAL_TILE_TYPE_COUNT];
         int count = 0;
         g.getAvailableDraws(draws, count);
-        if (std::none_of(draws, draws + count, [&](const ChanceBranch &d) { return d.type_id == k; }))
-            return fail("牌堆裡沒有這種牌");
+        if (std::none_of(draws, draws + count, [&](const ChanceBranch &d) { return d.type_id == k; })) {
+            *error = "牌堆裡沒有這種牌: " + a;
+            return false;
+        }
         g.drawTile(k);
         return true;
     }
-    if (sscanf(a.c_str(), "place_tile(x=%d, y=%d, rot=%d)", &x, &y, &rot) == 3) {
-        if (g.current_phase != PHASE_TILE) return fail("不在放磚階段");
-        x += board_shift;
-        y += board_shift;
-        std::vector<TileMove> moves(BOARD_SIZE * BOARD_SIZE * 4);
-        int count = 0;
-        g.getLegalTileMoves(moves.data(), count);
-        if (std::none_of(moves.begin(), moves.begin() + count,
-                         [&](const TileMove &m) { return m.x == x && m.y == y && m.rot == rot; }))
-            return fail("不合法的落點");
-        g.placeTile(x, y, rot);
-        return true;
-    }
-    // A cell chosen for a magic portal's meeple, the princess's knight or the fairy.
-    const bool portal = sscanf(a.c_str(), "portal(x=%d, y=%d)", &x, &y) == 2;
-    const bool princess = !portal && sscanf(a.c_str(), "princess(x=%d, y=%d)", &x, &y) == 2;
-    const bool fairy = !portal && !princess && sscanf(a.c_str(), "move_fairy(x=%d, y=%d)", &x, &y) == 2;
-    if (portal || princess || fairy) {
-        if (g.current_phase != PHASE_MEEPLE) return fail("不在放 meeple 階段");
-        x += board_shift;
-        y += board_shift;
-        const Cells cells = portal ? g.getLegalPortalCells() : princess ? g.getLegalPrincessCells()
-                                                                        : g.getLegalFairyCells();
-        if (std::none_of(cells.begin(), cells.end(), [&](const auto &c) { return c.first == x && c.second == y; }))
-            return fail("不合法的格子");
-        g.chooseCell(portal ? SPOT_PORTAL : princess ? SPOT_PRINCESS : SPOT_FAIRY, x, y);
-        return true;
-    }
-    if (sscanf(a.c_str(), "remove_knight(edge=%d)", &k) == 1) {
-        if (g.current_phase != PHASE_SPOT || g.spot_choice != SPOT_PRINCESS) return fail("不在選騎士的階段");
-        const MeepleMoves moves = g.getLegalSpotMoves();
-        if (std::none_of(moves.begin(), moves.end(), [&](int m) { return m == k; })) return fail("不合法的騎士");
-        g.chooseSpot(k);
-        return true;
-    }
-    const std::string prefix = "place_meeple(";
-    const std::string big_prefix = "place_big_meeple(";
-    const std::string builder_prefix = "place_builder(";
-    const std::string pig_prefix = "place_pig(";
-    const std::string fairy_prefix = "fairy_meeple(";
-    const bool big = a.rfind(big_prefix, 0) == 0;
-    const bool builder = a.rfind(builder_prefix, 0) == 0;
-    const bool pig = a.rfind(pig_prefix, 0) == 0;
-    const bool fairy_meeple = a.rfind(fairy_prefix, 0) == 0;
-    if ((big || builder || pig || fairy_meeple || a.rfind(prefix, 0) == 0) && a.back() == ')') {
-        const size_t start =
-            (big ? big_prefix : builder ? builder_prefix : pig ? pig_prefix : fairy_meeple ? fairy_prefix : prefix)
-                .size();
-        const std::string arg = a.substr(start, a.size() - start - 1);
-        int pos;
-        if (pig) {
-            // 小豬只放半邊所屬的田
-            if (sscanf(arg.c_str(), "field=%d", &k) != 1) return fail("看不懂的小豬位置");
-            pos = MEEPLE_POS_PIG + k;
-        }
-        else if (arg == "skip" && !big && !builder && !fairy_meeple) pos = MEEPLE_POS_SKIP;
-        else if (sscanf(arg.c_str(), "edge=%d", &k) == 1) pos = k;
-        else if (builder) return fail("看不懂的建築師位置");  // 建築師只放城、路
-        else if (arg == "monastery") pos = MEEPLE_POS_MONASTERY;
-        else if (arg == "inner_field") pos = MEEPLE_POS_INNER_FIELD;
-        else if (sscanf(arg.c_str(), "field=%d", &k) == 1) pos = MEEPLE_POS_FIELD + k;
-        else return fail("看不懂的 meeple 位置");
-        if (big) pos += MEEPLE_POS_BIG;  // 大米寶、建築師放在同樣的位置
-        if (builder) pos += MEEPLE_POS_BUILDER;
-        // 魔法門、仙女的第二段:選好的格子上的位置
-        const bool spot_phase =
-            g.current_phase == PHASE_SPOT && g.spot_choice == (fairy_meeple ? SPOT_FAIRY : SPOT_PORTAL);
-        if (fairy_meeple && !spot_phase) return fail("不在選仙女 meeple 的階段");
-        if (g.current_phase != PHASE_MEEPLE && !spot_phase) return fail("不在放 meeple 階段");
-        const MeepleMoves moves = spot_phase ? g.getLegalSpotMoves() : g.getLegalMeepleMoves();
-        bool legal = false;
-        for (int i = 0; i < moves.size(); ++i) legal |= moves[i] == pos;
-        if (!legal) return fail("不合法的 meeple 位置");
-        if (spot_phase) g.chooseSpot(pos);
-        else g.placeMeeple(pos);
-        return true;
-    }
-    char dir = 0;
-    if (sscanf(a.c_str(), "move_dragon(dir=%c)", &dir) == 1) {
-        const char *sides = "NESW";
-        const char *side = std::strchr(sides, dir);
-        if (dir == 0 || side == nullptr) return fail("看不懂的龍的方向");
-        if (g.current_phase != PHASE_DRAGON) return fail("不在龍移動的階段");
-        const FixedVector<int, 4> moves = g.getLegalDragonMoves();
-        if (std::none_of(moves.begin(), moves.end(), [&](int m) { return m == side - sides; }))
-            return fail("龍不能往這邊走");
-        g.moveDragon(static_cast<int>(side - sides));
-        return true;
-    }
-    return fail("看不懂的動作");
+    Move m;
+    if (!ParseLoggedMove(g, a, &m, error, board_shift)) return false;
+    ApplyMove(g, m);
+    return true;
 }
 
 enum class ReplayResult { kOk, kError, kUnfinished };
 
-// 重播一局,每個決策點(放磚、放 meeple 等)套用前呼叫 on_decision(game)。
+// 重播一局,每個決策點(放磚、放 meeple、選格、龍等)套用前呼叫 on_decision(game)。
 // kOk 表示下完,而且勝負與 log 記的 Returns 一致。
 template <typename OnDecision>
 ReplayResult Replay(const LoggedGame &logged, OnDecision on_decision, std::string *error) {
-    Carcassonne game;
+    if (!logged.rules_error.empty()) {
+        *error = logged.rules_error;
+        return ReplayResult::kError;
+    }
+    Carcassonne game = NewGame(logged.rules);
     for (const std::string &action : logged.actions) {
         if (game.current_phase == PHASE_TERMINAL) {
             *error = "終局後還有動作: " + action;

@@ -11,10 +11,15 @@
 //   開河流   起始磚置中 28.4% / 47.6%   每手依外框置中 98.5% / 99.7%
 //   河流 p99 往下游延伸 16 格、往上游 8 格:起始磚置中要 29 格才有基本版 21 格的覆蓋率。
 //   實際的 21 格視窗(diag_board,隨機):河流對局 3.9% 放磚碰到視窗邊、5.2% 視窗外還有 frontier。
+//   擴充全開(all,隨機 2000 局 / greedy 300 局,2026-10-09)每手依外框置中:21 格 31.3% / 41.0%、
+//   25 格 94.2% / 95.0%、27 格 99.1% / 99.0%、29 格 100%。實際的 21 格視窗(隨機 300 局):87% 放磚碰到視窗邊、
+//   95% 視窗外還有 frontier。
 //
-// 用法: ./diag_board [局數=3000] [base|river|all] [random|greedy]
-//   all 發牌表裡所有擴充的牌(規則照引擎預設)。greedy 每手選 banked + pending 分差最大的動作
-//   (平手隨機挑),當強玩家的代理;一局要算很多份複本,局數給少一點。
+// 用法: ./diag_board [局數=3000] [牌組=base] [random|greedy]
+//   牌組:base、river、all(所有擴充都 on),或像 inns_cathedrals=on,princess_dragon=tiles 的寫法
+//   (common.hpp 的 DeckArg)。greedy 每個決策選 banked + pending 分差最大的(diag::GreedyStep,
+//   平手隨機挑),當強玩家的代理;一局要算很多份複本,局數給少一點。
+//   上面的 greedy 參考結果是 2026-10-09 修正 diag::PendingDiff 之前量的(那時 greedy 不愛完成自己的城、路)。
 #include "common.hpp"
 
 #include <cstring>
@@ -29,39 +34,6 @@ struct Extent {
     int from_start = 0, following = 0;
 };
 
-void GreedyTile(Carcassonne &g, std::mt19937 &rng) {
-    std::vector<TileMove> buf(BOARD_SIZE * BOARD_SIZE * 4);
-    int c = 0;
-    g.getLegalTileMoves(buf.data(), c);
-    const int me = g.currentPlayer;
-    int best = -1000000;
-    std::vector<int> ties;
-    for (int i = 0; i < c; ++i) {
-        Carcassonne t = g;
-        t.placeTile(buf[i].x, buf[i].y, buf[i].rot);
-        const int s = diag::BankedDiff(t, me) + diag::PendingDiff(t, me);
-        if (s > best) best = s, ties.clear();
-        if (s == best) ties.push_back(i);
-    }
-    const TileMove &m = buf[ties[std::uniform_int_distribution<int>(0, ties.size() - 1)(rng)]];
-    g.placeTile(m.x, m.y, m.rot);
-}
-
-void GreedyMeeple(Carcassonne &g, std::mt19937 &rng) {
-    const MeepleMoves mm = g.getLegalMeepleMoves();
-    const int me = g.currentPlayer;
-    int best = -1000000;
-    std::vector<int> ties;
-    for (int i = 0; i < mm.size(); ++i) {
-        Carcassonne t = g;
-        t.placeMeeple(mm[i]);
-        const int s = diag::BankedDiff(t, me) + diag::PendingDiff(t, me);
-        if (s > best) best = s, ties.clear();
-        if (s == best) ties.push_back(mm[i]);
-    }
-    g.placeMeeple(ties[std::uniform_int_distribution<int>(0, ties.size() - 1)(rng)]);
-}
-
 int Percentile(std::vector<int> v, double p) {
     std::sort(v.begin(), v.end());
     return v[std::min<size_t>(v.size() - 1, static_cast<size_t>(p * v.size()))];
@@ -71,11 +43,8 @@ int Percentile(std::vector<int> v, double p) {
 
 int main(int argc, char **argv) {
     const int N = argc > 1 ? atoi(argv[1]) : 3000;
-    const char *deck = argc > 2 ? argv[2] : "base";
+    const diag::GameRules rules = diag::DeckArg(argc > 2 ? argv[2] : "base");
     const bool greedy = argc > 3 && std::strcmp(argv[3], "greedy") == 0;
-    const uint32_t expansions = std::strcmp(deck, "all") == 0     ? ALL_EXPANSIONS
-                                : std::strcmp(deck, "river") == 0 ? BASE_ONLY | expansionBit(EXP_RIVER)
-                                                                  : BASE_ONLY;
     std::mt19937 rng(999);
     const int c0 = BOARD_SIZE / 2;
     long long branchN = 0, maxB = 0, at_view_edge = 0, outside_frontier = 0;
@@ -83,7 +52,7 @@ int main(int argc, char **argv) {
     std::vector<Extent> extents;
 
     for (int n = 0; n < N; ++n) {
-        Carcassonne game(0, START_TILE_ROTATION, expansions);
+        Carcassonne game = diag::NewGame(rules);
         Extent e;
         int x0 = c0, x1 = c0, y0 = c0, y1 = c0;
         bool edge = false, outside = false;
@@ -101,7 +70,7 @@ int main(int argc, char **argv) {
                 for (int y = 0; y < BOARD_SIZE && !outside; ++y)
                     for (int x = 0; x < BOARD_SIZE && !outside; ++x)
                         outside = game.isFrontier(x, y) && !game.inView(x, y);
-                if (greedy) GreedyTile(game, rng);
+                if (greedy) diag::GreedyStep(game, &rng);
                 else diag::RandomPlaceTile(game, rng);
                 // 每手前依外框置中:放下的磚與外框離中心最遠幾格(中心取法同 game.cpp 的 viewOrigin)
                 const int x = game.last_x, y = game.last_y;
@@ -112,10 +81,8 @@ int main(int argc, char **argv) {
                 x0 = std::min(x0, x), x1 = std::max(x1, x), y0 = std::min(y0, y), y1 = std::max(y1, y);
                 edge |= x == game.view_x0 || x == game.view_x0 + VIEW_SIZE - 1 || y == game.view_y0 ||
                         y == game.view_y0 + VIEW_SIZE - 1;
-            } else if (greedy) {
-                GreedyMeeple(game, rng);
-            } else if (!diag::RandomPlaceMeeple(game, rng)) {
-                break;
+            } else if (!(greedy ? diag::GreedyStep(game, &rng) : diag::RandomStep(game, rng))) {
+                break;  // 放 meeple、選格、選位置、龍:都由 common.hpp 處理
             }
         }
         at_view_edge += edge;
@@ -140,7 +107,7 @@ int main(int argc, char **argv) {
     }
 
     printf("BOARD_SIZE %d, VIEW_SIZE %d, %s, %d 局, 牌組 %d 張(%s)\n", BOARD_SIZE, VIEW_SIZE,
-           greedy ? "greedy" : "隨機", N, deckSizeOf(expansions), deck);
+           greedy ? "greedy" : "隨機", N, deckSizeOf(rules.expansions), diag::GameName(rules).c_str());
     printf("  放磚碰到視窗邊的對局 %.1f%%,視窗外還有 frontier 的對局 %.1f%%\n", 100.0 * at_view_edge / N,
            100.0 * outside_frontier / N);
     printf("  avg 合法落點/手 = %.1f    max = %lld\n", sumBranch / branchN, maxB);

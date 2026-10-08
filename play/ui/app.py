@@ -6,7 +6,7 @@ import math
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 import flet as ft
 
@@ -14,6 +14,7 @@ try:
     from domain import BotValue, Move, MoveRecord
     from engine import (
         BOARD_SIZE,
+        DRAGON_STEPS,
         EXPANSION_LABELS,
         EXPANSION_NAMES,
         GOODS_NAMES,
@@ -21,6 +22,7 @@ try:
         MEEPLE_POS_FIELD,
         MEEPLE_POS_INNER_FIELD,
         MEEPLE_POS_PIG,
+        PHASE_DRAGON,
         CppCarcassonneAdapter,
         PlayerSpec,
         expansion_modes,
@@ -31,6 +33,7 @@ except ImportError:  # pragma: no cover - package import fallback
     from ..domain import BotValue, Move, MoveRecord
     from ..engine import (
         BOARD_SIZE,
+        DRAGON_STEPS,
         EXPANSION_LABELS,
         EXPANSION_NAMES,
         GOODS_NAMES,
@@ -38,6 +41,7 @@ except ImportError:  # pragma: no cover - package import fallback
         MEEPLE_POS_FIELD,
         MEEPLE_POS_INNER_FIELD,
         MEEPLE_POS_PIG,
+        PHASE_DRAGON,
         CppCarcassonneAdapter,
         PlayerSpec,
         expansion_modes,
@@ -59,6 +63,22 @@ BIG_MEEPLE_SIZE = 20
 PIECE_KINDS = ("meeple", "big", "builder", "pig")
 PIECE_TAB_LABELS = {"meeple": "Meeple", "big": "Big meeple", "builder": "Builder", "pig": "Pig"}
 PIECE_GLYPHS = {"meeple": "■", "big": "◆", "builder": "▲", "pig": "●"}
+# The Princess & the Dragon's choices by cell (adapter.SPOT_CHOICES), each with a tab
+# after the pieces': it colours the tiles the choice can take, and a click takes one.
+CHOICE_KINDS = ("portal", "princess", "fairy")
+CHOICE_TAB_LABELS = {"portal": "Portal", "princess": "Princess", "fairy": "Fairy"}
+CHOICE_HINTS = {
+    "portal": "Click a purple tile to put a meeple on it.",
+    "princess": "Click a pink tile to send a knight on it home.",
+    "fairy": "Click a blue tile to move the fairy next to your meeple there.",
+}
+# Cell highlights: the empty cells the tile in hand can go on, the tiles a choice by
+# cell can take, and the tiles the dragon can step on.
+TILE_MOVE_BG, TILE_MOVE_BORDER = "#ecfdf3", "#63b36f"
+HIGHLIGHT_COLORS = {"portal": "#9333ea", "princess": "#db2777", "fairy": "#0284c7", "dragon": "#ea580c"}
+DRAGON_VISITED_COLOR = "#ea580c"
+DRAGON_WIDTH, DRAGON_HEIGHT = 34, 17
+FAIRY_SIZE = 16
 MIN_BOARD_SCALE = 0.3
 MAX_BOARD_SCALE = 4.0
 ZOOM_STEP = 1.25
@@ -146,6 +166,61 @@ def offered_pieces(meeple_options: Sequence[int]) -> List[str]:
     """The pieces the meeple moves can place, in tab order; skip places none."""
     kinds = {meeple_piece(pos) for pos in meeple_options if pos != -1}
     return [kind for kind in PIECE_KINDS if kind in kinds]
+
+
+def offered_tabs(meeple_options: Sequence[int], cell_options: Dict[str, List[Tuple[int, int]]]) -> List[str]:
+    """The tabs of the meeple phase that have a move: pieces, then choices by cell."""
+    return offered_pieces(meeple_options) + [choice for choice in CHOICE_KINDS if cell_options.get(choice)]
+
+
+def spot_button_label(choice: str, pos: int) -> str:
+    """A button for the second step of a choice by cell: a portal's meeple move, or
+    the princess's knight or the fairy's meeple on the cell, by its spot."""
+    if choice == "portal":
+        label = meeple_button_labels()[pos]
+        return f"Big: {label}" if meeple_piece(pos) == "big" else label
+    return f"{'Knight' if choice == 'princess' else 'Next to'}: {_spot_label(pos)}"
+
+
+def turn_extras(actions: Sequence[str]) -> str:
+    """A turn's choices by cell and its dragon steps, for the record: "portal(12,9) dragon NES"."""
+    parts: List[str] = []
+    steps = ""
+    for action in actions:
+        name, _, args = action.partition("(")
+        if name in ("portal", "princess", "move_fairy"):
+            x, y = (int(part.split("=")[1]) for part in args.rstrip(")").split(", "))
+            parts.append(f"{'fairy' if name == 'move_fairy' else name}({x},{y})")
+        elif name == "move_dragon":
+            steps += args[len("dir=") : -1]
+    if steps:
+        parts.append(f"dragon {steps}")
+    return " ".join(parts)
+
+
+def dragon_status(state) -> str:
+    if state.dragon is None:
+        return "Dragon: not in play yet (a volcano brings it)"
+    if state.phase == PHASE_DRAGON:
+        return f"Dragon: moving, step {state.dragon_steps + 1}/{DRAGON_STEPS}, P{state.current_player} to move"
+    return "Dragon: on the board"
+
+
+def fairy_status(state) -> str:
+    if state.fairy is None:
+        return "Fairy: in the supply"
+    if state.fairy_owner is None:
+        return "Fairy: on the board, next to no one"
+    return f"Fairy: next to P{state.fairy_owner}'s meeple"
+
+
+def fairy_alignment(spot: int) -> Tuple[float, float]:
+    """Where the fairy stands in its cell: beside the spot of its meeple, or in the
+    middle when it is next to no one."""
+    if spot < 0:
+        return 0.0, 0.0
+    align_x, align_y = meeple_alignment(spot)
+    return (align_x - 0.5 if align_x > 0.2 else align_x + 0.5), align_y
 
 
 def format_goods(goods: Tuple[int, int, int]) -> str:
@@ -242,6 +317,9 @@ def parse_ui_config(argv: Optional[Sequence[str]] = None) -> PlayUiConfig:
 
 def format_move_record(record: MoveRecord) -> str:
     text = _format_move_and_score(record)
+    extras = turn_extras(record.actions)
+    if extras:
+        text += f" {extras}"
     if record.value is not None:
         text += f" v{record.value:+.2f}"
     return text
@@ -326,8 +404,11 @@ class CarcassonneUI:
         self.ai_running = False
 
         self.selected_move: Optional[Move] = None
-        self.awaiting_meeple = False
-        self.meeple_options: List[int] = []
+        # What refresh() found the human can choose: the meeple phase's choices by cell,
+        # {UI cell: side} for a dragon step, and how each cell is coloured.
+        self.cell_options: Dict[str, List[Tuple[int, int]]] = {}
+        self.dragon_moves: Dict[Tuple[int, int], int] = {}
+        self.cell_highlights: Dict[Tuple[int, int], str] = {}
         self.board_zoom = 1.0
         self.board_viewport: Optional[Tuple[float, float]] = None
         self.center_board_pending = True
@@ -520,6 +601,8 @@ class CarcassonneUI:
         self.meeple_text = ft.Text()
         self.piece_legend = ft.Text(size=12, color="#57606a", visible=False)
         self.goods_text = ft.Text(visible=False)
+        self.dragon_text = ft.Text(visible=False)
+        self.fairy_text = ft.Text(visible=False)
         self.value_text = ft.Text(visible=False)
         self.thinking_row = ft.Row(
             [ft.ProgressRing(width=16, height=16, stroke_width=2), ft.Text("AI thinking...")],
@@ -532,29 +615,13 @@ class CarcassonneUI:
         self.new_game_btn = ft.OutlinedButton("New game", on_click=self.on_new_game)
         self.confirm_btn = BUTTON("Confirm Tile", on_click=self.on_confirm_tile)
         self.skip_btn = ft.OutlinedButton("Skip Meeple", on_click=lambda _: self.on_apply_move(-1))
-        self.meeple_buttons = {
-            pos: BUTTON(label, on_click=lambda _, pos=pos: self.on_apply_move(pos))
-            for pos, label in meeple_button_labels().items()
-        }
-        # A tab per piece; only the selected one's buttons show. The tab bar shows only
-        # in games with the expansions' pieces, so a base game looks as it always did.
-        self.meeple_tab = PIECE_KINDS[0]
-        self.meeple_groups = {kind: ft.Row([], wrap=True) for kind in PIECE_KINDS}
-        for pos, button in self.meeple_buttons.items():
-            self.meeple_groups[meeple_piece(pos)].controls.append(button)
-        # Flet draws a disabled tab like any other, so its label is greyed out by hand.
-        self.meeple_tab_labels = {kind: ft.Text(PIECE_TAB_LABELS[kind]) for kind in PIECE_KINDS}
-        self.meeple_tab_bar = ft.TabBar(
-            tabs=[ft.Tab(label=self.meeple_tab_labels[kind]) for kind in PIECE_KINDS],
-            label_padding=_padding(left=4, right=4),
-            visible=False,
-        )
-        self.meeple_tabs = ft.Tabs(
-            length=len(PIECE_KINDS),
-            selected_index=0,
-            on_change=self.on_meeple_tab_change,
-            content=ft.Column([self.meeple_tab_bar, *self.meeple_groups.values()], spacing=4, tight=True),
-        )
+        # The meeple phase's tabs, built for each game with the pieces and choices by
+        # cell it has (_build_meeple_tabs).
+        self.meeple_tabs_slot = ft.Container()
+        self._build_meeple_tabs(PIECE_KINDS[:1])
+        # The second step of a choice by cell: one button per move on the cell chosen.
+        self.spot_row = ft.Row([], wrap=True, visible=False)
+        self._spot_key: Optional[tuple] = None
 
         self.game_column = ft.Column(
             controls=[
@@ -577,8 +644,11 @@ class CarcassonneUI:
                 self.meeple_text,
                 self.piece_legend,
                 self.goods_text,
+                self.dragon_text,
+                self.fairy_text,
                 ft.Row([self.confirm_btn, self.skip_btn], wrap=True),
-                self.meeple_tabs,
+                self.meeple_tabs_slot,
+                self.spot_row,
                 ft.Text("Record", size=18, weight=ft.FontWeight.BOLD),
                 # Takes whatever height is left and scrolls on its own. A fixed-height box at
                 # the end of a scrolling column fell off the bottom of shorter windows.
@@ -594,6 +664,41 @@ class CarcassonneUI:
             spacing=8,
             expand=True,
         )
+
+    def _build_meeple_tabs(self, kinds: Sequence[str]) -> None:
+        """A tab per piece and per choice by cell; a piece's tab holds its buttons, a
+        choice's a hint, and only the selected tab's show. The tab bar shows only with
+        more than one tab, so a base game looks as it always did."""
+        self.tab_kinds = list(kinds)
+        self.meeple_tab = self.tab_kinds[0]
+        self.meeple_buttons = {
+            pos: BUTTON(label, on_click=lambda _, pos=pos: self.on_apply_move(pos))
+            for pos, label in meeple_button_labels().items()
+            if meeple_piece(pos) in self.tab_kinds
+        }
+        self.meeple_groups = {kind: ft.Row([], wrap=True) for kind in PIECE_KINDS if kind in self.tab_kinds}
+        for pos, button in self.meeple_buttons.items():
+            self.meeple_groups[meeple_piece(pos)].controls.append(button)
+        self.choice_hint = ft.Text(size=12, color="#57606a", visible=False)
+        # Flet draws a disabled tab like any other, so its label is greyed out by hand.
+        labels = {**PIECE_TAB_LABELS, **CHOICE_TAB_LABELS}
+        self.meeple_tab_labels = {kind: ft.Text(labels[kind]) for kind in self.tab_kinds}
+        self.meeple_tab_bar = ft.TabBar(
+            tabs=[ft.Tab(label=self.meeple_tab_labels[kind]) for kind in self.tab_kinds],
+            label_padding=_padding(left=4, right=4),
+            # Seven tabs do not fit the side panel.
+            scrollable=len(self.tab_kinds) > len(PIECE_KINDS),
+            visible=False,
+        )
+        self.meeple_tabs = ft.Tabs(
+            length=len(self.tab_kinds),
+            selected_index=0,
+            on_change=self.on_meeple_tab_change,
+            content=ft.Column(
+                [self.meeple_tab_bar, *self.meeple_groups.values(), self.choice_hint], spacing=4, tight=True
+            ),
+        )
+        self.meeple_tabs_slot.content = self.meeple_tabs
 
     def start_game(
         self,
@@ -613,6 +718,8 @@ class CarcassonneUI:
             expansions=self.config.expansions if expansions is None else expansions,
         )
         self.state = self.engine.state
+        self._build_meeple_tabs(["meeple", *self.state.piece_kinds, *self.state.choice_kinds])
+        self.status.value = self._prompt() or "Ready."
         self._show_side_panel(setup=False)
         self.refresh()
         self._center_board()
@@ -626,8 +733,6 @@ class CarcassonneUI:
         self.shown_view_origin = None
         self.ai_running = False
         self.selected_move = None
-        self.awaiting_meeple = False
-        self.meeple_options = []
 
     def on_new_game(self, _: ft.ControlEvent) -> None:
         self._close_engine()
@@ -644,41 +749,52 @@ class CarcassonneUI:
     def refresh(self) -> None:
         if self.engine is None:
             self.moves_by_cell = {}
+            self.cell_highlights = {}
             self._render_grid()
             self.page.update()
             return
 
         self.state = self.engine.state
         # While the AI thread runs, leave the engine alone and show no moves.
-        valid_moves = [] if self.ai_running else self.engine.get_valid_moves()
+        decision = None if self.ai_running else self.engine.decision()
 
         moves_by_cell: Dict[Tuple[int, int], List[int]] = {}
-        for move in valid_moves:
+        for move in self.engine.get_valid_moves() if decision == "tile" else []:
             moves_by_cell.setdefault((move.x, move.y), []).append(move.rotation)
         for pos in moves_by_cell:
             moves_by_cell[pos].sort()
         self.moves_by_cell = moves_by_cell
+        meeple_options = self.engine.meeple_options() if decision == "piece" else []
+        self.cell_options = self.engine.cell_options() if decision == "piece" else {}
+        self.dragon_moves = {cell: side for side, cell in self.engine.dragon_options()} if decision == "dragon" else {}
+        highlights = {cell: "tile" for cell in moves_by_cell}
+        highlights.update({cell: self.meeple_tab for cell in self.cell_options.get(self.meeple_tab, [])})
+        highlights.update({cell: "dragon" for cell in self.dragon_moves})
+        spot_choice, spot_positions = self.engine.spot_options() if decision == "spot" else ("", [])
+        spot_cell = self.engine.spot_cell() if decision == "spot" else None
+        if spot_cell is not None:
+            highlights[spot_cell] = spot_choice  # the tile whose spot is being chosen
+        self.cell_highlights = highlights
 
-        human_turn = self._human_turn()
-        self.confirm_btn.disabled = self.selected_move is None or self.awaiting_meeple or not human_turn
-        self.skip_btn.visible = self.awaiting_meeple and human_turn
+        self.confirm_btn.disabled = self.selected_move is None or decision != "tile"
+        self.skip_btn.visible = decision == "piece"
         self.start_game_btn.visible = should_show_start_game(self.player_specs, self.bot_game_started)
         self.start_game_btn.disabled = self.state.game_over
         self.thinking_row.visible = self.ai_running and not self.state.game_over
 
         for pos, btn in self.meeple_buttons.items():
-            btn.visible = self.awaiting_meeple and pos in self.meeple_options
-            btn.disabled = not human_turn
-        offered = offered_pieces(self.meeple_options)
-        for kind, tab in zip(PIECE_KINDS, self.meeple_tab_bar.tabs):
+            btn.visible = decision == "piece" and pos in meeple_options
+        offered = offered_tabs(meeple_options, self.cell_options)
+        for kind, tab in zip(self.tab_kinds, self.meeple_tab_bar.tabs):
             tab.disabled = kind not in offered
             self.meeple_tab_labels[kind].color = None if kind in offered else "#c4c9d0"
         for kind, group in self.meeple_groups.items():
-            group.visible = self.awaiting_meeple and kind == self.meeple_tab
-        # No tabs in a game without the expansions' pieces, or when only skip is left.
-        self.meeple_tab_bar.visible = (
-            self.awaiting_meeple and human_turn and bool(self.state.piece_kinds) and bool(offered)
-        )
+            group.visible = decision == "piece" and kind == self.meeple_tab
+        self.choice_hint.visible = decision == "piece" and self.meeple_tab in CHOICE_KINDS
+        self.choice_hint.value = CHOICE_HINTS.get(self.meeple_tab, "")
+        # No tabs in a game with only meeples, or when only skip is left.
+        self.meeple_tab_bar.visible = decision == "piece" and len(self.tab_kinds) > 1 and bool(offered)
+        self._show_spot_buttons(spot_choice, spot_positions)
 
         seat = human_seat(self.player_specs)
         player_label = f"P{self.state.current_player}"
@@ -687,6 +803,8 @@ class CarcassonneUI:
         self.turn_text.value = f"Turn: {self.state.turn} | To move: {player_label}"
         if self.state.builder_extra_tile:
             self.turn_text.value += " · builder: extra tile"
+        if self.state.phase == PHASE_DRAGON:
+            self.turn_text.value += f" · dragon step {self.state.dragon_steps + 1}/{DRAGON_STEPS}"
         self.ai_text.value = f"Mode: {self.engine.mode_label()}"
         if self.engine.ai_status:
             self.ai_text.value += f"\nAI: {summarize_ai_status(self.engine.ai_status)}"
@@ -708,6 +826,11 @@ class CarcassonneUI:
         self.goods_text.value = "\n".join(
             f"P{player} goods  {format_goods(goods)}" for player, goods in sorted(self.state.goods.items())
         )
+        # The Princess & the Dragon's rules come together: the choices by cell, the dragon, the fairy.
+        self.dragon_text.visible = bool(self.state.choice_kinds)
+        self.dragon_text.value = dragon_status(self.state)
+        self.fairy_text.visible = "fairy" in self.state.choice_kinds
+        self.fairy_text.value = fairy_status(self.state)
         bot_value = self.engine.last_bot_value
         self.value_text.visible = bot_value is not None
         self.value_text.value = format_bot_value(bot_value) if bot_value is not None else ""
@@ -725,9 +848,28 @@ class CarcassonneUI:
 
         if self.state.game_over:
             self.status.value = f"Game over. {self._result_text()} {self._saved_text()}"
-            self.awaiting_meeple = False
 
         self.page.update()
+
+    def _show_spot_buttons(self, choice: str, positions: List[int]) -> None:
+        key = (choice, tuple(positions))
+        if key != self._spot_key:
+            self._spot_key = key
+            self.spot_row.controls = [
+                BUTTON(spot_button_label(choice, pos), on_click=lambda _, pos=pos: self.on_spot(pos))
+                for pos in positions
+            ]
+        self.spot_row.visible = bool(positions)
+
+    def _prompt(self) -> str:
+        """What the human is to do next, if anything."""
+        decision = self.engine.decision() if self.engine is not None else None
+        return {
+            "tile": "Your turn.",
+            "piece": "Choose meeple position or skip.",
+            "spot": "Choose which one on that tile.",
+            "dragon": "Your dragon step: click an orange tile.",
+        }.get(decision, "")
 
     def _meeple_spans(self) -> List[ft.TextSpan]:
         """A symbol per piece still in hand, in the player's colour (pieces_in_hand)."""
@@ -780,20 +922,34 @@ class CarcassonneUI:
         preview = None
         if is_selected and self.state is not None:
             preview = (self.state.holding_tile_id, self.selected_move.rotation)
-        return tile_key, (x, y) in self.moves_by_cell, is_selected, preview
+        return tile_key, self.cell_highlights.get((x, y)), is_selected, preview, self._cell_figures(x, y)
+
+    def _cell_figures(self, x: int, y: int) -> tuple:
+        """The dragon and the fairy on this cell: dragon here, visited by the dragon's
+        move under way, and the fairy's meeple spot (None for no fairy)."""
+        if self.engine is None or self.state is None:
+            return False, False, None
+        cell = self.engine.to_engine_coords(x, y)
+        fairy = self.state.fairy
+        return (
+            self.state.dragon == cell,
+            cell in self.state.dragon_visited,
+            fairy[2] if fairy is not None and fairy[:2] == cell else None,
+        )
 
     def _build_cell(self, x: int, y: int) -> ft.Container:
         pos = (x, y)
         tile = self._cell_tile(x, y)
-        is_valid = pos in self.moves_by_cell
+        highlight_kind = self.cell_highlights.get(pos)
         is_selected = self.selected_move is not None and (self.selected_move.x, self.selected_move.y) == pos
+        dragon_here, visited, fairy_spot = self._cell_figures(x, y)
 
         bg = "#ffffff"
         border_color = "#e5e7eb"
         border_width = 1
-        if is_valid:
-            bg = "#ecfdf3"
-            border_color = "#63b36f"
+        if highlight_kind == "tile":
+            bg = TILE_MOVE_BG
+            border_color = TILE_MOVE_BORDER
         if is_selected:
             bg = "#fff3cd"
             border_color = "#d18e00"
@@ -806,7 +962,17 @@ class CarcassonneUI:
             layers.append(self._build_tile_image(tile.tile_id, tile.rotation))
             for owner, pos_marker in tile.meeple_markers:
                 layers.append(self._build_meeple_marker(owner, pos_marker))
-            if tile.tile_owner is not None:
+            if visited:
+                layers.append(self._build_tint(DRAGON_VISITED_COLOR, 0.35))
+            if fairy_spot is not None:
+                layers.append(self._build_figure("fairy", fairy_alignment(fairy_spot), FAIRY_SIZE, FAIRY_SIZE))
+            if dragon_here:
+                layers.append(self._build_figure("dragon", (0.0, 0.0), DRAGON_WIDTH, DRAGON_HEIGHT))
+            if highlight_kind in HIGHLIGHT_COLORS:
+                # A tile a choice by cell or the dragon can take.
+                layers.append(self._build_tint(HIGHLIGHT_COLORS[highlight_kind], 0.25))
+                highlight = (3, HIGHLIGHT_COLORS[highlight_kind])
+            elif tile.tile_owner is not None:
                 highlight = (3, self._player_color(tile.tile_owner))
         elif is_selected and self.state.holding_tile_id is not None and self.selected_move is not None:
             layers.append(
@@ -868,6 +1034,18 @@ class CarcassonneUI:
             ),
         )
 
+    def _build_tint(self, color: str, opacity: float) -> ft.Container:
+        return ft.Container(width=CELL_SIZE, height=CELL_SIZE, bgcolor=color, opacity=opacity)
+
+    def _build_figure(self, image: str, alignment: Tuple[float, float], width: int, height: int) -> ft.Container:
+        """The dragon or the fairy (meeples/<image>.png), which belong to no one."""
+        return ft.Container(
+            width=CELL_SIZE,
+            height=CELL_SIZE,
+            alignment=ft.alignment.Alignment(*alignment),
+            content=ft.Image(src=f"meeples/{image}.png", width=width, height=height, fit=IMAGE_FIT.CONTAIN),
+        )
+
     # InteractiveViewer.zoom() scales about the content origin, and Python cannot read
     # the transform back after the user drags or wheels. So the buttons start from a
     # known transform: reset to identity, zoom, then pan the placed tiles to the middle.
@@ -927,7 +1105,20 @@ class CarcassonneUI:
         self.page.run_task(self._show_board, self.board_zoom)
 
     def on_cell_click(self, x: int, y: int) -> None:
-        if self.awaiting_meeple or not self._human_turn():
+        if not self._human_turn():
+            return
+        decision = self.engine.decision()
+        if decision == "dragon":
+            side = self.dragon_moves.get((x, y))
+            if side is not None:
+                self._apply_move(lambda: self.engine.apply_dragon(side))
+            return
+        if decision == "piece":
+            choice = self.meeple_tab
+            if (x, y) in self.cell_options.get(choice, []):
+                self._apply_move(lambda: self.engine.apply_cell(choice, x, y))
+            return
+        if decision != "tile":
             return
         rots = self.moves_by_cell.get((x, y))
         if not rots:
@@ -947,7 +1138,7 @@ class CarcassonneUI:
         if self.selected_move is None or not self._human_turn():
             return
         try:
-            self.meeple_options = self.engine.confirm_tile(self.selected_move)
+            meeple_options = self.engine.confirm_tile(self.selected_move)
         except ValueError as exc:
             self.status.value = str(exc)
             self.selected_move = None
@@ -957,37 +1148,42 @@ class CarcassonneUI:
         # now and leave it highlighting an empty cell.
         self.selected_move = None
 
-        if not self.meeple_options:
-            self.awaiting_meeple = True
-            self.on_apply_move(-1)
-            return
-
-        self.awaiting_meeple = True
-        # Open the first tab with a move: the meeple's, unless only an expansion's piece fits.
-        offered = offered_pieces(self.meeple_options)
-        self._select_meeple_tab(offered[0] if offered else PIECE_KINDS[0])
-        self.status.value = "Choose meeple position or skip."
+        # Open the first tab with a move: the meeple's, unless only an expansion's piece
+        # or a choice by cell is left.
+        offered = offered_tabs(meeple_options, self.engine.cell_options())
+        self._select_meeple_tab(offered[0] if offered else self.tab_kinds[0])
+        self.status.value = self._prompt()
         self.refresh()
 
     def _select_meeple_tab(self, kind: str) -> None:
         self.meeple_tab = kind
-        self.meeple_tabs.selected_index = PIECE_KINDS.index(kind)
+        self.meeple_tabs.selected_index = self.tab_kinds.index(kind)
 
     def on_meeple_tab_change(self, e: ft.ControlEvent) -> None:
         index = e.control.selected_index
         if index is None and e.data is not None:
             index = int(e.data)
-        kind = PIECE_KINDS[int(index or 0)]
+        kind = self.tab_kinds[int(index or 0)]
+        offered = offered_tabs(self.engine.meeple_options(), self.engine.cell_options()) if self.engine else []
         # A tab with no move stays shut: go back to the one that was open.
-        self._select_meeple_tab(kind if kind in offered_pieces(self.meeple_options) else self.meeple_tab)
+        self._select_meeple_tab(kind if kind in offered else self.meeple_tab)
         self.refresh()
 
     def on_apply_move(self, meeple_pos: int) -> None:
-        if not self.awaiting_meeple or self.engine is None:
+        if self.engine is None or self.engine.decision() != "piece":
             return
+        self._apply_move(lambda: self.engine.apply_meeple(meeple_pos))
+
+    def on_spot(self, pos: int) -> None:
+        if self.engine is None or self.engine.decision() != "spot":
+            return
+        self._apply_move(lambda: self.engine.apply_spot(pos))
+
+    def _apply_move(self, apply: Callable[[], None]) -> None:
+        """A human move after the tile; then the bot's turn, if it is one."""
         old_scores = dict(self.state.scores)
         try:
-            self.engine.apply_meeple(meeple_pos)
+            apply()
         except ValueError as exc:
             self.status.value = str(exc)
             self.refresh()
@@ -999,11 +1195,9 @@ class CarcassonneUI:
         if p1_gain or p2_gain:
             self.status.value = f"Scored: P1 +{p1_gain}, P2 +{p2_gain}"
         else:
-            self.status.value = "Move applied."
+            self.status.value = self._prompt() or "Move applied."
 
         self.selected_move = None
-        self.awaiting_meeple = False
-        self.meeple_options = []
         self.refresh()
         self._start_ai_turns()
 
@@ -1036,7 +1230,7 @@ class CarcassonneUI:
                         print(f"Bot failed: {engine.ai_status}", flush=True)
                         self.status.value = summarize_ai_status(engine.ai_status)
                     else:
-                        self.status.value = "Your turn."
+                        self.status.value = self._prompt()
                 self.refresh()
 
     def on_start_game(self, _: ft.ControlEvent) -> None:
@@ -1054,8 +1248,6 @@ class CarcassonneUI:
                 return
             self.state = engine.state
             self.selected_move = None
-            self.awaiting_meeple = False
-            self.meeple_options = []
             self.refresh()
             if played_turns <= 0:
                 break

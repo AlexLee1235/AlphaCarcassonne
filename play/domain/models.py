@@ -34,6 +34,9 @@ class MoveRecord:
     # search's mean return and the network's raw value. None for other players.
     value: Optional[float] = None
     raw_value: Optional[float] = None
+    # The turn's moves after its tile, as the actor logs write them: the meeple
+    # move, or a choice by cell and its spot, then the dragon's steps.
+    actions: Tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -83,6 +86,19 @@ class GameState:
     goods: Dict[int, Tuple[int, int, int]] = field(default_factory=dict)
     # The player to move is on the extra tile their builder gave them.
     builder_extra_tile: bool = False
+    # The engine's phase (PHASE_* of the native module).
+    phase: int = 0
+    # The Princess & the Dragon: the choices by cell this game plays ("portal",
+    # "princess", "fairy"); the dragon's board cell (None until the first
+    # volcano), the cells it has visited in the move under way and its steps so
+    # far; the fairy's board cell and the spot of the meeple it stands next to
+    # (-1 for none; None while in the supply), and that meeple's owner.
+    choice_kinds: Tuple[str, ...] = ()
+    dragon: Optional[Tuple[int, int]] = None
+    dragon_visited: List[Tuple[int, int]] = field(default_factory=list)
+    dragon_steps: int = 0
+    fairy: Optional[Tuple[int, int, int]] = None
+    fairy_owner: Optional[int] = None
 
 
 @dataclass

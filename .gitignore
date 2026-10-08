@@ -76,3 +76,7 @@ open_spiel/.vs
 .cache/
 commands.md
 CLAUDE.md
+
+# Built by play/setup.py build_ext with the pybind module (also ignored): it
+# links the local libtorch by absolute path, so it is no use to another clone.
+play/bin/

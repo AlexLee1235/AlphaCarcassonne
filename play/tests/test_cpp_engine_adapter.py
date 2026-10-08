@@ -9,12 +9,17 @@ from play.cpp_engine import (
     BOARD_SIZE,
     ENGINE_BOARD_SIZE,
     HALF_EDGE_COUNT,
+    MEEPLE_POS_BIG,
+    MEEPLE_POS_BUILDER,
     MEEPLE_POS_FIELD,
     MEEPLE_POS_INNER_FIELD,
+    MEEPLE_POS_PIG,
     PHASE_TILE,
     START_POS,
     CppCarcassonneAdapter,
     PlayerSpec,
+    meeple_piece,
+    meeple_spot,
 )
 from play.engine import adapter as adapter_module
 from play.engine.adapter import BotCliClient, expansion_masks, expansion_parameters, game_log_file
@@ -22,14 +27,20 @@ from pathlib import Path
 
 from play.models import BotValue, Move, MoveRecord
 from play.ui.app import (
+    BIG_MEEPLE_SIZE,
+    MEEPLE_SIZE,
     build_player_specs,
     format_bot_value,
+    format_goods,
     format_move_record,
     human_seat,
     is_farmer,
     meeple_alignment,
     meeple_button_labels,
+    meeple_marker,
+    offered_pieces,
     parse_ui_config,
+    pieces_in_hand,
     should_show_start_game,
     summarize_ai_status,
     view_shift_pan,
@@ -800,14 +811,51 @@ def test_summarize_ai_status_keeps_first_line_only() -> None:
 def test_meeple_buttons_cover_every_engine_position() -> None:
     labels = meeple_button_labels()
 
-    assert sorted(labels) == list(range(MEEPLE_POS_INNER_FIELD + 1))
+    assert sorted(labels) == list(range(MEEPLE_POS_PIG + HALF_EDGE_COUNT))
+    # A tab per piece: meeple and big meeple on every spot, builder on sides, pig on fields.
+    pieces = [meeple_piece(pos) for pos in sorted(labels)]
+    assert [pieces.count(kind) for kind in ("meeple", "big", "builder", "pig")] == [14, 14, 4, 8]
+    assert [labels[pos] for pos in (0, 3, 4)] == ["Up", "Left", "Center"]
     assert [labels[MEEPLE_POS_FIELD + e] for e in (0, 3, 7)] == [
         "Farmer: Top-left",
         "Farmer: Right-bottom",
         "Farmer: Left-top",
     ]
+    assert [labels[MEEPLE_POS_BIG + pos] for pos in range(MEEPLE_POS_INNER_FIELD + 1)] == [
+        labels[pos] for pos in range(MEEPLE_POS_INNER_FIELD + 1)
+    ]
+    assert [labels[MEEPLE_POS_BUILDER + side] for side in range(4)] == ["Up", "Right", "Down", "Left"]
+    assert [labels[MEEPLE_POS_PIG + e] for e in (0, 7)] == ["Field: Top-left", "Field: Left-top"]
     assert not any(is_farmer(pos) for pos in range(5))
     assert all(is_farmer(pos) for pos in range(MEEPLE_POS_FIELD, MEEPLE_POS_INNER_FIELD + 1))
+    assert is_farmer(MEEPLE_POS_BIG + MEEPLE_POS_FIELD) and not is_farmer(MEEPLE_POS_BIG + 1)
+    assert not any(is_farmer(pos) for pos in range(MEEPLE_POS_BUILDER, MEEPLE_POS_PIG + HALF_EDGE_COUNT))
+
+
+def test_meeple_markers_pick_each_piece_image() -> None:
+    assert meeple_marker(2) == ("standing", MEEPLE_SIZE)
+    assert meeple_marker(MEEPLE_POS_FIELD + 3) == ("farmer", MEEPLE_SIZE)
+    assert meeple_marker(MEEPLE_POS_BIG + 4) == ("standing", BIG_MEEPLE_SIZE)
+    assert meeple_marker(MEEPLE_POS_BIG + MEEPLE_POS_INNER_FIELD) == ("farmer", BIG_MEEPLE_SIZE)
+    assert meeple_marker(MEEPLE_POS_BUILDER + 1) == ("builder", MEEPLE_SIZE)
+    assert meeple_marker(MEEPLE_POS_PIG + 7) == ("pig", MEEPLE_SIZE)
+    for image in ("standing", "farmer", "builder", "pig"):
+        for owner in (1, 2):
+            assert (adapter_module.REPO_ROOT / "meeples" / f"{image}_p{owner}.png").exists()
+
+
+def test_pieces_in_hand_and_goods_text() -> None:
+    assert pieces_in_hand(7, {}) == "■" * 7
+    assert pieces_in_hand(3, {"big": 1, "builder": 0, "pig": 1}) == "■■■ ◆●"
+    assert pieces_in_hand(0, {"big": 1, "builder": 1}) == "◆▲"
+    assert pieces_in_hand(0, {"big": 0}) == "-"
+    assert format_goods((2, 0, 1)) == "wine 2 · wheat 0 · cloth 1"
+
+
+def test_offered_pieces_name_the_tabs_with_a_move() -> None:
+    assert offered_pieces([-1]) == []
+    assert offered_pieces([-1, MEEPLE_POS_PIG + 1, 2, MEEPLE_POS_BIG + 2]) == ["meeple", "big", "pig"]
+    assert offered_pieces([MEEPLE_POS_BUILDER]) == ["builder"]
 
 
 def test_meeple_alignment_follows_sides_and_half_edges() -> None:
@@ -946,3 +994,144 @@ def test_river_game_view_follows_the_tiles(monkeypatch: pytest.MonkeyPatch) -> N
             assert view_shift_pan(before, after) == (dx * CELL_SIZE, dy * CELL_SIZE)
     assert shifts > 0  # the river carries the tiles away from the spring
     adapter.close()
+
+
+ALL_EXPANSIONS = {"inns_cathedrals": "on", "traders_builders": "on", "river": "on", "princess_dragon": "tiles"}
+PIECES_PER_PLAYER = {"meeple": 7, "big": 1, "builder": 1, "pig": 1}
+
+
+def _native_game(modes: dict) -> _carcassonne_cpp.Carcassonne:
+    masks = expansion_masks(modes)
+    return _carcassonne_cpp.Carcassonne(expansions=masks[0], rules=masks[1])
+
+
+def test_native_binding_reports_the_expansion_pieces() -> None:
+    base = _carcassonne_cpp.Carcassonne()
+    assert (base.holding_big_meeples, base.holding_builders, base.holding_pigs) == ([0, 0], [0, 0], [0, 0])
+    assert not (base.big_meeple_rules or base.builder_rules or base.pig_rules or base.goods_rules)
+
+    inns = _native_game({"inns_cathedrals": "on"})
+    assert inns.big_meeple_rules and inns.holding_big_meeples == [1, 1]
+    assert _native_game({"inns_cathedrals": "tiles"}).holding_big_meeples == [0, 0]
+
+    traders = _native_game({"traders_builders": "on"})
+    assert traders.builder_rules and traders.pig_rules and traders.goods_rules
+    assert (traders.holding_builders, traders.holding_pigs) == ([1, 1], [1, 1])
+    assert traders.goods_tokens == [[0, 0, 0], [0, 0, 0]]
+    assert not traders.builder_second_tile
+    assert not _native_game({"traders_builders": "tiles"}).builder_rules
+
+    moves = (-1, 3, MEEPLE_POS_BIG + 4, MEEPLE_POS_BIG + MEEPLE_POS_INNER_FIELD, MEEPLE_POS_BUILDER + 2, MEEPLE_POS_PIG + 5)
+    assert [meeple_spot(pos) for pos in moves] == [-1, 3, 4, MEEPLE_POS_INNER_FIELD, 2, MEEPLE_POS_FIELD + 5]
+
+
+def test_adapter_draws_expansion_pieces_while_they_are_on_the_board() -> None:
+    sx, sy = START_POS
+    tiles = [(sx + dx, sy) for dx in range(4)]
+    big_on_city = MEEPLE_POS_BIG + 1
+    builder = MEEPLE_POS_BUILDER + 3
+    pig = MEEPLE_POS_PIG + 2
+    big_farmer = MEEPLE_POS_BIG + MEEPLE_POS_FIELD + 6
+    adapter = CppCarcassonneAdapter(seed=42)
+    adapter.move_records = [
+        _meeple_record(1, sx, sy, big_on_city),
+        _meeple_record(1, sx + 1, sy, builder),
+        _meeple_record(2, sx + 2, sy, pig),
+        _meeple_record(2, sx + 3, sy, big_farmer),
+    ]
+
+    # The big meeple's city and the builder's road were completed: both went home.
+    adapter._engine = FakeMeepleEngine(tiles, [])
+    board = adapter._build_board()
+    assert {pos: tile.meeple_markers for pos, tile in board.items() if tile.meeple_markers} == {
+        (sx + 2, sy): [(2, pig)],  # pigs and farmers stay till the end
+        (sx + 3, sy): [(2, big_farmer)],
+    }
+
+    # Still open: the big meeple's side and the builder's side hold their owner's tokens.
+    adapter._engine = FakeMeepleEngine(tiles, [(0, sx, sy, 1), (0, sx + 1, sy, 3)])
+    board = adapter._build_board()
+    assert board[(sx, sy)].meeple_markers == [(1, big_on_city)]
+    assert board[(sx + 1, sy)].meeple_markers == [(1, builder)]
+
+
+def _markers_by_piece(state) -> dict:
+    counts = {(player, kind): 0 for player in (1, 2) for kind in PIECES_PER_PLAYER}
+    for tile in state.board.values():
+        for owner, pos in tile.meeple_markers:
+            counts[(owner, meeple_piece(pos))] += 1
+    return counts
+
+
+def test_expansion_games_show_every_piece_until_it_comes_back() -> None:
+    import random
+
+    placed = set()
+    double_turns = 0
+    for seed in range(5):
+        rng = random.Random(seed)
+        adapter = CppCarcassonneAdapter(seed=seed, expansions=ALL_EXPANSIONS)
+        assert adapter.state.piece_kinds == ("big", "builder", "pig")
+        while not adapter.state.game_over:
+            player = adapter.state.current_player
+            options = adapter.confirm_tile(rng.choice(adapter.get_valid_moves()))
+            # Half the time play an expansion's piece when one fits, so every game uses them.
+            special = [pos for pos in options if pos != -1 and meeple_piece(pos) != "meeple"]
+            pos = rng.choice(special) if special and rng.random() < 0.5 else rng.choice(options)
+            adapter.apply_meeple(pos)
+            if pos != -1:
+                placed.add(meeple_piece(pos))
+            state = adapter.state
+            if state.game_over:
+                break
+            # Only the builder gives a player a second tile.
+            assert state.builder_extra_tile == (state.current_player == player)
+            double_turns += state.builder_extra_tile
+            # Every piece out of hand is drawn on the board, and only those.
+            markers = _markers_by_piece(state)
+            for owner in (1, 2):
+                assert markers[(owner, "meeple")] == PIECES_PER_PLAYER["meeple"] - state.meeples_remaining[owner]
+                for kind in ("big", "builder", "pig"):
+                    assert markers[(owner, kind)] == PIECES_PER_PLAYER[kind] - state.pieces_remaining[owner][kind]
+            assert set(state.goods) == {1, 2}
+        adapter.close()
+    assert placed == {"meeple", "big", "builder", "pig"}
+    assert double_turns > 0
+
+
+def test_tiles_only_expansions_have_no_extra_pieces() -> None:
+    adapter = CppCarcassonneAdapter(
+        seed=3, expansions={"inns_cathedrals": "tiles", "traders_builders": "tiles", "princess_dragon": "tiles"}
+    )
+    assert adapter.state.piece_kinds == ()
+    assert adapter.state.goods == {}
+    options = adapter.confirm_tile(adapter.get_valid_moves()[0])
+    assert all(meeple_piece(pos) == "meeple" for pos in options)
+    adapter.close()
+
+
+def test_ui_parser_takes_every_expansion() -> None:
+    argv = ["--inns_cathedrals=on", "--traders_builders=tiles", "--river=on", "--princess_dragon=tiles"]
+    assert parse_ui_config(argv).expansions == {
+        "inns_cathedrals": "on",
+        "traders_builders": "tiles",
+        "river": "on",
+        "princess_dragon": "tiles",
+    }
+    with pytest.raises(SystemExit):
+        parse_ui_config(["--princess_dragon=on"])  # no rules for it yet
+
+
+def test_bot_cli_plays_a_game_with_every_expansion() -> None:
+    adapter = CppCarcassonneAdapter(
+        seed=4,
+        player_specs=(PlayerSpec(type="random"), PlayerSpec(type="random")),
+        expansions=ALL_EXPANSIONS,
+    )
+    try:
+        assert set(adapter._bot_clis) == {0, 1}  # both bots started, with matching expansions
+        assert adapter.state.game_over, adapter.ai_status
+        pieces = {meeple_piece(record.meeple_pos) for record in adapter.move_records if record.meeple_pos != -1}
+        assert pieces == {"meeple", "big", "builder", "pig"}
+    finally:
+        adapter.close()

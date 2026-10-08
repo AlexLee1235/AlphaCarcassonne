@@ -75,6 +75,14 @@ class GameState:
     meeples_remaining: Dict[int, int]
     game_over: bool = False
     turn: int = 1
+    # The expansions' pieces this game plays with ("big", "builder", "pig"), and
+    # how many of each every player still holds: {player: {kind: count}}.
+    piece_kinds: Tuple[str, ...] = ()
+    pieces_remaining: Dict[int, Dict[str, int]] = field(default_factory=dict)
+    # Traders & Builders: each player's goods tokens (wine, wheat, cloth); empty without its rules.
+    goods: Dict[int, Tuple[int, int, int]] = field(default_factory=dict)
+    # The player to move is on the extra tile their builder gave them.
+    builder_extra_tile: bool = False
 
 
 @dataclass

@@ -7,8 +7,13 @@ try:
     EXPANSION_LABELS,
     EXPANSION_NAMES,
     HALF_EDGE_COUNT,
+    GOODS_NAMES,
     MEEPLE_POS_FIELD,
     MEEPLE_POS_INNER_FIELD,
+    MEEPLE_POS_BIG,
+    MEEPLE_POS_BUILDER,
+    MEEPLE_POS_PIG,
+    MEEPLE_POS_SKIP,
         PHASE_CHANCE,
         PHASE_MEEPLE,
         PHASE_TERMINAL,
@@ -21,6 +26,8 @@ try:
         CppCarcassonneAdapter,
     expansion_masks,
     expansion_modes,
+    meeple_piece,
+    meeple_spot,
     )
 except ImportError:  # pragma: no cover - package import fallback
     from .engine.adapter import (
@@ -29,8 +36,13 @@ except ImportError:  # pragma: no cover - package import fallback
     EXPANSION_LABELS,
     EXPANSION_NAMES,
     HALF_EDGE_COUNT,
+    GOODS_NAMES,
     MEEPLE_POS_FIELD,
     MEEPLE_POS_INNER_FIELD,
+    MEEPLE_POS_BIG,
+    MEEPLE_POS_BUILDER,
+    MEEPLE_POS_PIG,
+    MEEPLE_POS_SKIP,
         PHASE_CHANCE,
         PHASE_MEEPLE,
         PHASE_TERMINAL,
@@ -43,6 +55,8 @@ except ImportError:  # pragma: no cover - package import fallback
         CppCarcassonneAdapter,
     expansion_masks,
     expansion_modes,
+    meeple_piece,
+    meeple_spot,
     )
 
 __all__ = [
@@ -51,8 +65,13 @@ __all__ = [
     "EXPANSION_LABELS",
     "EXPANSION_NAMES",
     "HALF_EDGE_COUNT",
+    "GOODS_NAMES",
     "MEEPLE_POS_FIELD",
     "MEEPLE_POS_INNER_FIELD",
+    "MEEPLE_POS_BIG",
+    "MEEPLE_POS_BUILDER",
+    "MEEPLE_POS_PIG",
+    "MEEPLE_POS_SKIP",
     "PHASE_CHANCE",
     "PHASE_MEEPLE",
     "PHASE_TERMINAL",
@@ -65,4 +84,6 @@ __all__ = [
     "CppCarcassonneAdapter",
     "expansion_masks",
     "expansion_modes",
+    "meeple_piece",
+    "meeple_spot",
 ]

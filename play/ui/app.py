@@ -16,12 +16,16 @@ try:
         BOARD_SIZE,
         EXPANSION_LABELS,
         EXPANSION_NAMES,
+        GOODS_NAMES,
         HALF_EDGE_COUNT,
         MEEPLE_POS_FIELD,
         MEEPLE_POS_INNER_FIELD,
+        MEEPLE_POS_PIG,
         CppCarcassonneAdapter,
         PlayerSpec,
         expansion_modes,
+        meeple_piece,
+        meeple_spot,
     )
 except ImportError:  # pragma: no cover - package import fallback
     from ..domain import BotValue, Move, MoveRecord
@@ -29,12 +33,16 @@ except ImportError:  # pragma: no cover - package import fallback
         BOARD_SIZE,
         EXPANSION_LABELS,
         EXPANSION_NAMES,
+        GOODS_NAMES,
         HALF_EDGE_COUNT,
         MEEPLE_POS_FIELD,
         MEEPLE_POS_INNER_FIELD,
+        MEEPLE_POS_PIG,
         CppCarcassonneAdapter,
         PlayerSpec,
         expansion_modes,
+        meeple_piece,
+        meeple_spot,
     )
 
 
@@ -44,10 +52,13 @@ BUTTON = getattr(ft, "Button", None) or ft.ElevatedButton
 ALIGN_CENTER = ft.alignment.Alignment(0, 0)
 
 CELL_SIZE = 40
-# The expansions the UI can play so far; the others are listed but stay off.
-PLAYABLE_EXPANSIONS = ("river",)
 MEEPLE_SIZE = 18
-MEEPLE_GLYPH = "■"  # ■
+BIG_MEEPLE_SIZE = 26
+# The pieces a meeple move can place (adapter.meeple_piece), each with its own tab of
+# buttons and its symbol in the pieces left in hand.
+PIECE_KINDS = ("meeple", "big", "builder", "pig")
+PIECE_TAB_LABELS = {"meeple": "Meeple", "big": "Big meeple", "builder": "Builder", "pig": "Pig"}
+PIECE_GLYPHS = {"meeple": "■", "big": "◆", "builder": "▲", "pig": "●"}
 MIN_BOARD_SCALE = 0.3
 MAX_BOARD_SCALE = 4.0
 ZOOM_STEP = 1.25
@@ -88,17 +99,57 @@ _SIDE_TANGENTS = ((1, 0), (0, 1), (-1, 0), (0, -1))  # clockwise along each side
 
 
 def is_farmer(meeple_pos: int) -> bool:
-    return meeple_pos >= MEEPLE_POS_FIELD
+    """A meeple or the big meeple lying in a field (a pig there is no farmer)."""
+    return meeple_piece(meeple_pos) in ("meeple", "big") and meeple_spot(meeple_pos) >= MEEPLE_POS_FIELD
+
+
+def _spot_label(spot: int) -> str:
+    if spot < len(SIDE_NAMES):
+        return SIDE_NAMES[spot]
+    if spot == MEEPLE_POS_INNER_FIELD:
+        return "Farmer: Inner"
+    if spot >= MEEPLE_POS_FIELD:
+        return f"Farmer: {HALF_EDGE_NAMES[spot - MEEPLE_POS_FIELD]}"
+    return "Center"
 
 
 def meeple_button_labels() -> Dict[int, str]:
-    """A label for every meeple position the engine can offer, skip aside."""
-    labels = {side: f"Meeple: {name}" for side, name in enumerate(SIDE_NAMES)}
-    labels[4] = "Meeple: Center"
-    for half_edge, name in enumerate(HALF_EDGE_NAMES):
-        labels[MEEPLE_POS_FIELD + half_edge] = f"Farmer: {name}"
-    labels[MEEPLE_POS_INNER_FIELD] = "Farmer: Inner"
+    """A label for every meeple position the engine can offer, skip aside. The tab a
+    button sits in names the piece, so the label only says where it goes."""
+    labels: Dict[int, str] = {}
+    for pos in range(MEEPLE_POS_PIG + HALF_EDGE_COUNT):
+        spot = meeple_spot(pos)
+        if meeple_piece(pos) == "pig":
+            labels[pos] = f"Field: {HALF_EDGE_NAMES[spot - MEEPLE_POS_FIELD]}"
+        else:
+            labels[pos] = _spot_label(spot)
     return labels
+
+
+def meeple_marker(meeple_pos: int) -> Tuple[str, int]:
+    """The image under meeples/ (less _p<owner>.png) and the size a piece is drawn at."""
+    piece = meeple_piece(meeple_pos)
+    if piece in ("builder", "pig"):
+        return piece, MEEPLE_SIZE
+    image = "farmer" if is_farmer(meeple_pos) else "standing"
+    return image, BIG_MEEPLE_SIZE if piece == "big" else MEEPLE_SIZE
+
+
+def pieces_in_hand(meeples: int, pieces: Dict[str, int]) -> str:
+    """The pieces a player holds as symbols: a square per meeple, then the expansions' pieces."""
+    special = "".join(PIECE_GLYPHS[kind] * pieces[kind] for kind in PIECE_KINDS[1:] if pieces.get(kind))
+    text = PIECE_GLYPHS["meeple"] * meeples + (" " + special if meeples and special else special)
+    return text or "-"
+
+
+def offered_pieces(meeple_options: Sequence[int]) -> List[str]:
+    """The pieces the meeple moves can place, in tab order; skip places none."""
+    kinds = {meeple_piece(pos) for pos in meeple_options if pos != -1}
+    return [kind for kind in PIECE_KINDS if kind in kinds]
+
+
+def format_goods(goods: Tuple[int, int, int]) -> str:
+    return " · ".join(f"{name} {count}" for name, count in zip(GOODS_NAMES, goods))
 
 
 def meeple_alignment(meeple_pos: int) -> Tuple[float, float]:
@@ -158,7 +209,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--p1_max_simulations", type=_positive_int, default=None)
     parser.add_argument("--p2_max_simulations", type=_positive_int, default=None)
     parser.add_argument("--seed", type=int, default=0)
-    for name in PLAYABLE_EXPANSIONS:
+    for name in EXPANSION_NAMES[1:]:
         parser.add_argument(f"--{name}", choices=expansion_modes(name), default="off")
     return parser
 
@@ -185,7 +236,7 @@ def parse_ui_config(argv: Optional[Sequence[str]] = None) -> PlayUiConfig:
             max_simulations=args.p2_max_simulations,
         ),
         seed=None if args.seed == 0 else args.seed,
-        expansions={name: getattr(args, name) for name in PLAYABLE_EXPANSIONS if getattr(args, name) != "off"},
+        expansions={name: getattr(args, name) for name in EXPANSION_NAMES[1:] if getattr(args, name) != "off"},
     )
 
 
@@ -394,16 +445,13 @@ class CarcassonneUI:
         self.checkpoint_field = ft.TextField(label="Checkpoint (-1 = latest)", value=str(checkpoint), width=300)
         self.simulations_field = ft.TextField(label="Simulations per move", value=str(simulations), width=300)
         self.seed_field = ft.TextField(label="Seed (0 = random)", value=str(self.config.seed or 0), width=300)
-        # One dropdown per expansion; only PLAYABLE_EXPANSIONS can be changed for now.
+        # One dropdown per expansion: off, tiles (its tiles alone) or on (with its rules).
         self.expansion_dropdowns: Dict[str, ft.Dropdown] = {}
         for name in EXPANSION_NAMES[1:]:
-            playable = name in PLAYABLE_EXPANSIONS
-            label = EXPANSION_LABELS.get(name, name) + ("" if playable else " (not yet)")
             self.expansion_dropdowns[name] = ft.Dropdown(
-                label=label,
-                value=self.config.expansions.get(name, "off") if playable else "off",
+                label=EXPANSION_LABELS.get(name, name),
+                value=self.config.expansions.get(name, "off"),
                 options=[ft.dropdown.Option(key=mode, text=mode) for mode in expansion_modes(name)],
-                disabled=not playable,
                 width=300,
             )
         self.setup_error = ft.Text("", color="#d1242f")
@@ -457,7 +505,7 @@ class CarcassonneUI:
         expansions = {
             name: dropdown.value
             for name, dropdown in self.expansion_dropdowns.items()
-            if name in PLAYABLE_EXPANSIONS and dropdown.value not in (None, "off")
+            if dropdown.value not in (None, "off")
         }
         self.setup_error.value = ""
         self.start_game(specs, None if seed == 0 else seed, expansions)
@@ -470,6 +518,8 @@ class CarcassonneUI:
         self.turn_text = ft.Text()
         self.score_text = ft.Text()
         self.meeple_text = ft.Text()
+        self.piece_legend = ft.Text(size=12, color="#57606a", visible=False)
+        self.goods_text = ft.Text(visible=False)
         self.value_text = ft.Text(visible=False)
         self.thinking_row = ft.Row(
             [ft.ProgressRing(width=16, height=16, stroke_width=2), ft.Text("AI thinking...")],
@@ -486,6 +536,25 @@ class CarcassonneUI:
             pos: BUTTON(label, on_click=lambda _, pos=pos: self.on_apply_move(pos))
             for pos, label in meeple_button_labels().items()
         }
+        # A tab per piece; only the selected one's buttons show. The tab bar shows only
+        # in games with the expansions' pieces, so a base game looks as it always did.
+        self.meeple_tab = PIECE_KINDS[0]
+        self.meeple_groups = {kind: ft.Row([], wrap=True) for kind in PIECE_KINDS}
+        for pos, button in self.meeple_buttons.items():
+            self.meeple_groups[meeple_piece(pos)].controls.append(button)
+        # Flet draws a disabled tab like any other, so its label is greyed out by hand.
+        self.meeple_tab_labels = {kind: ft.Text(PIECE_TAB_LABELS[kind]) for kind in PIECE_KINDS}
+        self.meeple_tab_bar = ft.TabBar(
+            tabs=[ft.Tab(label=self.meeple_tab_labels[kind]) for kind in PIECE_KINDS],
+            label_padding=_padding(left=4, right=4),
+            visible=False,
+        )
+        self.meeple_tabs = ft.Tabs(
+            length=len(PIECE_KINDS),
+            selected_index=0,
+            on_change=self.on_meeple_tab_change,
+            content=ft.Column([self.meeple_tab_bar, *self.meeple_groups.values()], spacing=4, tight=True),
+        )
 
         self.game_column = ft.Column(
             controls=[
@@ -506,8 +575,10 @@ class CarcassonneUI:
                 self.score_text,
                 self.value_text,
                 self.meeple_text,
+                self.piece_legend,
+                self.goods_text,
                 ft.Row([self.confirm_btn, self.skip_btn], wrap=True),
-                ft.Row(list(self.meeple_buttons.values()), wrap=True),
+                self.meeple_tabs,
                 ft.Text("Record", size=18, weight=ft.FontWeight.BOLD),
                 # Takes whatever height is left and scrolls on its own. A fixed-height box at
                 # the end of a scrolling column fell off the bottom of shorter windows.
@@ -598,12 +669,24 @@ class CarcassonneUI:
         for pos, btn in self.meeple_buttons.items():
             btn.visible = self.awaiting_meeple and pos in self.meeple_options
             btn.disabled = not human_turn
+        offered = offered_pieces(self.meeple_options)
+        for kind, tab in zip(PIECE_KINDS, self.meeple_tab_bar.tabs):
+            tab.disabled = kind not in offered
+            self.meeple_tab_labels[kind].color = None if kind in offered else "#c4c9d0"
+        for kind, group in self.meeple_groups.items():
+            group.visible = self.awaiting_meeple and kind == self.meeple_tab
+        # No tabs in a game without the expansions' pieces, or when only skip is left.
+        self.meeple_tab_bar.visible = (
+            self.awaiting_meeple and human_turn and bool(self.state.piece_kinds) and bool(offered)
+        )
 
         seat = human_seat(self.player_specs)
         player_label = f"P{self.state.current_player}"
         if seat is not None:
             player_label += " (you)" if self.state.current_player == seat else " (AI)"
         self.turn_text.value = f"Turn: {self.state.turn} | To move: {player_label}"
+        if self.state.builder_extra_tile:
+            self.turn_text.value += " · builder: extra tile"
         self.ai_text.value = f"Mode: {self.engine.mode_label()}"
         if self.engine.ai_status:
             self.ai_text.value += f"\nAI: {summarize_ai_status(self.engine.ai_status)}"
@@ -618,6 +701,13 @@ class CarcassonneUI:
 
         self.score_text.value = f"Scores -> P1: {self.state.scores[1]} | P2: {self.state.scores[2]}"
         self.meeple_text.spans = self._meeple_spans()
+        kinds = ("meeple", *self.state.piece_kinds)
+        self.piece_legend.visible = bool(self.state.piece_kinds)
+        self.piece_legend.value = "  ".join(f"{PIECE_GLYPHS[kind]} {PIECE_TAB_LABELS[kind].lower()}" for kind in kinds)
+        self.goods_text.visible = bool(self.state.goods)
+        self.goods_text.value = "\n".join(
+            f"P{player} goods  {format_goods(goods)}" for player, goods in sorted(self.state.goods.items())
+        )
         bot_value = self.engine.last_bot_value
         self.value_text.visible = bot_value is not None
         self.value_text.value = format_bot_value(bot_value) if bot_value is not None else ""
@@ -640,16 +730,13 @@ class CarcassonneUI:
         self.page.update()
 
     def _meeple_spans(self) -> List[ft.TextSpan]:
-        """One square per meeple still in hand, in the player's colour."""
+        """A symbol per piece still in hand, in the player's colour (pieces_in_hand)."""
         spans: List[ft.TextSpan] = []
         for player in (1, 2):
-            left = self.state.meeples_remaining[player]
+            pieces = pieces_in_hand(self.state.meeples_remaining[player], self.state.pieces_remaining.get(player, {}))
             spans.append(ft.TextSpan(f"{'' if player == 1 else chr(10)}P{player} meeples  "))
             spans.append(
-                ft.TextSpan(
-                    MEEPLE_GLYPH * left if left else "-",
-                    style=ft.TextStyle(color=self._player_color(player), letter_spacing=1),
-                )
+                ft.TextSpan(pieces, style=ft.TextStyle(color=self._player_color(player), letter_spacing=1))
             )
         return spans
 
@@ -765,17 +852,18 @@ class CarcassonneUI:
         return "#3b82f6" if owner == 1 else "#ef4444"
 
     def _build_meeple_marker(self, owner: int, meeple_pos: int) -> ft.Container:
-        """A standing meeple on a road, city or monastery; a lying one for a farmer."""
-        kind = "farmer" if is_farmer(meeple_pos) else "standing"
-        align_x, align_y = meeple_alignment(meeple_pos)
+        """A standing meeple on a road, city or monastery, a lying one for a farmer (the big
+        meeple drawn larger), and the builder or pig on its feature or field."""
+        image, size = meeple_marker(meeple_pos)
+        align_x, align_y = meeple_alignment(meeple_spot(meeple_pos))
         return ft.Container(
             width=CELL_SIZE,
             height=CELL_SIZE,
             alignment=ft.alignment.Alignment(align_x, align_y),
             content=ft.Image(
-                src=f"meeples/{kind}_p{owner}.png",
-                width=MEEPLE_SIZE,
-                height=MEEPLE_SIZE,
+                src=f"meeples/{image}_p{owner}.png",
+                width=size,
+                height=size,
                 fit=IMAGE_FIT.CONTAIN,
             ),
         )
@@ -875,7 +963,23 @@ class CarcassonneUI:
             return
 
         self.awaiting_meeple = True
+        # Open the first tab with a move: the meeple's, unless only an expansion's piece fits.
+        offered = offered_pieces(self.meeple_options)
+        self._select_meeple_tab(offered[0] if offered else PIECE_KINDS[0])
         self.status.value = "Choose meeple position or skip."
+        self.refresh()
+
+    def _select_meeple_tab(self, kind: str) -> None:
+        self.meeple_tab = kind
+        self.meeple_tabs.selected_index = PIECE_KINDS.index(kind)
+
+    def on_meeple_tab_change(self, e: ft.ControlEvent) -> None:
+        index = e.control.selected_index
+        if index is None and e.data is not None:
+            index = int(e.data)
+        kind = PIECE_KINDS[int(index or 0)]
+        # A tab with no move stays shut: go back to the one that was open.
+        self._select_meeple_tab(kind if kind in offered_pieces(self.meeple_options) else self.meeple_tab)
         self.refresh()
 
     def on_apply_move(self, meeple_pos: int) -> None:

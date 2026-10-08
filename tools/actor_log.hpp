@@ -175,6 +175,18 @@ inline bool ApplyLoggedAction(Carcassonne &g, const std::string &a, std::string 
         g.placeMeeple(pos);
         return true;
     }
+    char dir = 0;
+    if (sscanf(a.c_str(), "move_dragon(dir=%c)", &dir) == 1) {
+        const char *sides = "NESW";
+        const char *side = std::strchr(sides, dir);
+        if (dir == 0 || side == nullptr) return fail("看不懂的龍的方向");
+        if (g.current_phase != PHASE_DRAGON) return fail("不在龍移動的階段");
+        const FixedVector<int, 4> moves = g.getLegalDragonMoves();
+        if (std::none_of(moves.begin(), moves.end(), [&](int m) { return m == side - sides; }))
+            return fail("龍不能往這邊走");
+        g.moveDragon(static_cast<int>(side - sides));
+        return true;
+    }
     return fail("看不懂的動作");
 }
 

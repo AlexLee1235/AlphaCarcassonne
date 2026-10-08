@@ -129,12 +129,11 @@ def test_bot_cli_reports_latest_observation_shape() -> None:
     finally:
         cli.close()
 
-    # 101 spatial planes (fields and expansion terrain included) and one global
-    # plane; meeple positions -1..13.
+    # 184 spatial planes and one global plane; 41 meeple moves and 4 dragon steps.
     # The observation and the tile actions cover the view, not the whole board.
-    assert response["observation_shape"] == [151, BOARD_SIZE, BOARD_SIZE]
-    assert response["observation_tensor_size"] == 151 * BOARD_SIZE * BOARD_SIZE
-    assert response["num_distinct_actions"] == BOARD_SIZE * BOARD_SIZE * 4 + 41
+    assert response["observation_shape"] == [185, BOARD_SIZE, BOARD_SIZE]
+    assert response["observation_tensor_size"] == 185 * BOARD_SIZE * BOARD_SIZE
+    assert response["num_distinct_actions"] == BOARD_SIZE * BOARD_SIZE * 4 + 41 + 4
 
 
 def test_player_spec_builds_per_player_az_env_without_device() -> None:
@@ -1119,7 +1118,7 @@ def test_ui_parser_takes_every_expansion() -> None:
         "princess_dragon": "tiles",
     }
     with pytest.raises(SystemExit):
-        parse_ui_config(["--princess_dragon=on"])  # no rules for it yet
+        parse_ui_config(["--princess_dragon=on"])  # the UI does not play the dragon yet
 
 
 def test_bot_cli_plays_a_game_with_every_expansion() -> None:

@@ -90,7 +90,8 @@ const GameType kGameType{/*short_name=*/"carcassonne",
                          // played (RULED_EXPANSIONS), "on": tiles and rules.
                          // inns_cathedrals "on" brings the big meeple, inns
                          // and cathedrals; traders_builders "on" the builder,
-                         // the pig and the goods.
+                         // the pig and the goods; princess_dragon "on" the
+                         // dragon (no princess, magic portal or fairy yet).
                          // The river is "off" or "on".
                          /*parameter_specification=*/
                          {{"max_turns", GameParameter(0)},
@@ -148,9 +149,24 @@ Action EncodeMeepleAction(int pos) {
 
 int DecodeMeepleAction(Action action) {
     SPIEL_CHECK_GE(action, kMeepleActionOffset);
-    SPIEL_CHECK_LT(action, kNumDistinctPlayerActions);
+    SPIEL_CHECK_LT(action, kDragonActionOffset);
     return action - kMeepleActionOffset - 1;
 }
+
+// A step of the dragon to side 0 N, 1 E, 2 S, 3 W of its tile.
+Action EncodeDragonAction(int side) {
+    SPIEL_CHECK_GE(side, 0);
+    SPIEL_CHECK_LT(side, kDragonActionCount);
+    return kDragonActionOffset + side;
+}
+
+int DecodeDragonAction(Action action) {
+    SPIEL_CHECK_GE(action, kDragonActionOffset);
+    SPIEL_CHECK_LT(action, kNumDistinctPlayerActions);
+    return action - kDragonActionOffset;
+}
+
+constexpr char kSideLetters[] = "NESW";
 
 std::string PhaseToString(GamePhase phase) {
     switch (phase) {
@@ -160,24 +176,12 @@ std::string PhaseToString(GamePhase phase) {
         return "tile";
     case PHASE_MEEPLE:
         return "meeple";
+    case PHASE_DRAGON:
+        return "dragon";
     case PHASE_TERMINAL:
         return "terminal";
     }
     return "unknown";
-}
-
-int PhaseIndex(GamePhase phase) {
-    switch (phase) {
-    case PHASE_CHANCE:
-        return 0;
-    case PHASE_TILE:
-        return 1;
-    case PHASE_MEEPLE:
-        return 2;
-    case PHASE_TERMINAL:
-        return 3;
-    }
-    return 3;
 }
 
 int TerrainIndex(EdgeType edge_type) {
@@ -246,14 +250,15 @@ int RotatePlane(int plane, int k) {
                       kFeatureOpponentMeeplesPlane, kFeatureSignedScorePlane, kFeatureMyBigMeeplePlane,
                       kFeatureOpponentBigMeeplePlane, kFeatureInnCathedralPlane, kFeatureMyBuilderPlane,
                       kFeatureOpponentBuilderPlane, kFeatureGoodsPlane, kFeatureGoodsPlane + 4,
-                      kFeatureGoodsPlane + 8}) {
+                      kFeatureGoodsPlane + 8, kMyPiecePlane, kOpponentPiecePlane}) {
         if (plane >= first && plane < first + 4) {
             return first + (plane - first + k) % 4;
         }
     }
     // A quarter turn moves each half-edge two places on.
     for (int first : {kFieldMyFarmersPlane, kFieldOpponentFarmersPlane, kFieldScorePlane, kFieldSizePlane,
-                      kFieldOpenCitiesPlane, kFieldMyPigPlane, kFieldOpponentPigPlane}) {
+                      kFieldOpenCitiesPlane, kFieldMyPigPlane, kFieldOpponentPigPlane,
+                      kMyPiecePlane + MEEPLE_POS_FIELD, kOpponentPiecePlane + MEEPLE_POS_FIELD}) {
         if (plane >= first && plane < first + HALF_EDGE_COUNT) {
             return first + (plane - first + 2 * k) % HALF_EDGE_COUNT;
         }
@@ -360,6 +365,9 @@ std::string CarcassonneState::ActionToString(Player player, Action action) const
         return absl::StrCat("place_tile(x=", static_cast<int>(move.x), ", y=", static_cast<int>(move.y),
                             ", rot=", static_cast<int>(move.rot), ")");
     }
+    if (action >= kDragonActionOffset) {
+        return absl::StrCat("move_dragon(dir=", std::string(1, kSideLetters[DecodeDragonAction(action)]), ")");
+    }
 
     const int meeple_pos = DecodeMeepleAction(action);
     if (meeple_pos == MEEPLE_POS_SKIP) {
@@ -420,6 +428,12 @@ std::string CarcassonneState::ToString() const {
         const int(*tokens)[GOODS_KINDS] = game_state_.goods_tokens;
         absl::StrAppend(&expansion_pieces, " goods=[", tokens[0][0], ", ", tokens[0][1], ", ", tokens[0][2], " / ",
                         tokens[1][0], ", ", tokens[1][1], ", ", tokens[1][2], "]");
+    }
+    if (game_state_.dragon_rules && game_state_.dragonInPlay()) {
+        absl::StrAppend(&expansion_pieces, " dragon=(", game_state_.dragon_x, ", ", game_state_.dragon_y, ")");
+        if (game_state_.current_phase == PHASE_DRAGON) {
+            absl::StrAppend(&expansion_pieces, " dragon_steps=", game_state_.dragon_steps);
+        }
     }
     return absl::StrCat("phase=", PhaseToString(game_state_.current_phase), " current_player=", game_state_.currentPlayer,
                         " current_tile_type=", game_state_.currentTileType(), " remaining=", game_state_.getTotalRemaining(),
@@ -517,7 +531,7 @@ void CarcassonneState::ObservationTensor(Player player, absl::Span<float> values
                     SetPlaneValue(values, kSideLinkPlane + pair, x, y, 1.0f);
                 }
             }
-            if (game_state_.last_x == bx && game_state_.last_y == by) {
+            if (game_state_.focusX() == bx && game_state_.focusY() == by) {
                 SetPlaneValue(values, kLastPlacedPlane, x, y, 1.0f);
             }
             for (int side = 0; side < 4; ++side) {
@@ -584,6 +598,51 @@ void CarcassonneState::ObservationTensor(Player player, absl::Span<float> values
         for (int i = 0; i < legal_placements; ++i) {
             SetPlaneValue(values, kLegalPlacementPlane + tile_moves[i].rot, tile_moves[i].x - game_state_.view_x0,
                           tile_moves[i].y - game_state_.view_y0, 1.0f);
+        }
+    }
+
+    // The tile each piece stands on: its spot there, or for the builder and
+    // the pig just the tile.
+    for (const Piece &piece : game_state_.pieces) {
+        const int x = piece.x - game_state_.view_x0;
+        const int y = piece.y - game_state_.view_y0;
+        const bool mine = piece.owner == player;
+        if (piece.kind == PIECE_BUILDER || piece.kind == PIECE_PIG) {
+            const int plane = piece.kind == PIECE_BUILDER ? (mine ? kMyBuilderTilePlane : kOpponentBuilderTilePlane)
+                                                          : (mine ? kMyPigTilePlane : kOpponentPigTilePlane);
+            SetPlaneValue(values, plane, x, y, 1.0f);
+            continue;
+        }
+        const int first = mine ? kMyPiecePlane : kOpponentPiecePlane;
+        const float strength = piece.kind == PIECE_BIG_MEEPLE ? 1.0f : 0.5f;
+        const Placement placement = game_state_.getPlacement(piece.x, piece.y);
+        const Tile &tile = full_deck[placement.id][placement.rotation];
+        if (piece.spot < MEEPLE_POS_MONASTERY) {
+            const Feature *feature = &game_state_.featureAt(placement.id, piece.spot);
+            for (int side = 0; side < 4; ++side) {
+                if (isFeatureEdge(tile.edge[side]) && &game_state_.featureAt(placement.id, side) == feature) {
+                    SetPlaneValue(values, first + side, x, y, strength);
+                }
+            }
+        } else if (piece.spot == MEEPLE_POS_MONASTERY || piece.spot == MEEPLE_POS_INNER_FIELD) {
+            SetPlaneValue(values, first + piece.spot, x, y, strength);
+        } else {
+            const int root = game_state_.fieldRoot(placement.id, tile.field[piece.spot - MEEPLE_POS_FIELD]);
+            for (int half_edge = 0; half_edge < HALF_EDGE_COUNT; ++half_edge) {
+                if (tile.field[half_edge] != -1 && game_state_.fieldRoot(placement.id, tile.field[half_edge]) == root) {
+                    SetPlaneValue(values, first + MEEPLE_POS_FIELD + half_edge, x, y, strength);
+                }
+            }
+        }
+    }
+
+    const bool dragon_phase = game_state_.current_phase == PHASE_DRAGON;
+    if (game_state_.dragonInPlay()) {
+        SetPlaneValue(values, kDragonPlane, game_state_.dragon_x - game_state_.view_x0,
+                      game_state_.dragon_y - game_state_.view_y0, 1.0f);
+        for (int i = 0; dragon_phase && i < game_state_.dragon_visited.size(); ++i) {
+            SetPlaneValue(values, kDragonVisitedPlane, game_state_.dragon_visited[i].first - game_state_.view_x0,
+                          game_state_.dragon_visited[i].second - game_state_.view_y0, 1.0f);
         }
     }
 
@@ -654,6 +713,18 @@ void CarcassonneState::ObservationTensor(Player player, absl::Span<float> values
         global[kGlobalMyGoods + kind] = game_state_.goods_tokens[player][kind] / kGoodsNormalization[kind];
         global[kGlobalOpponentGoods + kind] = game_state_.goods_tokens[opponent][kind] / kGoodsNormalization[kind];
     }
+    global[kGlobalDragonInPlay] = game_state_.dragonInPlay() ? 1.0f : 0.0f;
+    global[kGlobalDragonPhase] = dragon_phase ? 1.0f : 0.0f;
+    global[kGlobalDragonStepsLeft] =
+        dragon_phase ? static_cast<float>(DRAGON_STEPS - game_state_.dragon_steps) / DRAGON_STEPS : 0.0f;
+    const int turn_player = dragon_phase ? game_state_.dragon_turn_player : game_state_.currentPlayer;
+    global[kGlobalMyTurn] = turn_player == player ? 1.0f : 0.0f;
+    if (dragon_phase) {
+        const FixedVector<int, 4> dragon_moves = game_state_.getLegalDragonMoves();
+        for (int side : dragon_moves) {
+            global[kGlobalLegalDragon + side] = 1.0f;
+        }
+    }
 }
 
 std::unique_ptr<State> CarcassonneState::Clone() const { return std::unique_ptr<State>(new CarcassonneState(*this)); }
@@ -702,6 +773,14 @@ std::vector<Action> CarcassonneState::LegalActions() const {
         return actions;
     }
 
+    if (game_state_.current_phase == PHASE_DRAGON) {
+        std::vector<Action> actions;
+        for (int side : game_state_.getLegalDragonMoves()) {
+            actions.push_back(EncodeDragonAction(side));
+        }
+        return actions;
+    }
+
     SPIEL_CHECK_EQ(game_state_.current_phase, PHASE_MEEPLE);
     std::vector<Action> actions;
     MeepleMoves meeple_moves = game_state_.getLegalMeepleMoves();
@@ -722,6 +801,11 @@ void CarcassonneState::DoApplyAction(Action action) {
     if (game_state_.current_phase == PHASE_TILE) {
         const TileMove move = TileActionMove(action);
         game_state_.placeTile(move.x, move.y, move.rot);
+        return;
+    }
+
+    if (game_state_.current_phase == PHASE_DRAGON) {
+        game_state_.moveDragon(DecodeDragonAction(action));
         return;
     }
 
@@ -771,6 +855,9 @@ Action RotateAction(Action action, int k, const SideGroups &groups) {
         DecodeTileAction(action, &x, &y, &rot);
         RotateCell(k, &x, &y);
         return EncodeTileAction(x, y, (rot + k) % 4);
+    }
+    if (action >= kDragonActionOffset) {
+        return EncodeDragonAction((DecodeDragonAction(action) + k) % 4);
     }
     const int pos = DecodeMeepleAction(action);
     // The big meeple, the builder and the pig go on the same spots further on
@@ -839,6 +926,11 @@ void RotateObservation(absl::Span<const float> observation, int k, const SideGro
             }
         }
     }
+    // The dragon's legal steps turn with the board.
+    const int legal_dragon = kGlobalFeaturePlane * VIEW_SIZE * VIEW_SIZE + kGlobalLegalDragon;
+    for (int side = 0; side < kDragonActionCount; ++side) {
+        rotated[legal_dragon + (side + k) % 4] = observation[legal_dragon + side];
+    }
 }
 
 float ObservationPlaneDenominator(int plane) {
@@ -847,12 +939,18 @@ float ObservationPlaneDenominator(int plane) {
     auto in = [plane](int first, int count) { return plane >= first && plane < first + count; };
     // Each is the normalization ObservationTensor writes the plane with.
     // Everything up to the last-placed plane is 0/1, and so are the big meeple,
-    // inn / cathedral, builder and pig planes; the monastery owners are +-1.
+    // inn / cathedral, builder and pig planes, the builder's and pig's tiles and
+    // the dragon's; the monastery owners are +-1.
     if (plane <= kLastPlacedPlane || plane == kMonasteryOwnerPlane || in(kFeatureMyBigMeeplePlane, 4) ||
         in(kFeatureOpponentBigMeeplePlane, 4) || plane == kMonasteryBigMeeplePlane ||
         in(kFeatureInnCathedralPlane, 4) || in(kFeatureMyBuilderPlane, 4) || in(kFeatureOpponentBuilderPlane, 4) ||
-        in(kFieldMyPigPlane, HALF_EDGE_COUNT) || in(kFieldOpponentPigPlane, HALF_EDGE_COUNT)) {
+        in(kFieldMyPigPlane, HALF_EDGE_COUNT) || in(kFieldOpponentPigPlane, HALF_EDGE_COUNT) ||
+        in(kMyBuilderTilePlane, kDragonVisitedPlane + 1 - kMyBuilderTilePlane)) {
         return 1.0f;
+    }
+    // A piece's strength / 2.
+    if (in(kMyPiecePlane, 2 * kPieceSpotPlanes)) {
+        return 2.0f;
     }
     if (in(kFeatureOpensPlane, 4)) {
         return static_cast<float>(kMaxOpens);

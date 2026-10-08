@@ -118,6 +118,22 @@ void FieldModule::placeFarmer(int tile_id, const Tile &tile, int pos, int player
     }
 }
 
+void FieldModule::removeFarmer(int tile_id, const Tile &tile, int pos, int player, bool big) {
+    int local = pos == MEEPLE_POS_INNER_FIELD ? tile.innerField() : tile.field[pos - MEEPLE_POS_FIELD];
+    int slot = fieldIndex(tile_id, local);
+    fieldMap.getSetData(slot).farmer_count[player] -= big ? 2 : 1;
+    for (int i = 0; i < farmed_slots.size(); ++i) {
+        if (farmed_slots[i] == slot) {
+            farmed_slots.swap_pop_erase_at(i);
+            break;
+        }
+    }
+    farmers_placed[player]--;
+    if (big) {
+        big_farmers[player] = 0;
+    }
+}
+
 void FieldModule::getLegalPigMoves(MeepleMoves &ret, int tile_id, const Tile &tile, int player) const {
     int seen_roots[HALF_EDGE_COUNT];
     int root_count = 0;

@@ -85,14 +85,19 @@ def game_log_file(expansions: Dict[str, str]) -> str:
     return f"log-actor-gui-{'-'.join(parts)}.txt"
 
 
+# Expansions the engine plays "on" but the UI cannot yet: The Princess & the Dragon's
+# dragon moves in a phase of its own, which the UI and the bot CLI do not drive.
+UI_UNPLAYED_RULES = {"princess_dragon"}
+
+
 def expansion_modes(name: str) -> Tuple[str, ...]:
-    """The modes an expansion takes, as CarcassonneGame accepts them: "tiles" deals its
-    tiles alone (not for one whose tiles need its rules), "on" adds its rules."""
+    """The modes an expansion takes in the UI, as CarcassonneGame accepts them: "tiles"
+    deals its tiles alone (not for one whose tiles need its rules), "on" adds its rules."""
     bit = int(_carcassonne_cpp.expansion_bit(EXPANSION_NAMES.index(name)))
     modes = ["off"]
     if not RULES_REQUIRED_EXPANSIONS & bit:
         modes.append("tiles")
-    if RULED_EXPANSIONS & bit:
+    if RULED_EXPANSIONS & bit and name not in UI_UNPLAYED_RULES:
         modes.append("on")
     return tuple(modes)
 

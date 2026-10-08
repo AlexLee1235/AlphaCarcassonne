@@ -152,6 +152,23 @@ std::vector<std::string> PlaneNames() {
           std::string("feature_") + goods[kind] + suffix;
     }
   }
+  for (const auto& [first, owner] : {std::pair<int, std::string>{kMyPiecePlane, "my"},
+                                     std::pair<int, std::string>{kOpponentPiecePlane, "opponent"}}) {
+    for (int side = 0; side < 4; ++side) {
+      names[first + side] = owner + "_piece_side_" + std::to_string(side);
+    }
+    names[first + MEEPLE_POS_MONASTERY] = owner + "_piece_monastery";
+    for (int half_edge = 0; half_edge < HALF_EDGE_COUNT; ++half_edge) {
+      names[first + MEEPLE_POS_FIELD + half_edge] = owner + "_piece_half_edge_" + std::to_string(half_edge);
+    }
+    names[first + MEEPLE_POS_INNER_FIELD] = owner + "_piece_inner_field";
+  }
+  names[kMyBuilderTilePlane] = "my_builder_tile";
+  names[kOpponentBuilderTilePlane] = "opponent_builder_tile";
+  names[kMyPigTilePlane] = "my_pig_tile";
+  names[kOpponentPigTilePlane] = "opponent_pig_tile";
+  names[kDragonPlane] = "dragon";
+  names[kDragonVisitedPlane] = "dragon_visited";
   names[kGlobalFeaturePlane] = "global_vector";
   return names;
 }
@@ -226,6 +243,13 @@ std::vector<std::string> GlobalFeatureNames() {
   for (int kind = 0; kind < GOODS_KINDS; ++kind) {
     names[kGlobalMyGoods + kind] = std::string("my_") + goods[kind];
     names[kGlobalOpponentGoods + kind] = std::string("opponent_") + goods[kind];
+  }
+  names[kGlobalDragonInPlay] = "dragon_in_play";
+  names[kGlobalDragonPhase] = "dragon_phase";
+  names[kGlobalDragonStepsLeft] = "dragon_steps_left";
+  names[kGlobalMyTurn] = "my_turn";
+  for (int side = 0; side < kDragonActionCount; ++side) {
+    names[kGlobalLegalDragon + side] = std::string("legal_dragon_") + "NESW"[side];
   }
   return names;
 }

@@ -12,7 +12,7 @@
 
 `tiles/` 裡的圖已經照這個順序編好號，填表時照著 type 順序一列一列往下填即可。
 
-目前除了河流、旅館與大教堂、商人與建築師（§8）之外**只做牌的形狀**，擴充的規則一律不算：龍、公主、魔法門、火山都還沒有效果。
+目前除了河流、旅館與大教堂、商人與建築師、公主與龍的龍（§8）之外**只做牌的形狀**，擴充的規則一律不算：公主、魔法門、仙女都還沒有效果。
 
 ---
 
@@ -255,14 +255,14 @@ cd /mnt/c/achieve/Carcassonne/AlphaCarcassonne/build && make carcassonne_test -j
 ## 8. 開擴充來玩或訓練
 
 ```
-carcassonne(inns_cathedrals=on,traders_builders=on,river=on,princess_dragon=tiles)
+carcassonne(inns_cathedrals=on,traders_builders=on,river=on,princess_dragon=on)
 ```
 
 - 每個參數是 `off`（預設）、`tiles`（只發牌、不算規則）或 `on`（發牌並套用規則，只有規則做好的擴充才有）。基本版的牌一定都在。
   - 河流：`off`／`on`，沒有只發牌的選項。
   - 旅館與大教堂：`off`／`tiles`／`on`。`on` = 大米寶＋旅館＋大教堂；`tiles` 的旅館、大教堂只是一般的路和城。
   - 商人與建築師：`off`／`tiles`／`on`。`on` = 建築師＋小豬＋貨物。
-  - 公主與龍：`off`／`tiles`。
+  - 公主與龍：`off`／`tiles`／`on`。`on` 目前只有龍（火山＋龍牌）；公主、魔法門、仙女的符號沒有效果。
 - **觀測和動作的維度不隨參數改變**：global vector 為牌表裡的每一種牌都留了位置（86 + 2 × 牌種數），沒發的牌種一律是 0。
   所以**牌表每加一種牌，維度就變一次**。等牌表定案再開始訓練；舊的 checkpoint 也不能載入，`carcassonne_bot_cli` 會直接報錯。
 - 河流規則（`river=on`）：河源取代起始牌放在中央，基本版的起始牌拿掉不用（牌組 72 + 12 − 1 = 83 張）；先抽完河流牌，湖一定最後，之後才抽一般牌。
@@ -286,6 +286,11 @@ carcassonne(inns_cathedrals=on,traders_builders=on,river=on,princess_dragon=tile
 - 貨物（`traders_builders=on`）：城完成時，放下完成那張磚的玩家每個貨物符號拿 1 個 token（酒、麥、布；城裡有沒有他的騎士都一樣）。
   終局時每種 token 最多的玩家得 10 分，平手都得，雙方都是 0 個就不給。token 在 `game/game.cpp` 的 `placeTile` 發，終局分在 `accumulateGoodsScore`。
   牌表的貨物數（`goodsInTable`）在 `tile.hpp` 有 static_assert 對 9／6／5，改 T&B 的貨物標記要跟著改。
+- 龍（`princess_dragon=on`）：第一張火山（`TILE_VOLCANO`）放下時龍上場，之後每張火山把龍帶過去，火山上不能放任何棋子；
+  龍上場前不抽龍牌（規則是抽到就擱置、之後洗回去，機率上一樣）。放下龍牌（`TILE_DRAGON`）、放完棋子後，龍走最多 6 格，
+  放磚者先、雙方輪流每人決定一步（`move_dragon(dir=N)`，4 個動作），不能走回本次走過的格；走進的每一格，所有棋子都被吃掉回到供給
+  （大米寶、建築師、小豬也是；最後一個 follower 被吃，建築師、小豬跟著回去）。龍走完才計分。
+  規則寫在 `game/game.cpp` 的 `placeMeeple`、`moveDragon`、`eatPiecesAt`、`finishTurn`，抽牌在 `DeckModule`。
 - 盤面：牌變多，對局也變大。引擎只在 `VIEW_SIZE`（目前 21）格的視窗裡放磚，視窗每手置中在已放的磚上。
   填完後量全開時要多大的視窗，再決定 `VIEW_SIZE` 要不要加大（`BOARD_SIZE` 只要容得下視窗能移到的地方）：
   ```bash

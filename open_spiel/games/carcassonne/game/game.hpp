@@ -32,7 +32,7 @@ constexpr int FIELD_POINTS_PER_CITY = 3;
 constexpr int PIG_FIELD_POINTS_PER_CITY = 4;
 // Each player has 7 meeples, and with the Inns & Cathedrals rules a big meeple.
 constexpr int MEEPLES_PER_PLAYER = 7;
-// Farmers are never returned, so a game has at most every meeple as one.
+// At most every meeple of both players stands as a farmer at once.
 constexpr int MAX_FARMERS = 2 * (MEEPLES_PER_PLAYER + 1);
 
 // Where a meeple goes on the tile just placed. A feature is named by its
@@ -64,7 +64,28 @@ constexpr int meepleSpot(int pos) {
                                  : pos;
 }
 
-enum GamePhase { PHASE_CHANCE = 0, PHASE_TILE = 1, PHASE_MEEPLE = 2, PHASE_TERMINAL = 3 };
+// PHASE_DRAGON: the dragon moves, one step a decision, after the meeple phase
+// of a dragon tile and before that turn is scored.
+enum GamePhase { PHASE_CHANCE = 0, PHASE_TILE = 1, PHASE_MEEPLE = 2, PHASE_TERMINAL = 3, PHASE_DRAGON = 4 };
+
+// The dragon moves up to this many tiles each time a dragon tile is placed.
+constexpr int DRAGON_STEPS = 6;
+
+// A piece standing on the board. Its spot is meepleSpot() of the move that put
+// it there: a side 0..3 for a road or city (the builder's too), 4 the
+// monastery, MEEPLE_POS_FIELD + half-edge a field (the pig's too), or the inner
+// field.
+enum PieceKind : uint8_t { PIECE_MEEPLE = 0, PIECE_BIG_MEEPLE = 1, PIECE_BUILDER = 2, PIECE_PIG = 3 };
+struct Piece {
+    int8_t x = -1;
+    int8_t y = -1;
+    uint8_t tile_id = 0;
+    int8_t spot = -1;
+    uint8_t owner = 0;
+    PieceKind kind = PIECE_MEEPLE;
+};
+// Every meeple, big meeple, builder and pig of both players.
+constexpr int MAX_PIECES = 2 * (MEEPLES_PER_PLAYER + 3);
 
 inline bool isInside(int x, int y) { return x >= 0 && x < BOARD_SIZE && y >= 0 && y < BOARD_SIZE; }
 
@@ -219,10 +240,10 @@ class FieldModule {
   public:
     // Slot (tile_id - 1) * MAX_TILE_FIELDS + local field of that tile.
     DisjointSet<Field, std::plus<Field>, FIELD_SLOT_COUNT> fieldMap;
-    // The slot of every farmer placed, so scoring visits only those fields.
+    // The slot of every farmer on the board, so scoring visits only those fields.
     FixedVector<int16_t, MAX_FARMERS> farmed_slots;
-    // Farmers each player has placed, the big meeple counted as one; they never
-    // come back.
+    // Farmers each player has on the board, the big meeple counted as one; they
+    // never come back, unless the dragon eats them.
     uint8_t farmers_placed[2] = {};
     // 1 once that player's big meeple is a farmer.
     uint8_t big_farmers[2] = {};
@@ -232,6 +253,8 @@ class FieldModule {
                           const FeatureModule &features);
     void getLegalFarmerMoves(MeepleMoves &ret, int tile_id, const Tile &tile) const;
     void placeFarmer(int tile_id, const Tile &tile, int pos, int player, bool big = false);
+    // Undoes placeFarmer: the dragon took that farmer home.
+    void removeFarmer(int tile_id, const Tile &tile, int pos, int player, bool big);
     // The fields `player`'s pig can go on: one per field of a half-edge of the
     // tile that holds one of their farmers, as MEEPLE_POS_PIG + half-edge.
     void getLegalPigMoves(MeepleMoves &ret, int tile_id, const Tile &tile, int player) const;
@@ -282,11 +305,18 @@ class DeckModule {
     // River rules: every river tile is drawn before the others, the lake last,
     // and the base start tile is left out (the spring replaces it).
     bool river_first = false;
+    // The dragon rules before the first volcano: a dragon tile drawn now is set
+    // aside and shuffled back once the dragon is in play, which is the same as
+    // not drawing dragon tiles until then.
+    bool hold_dragon_tiles = false;
     int consumeType(int type_id);
     // Deals every tile of the expansions in `expansions` (expansionBit() mask);
     // the other types are never drawn.
     void initializeTypeCounts(uint32_t expansions);
     void getAvailableDraws(ChanceBranch *out, int &count) const;
+    // The tiles that can still be drawn: all those left but the held dragon
+    // tiles. When none can, the game is over, even with dragon tiles set aside.
+    int drawableRemaining() const;
 };
 
 class LogModule {
@@ -347,6 +377,18 @@ class Carcassonne {
     void accumulateGoodsScore(int *scores) const;
     void resolveEndGameScore();
     void resolveNoMoreDraws();
+    // The end of a turn, once its pieces are down and the dragon has moved:
+    // scores what the last tile completed, then passes the turn on.
+    void finishTurn();
+    // Drops the records of the pieces that the turn's scoring sent home.
+    void forgetSettledPieces();
+    // The dragon takes every piece on the tile at (x, y) back to its owner's
+    // supply, and with it a builder or pig whose owner has no follower left on
+    // its road, city or field.
+    void eatPiecesAt(int x, int y);
+    // Sends piece `index` home and drops its record; returns the piece.
+    Piece removePiece(int index);
+    bool dragonCanEnter(int x, int y) const;
 
   public:
     int last_x = -1;
@@ -417,6 +459,24 @@ class Carcassonne {
     int river_last_turn = 0;    // its last bend, as (out - in heading) % 4: 1 clockwise, 3 anticlockwise; 0 none yet
     int river_tiles_placed = 0; // river tiles on the board, the spring included
 
+    // The Princess & the Dragon, the dragon alone so far. The first volcano
+    // brings it into play and each volcano after that takes it there; until
+    // then no dragon tile is drawn (DeckModule::hold_dragon_tiles). After the
+    // meeple phase of a dragon tile it moves up to DRAGON_STEPS tiles, one step
+    // a decision, the player who placed the tile first and the two players in
+    // turn: to a tile next to it, never back to one it visited this move. Each
+    // tile it enters loses all its pieces, which go home; then the turn is
+    // scored. No piece goes on a volcano tile.
+    bool dragon_rules = false;
+    int dragon_x = -1; // -1 until the first volcano
+    int dragon_y = -1;
+    int dragon_steps = 0;          // taken in the current move
+    int dragon_turn_player = -1;   // whose turn the dragon moves in; -1 outside PHASE_DRAGON
+    FixedVector<std::pair<int8_t, int8_t>, DRAGON_STEPS + 1> dragon_visited;  // this move, start included
+
+    // Every piece on the board, where it stands.
+    FixedVector<Piece, MAX_PIECES> pieces;
+
     explicit Carcassonne(int max_turns = 0);
     // Starts with the start tile turned by start_rotation quarter turns: the
     // whole game rotated about the centre. Used to test board-rotation symmetry.
@@ -481,5 +541,16 @@ class Carcassonne {
     // The same for fields: for each half-edge of the last placed tile, the
     // lowest half-edge of that tile in the same field (-1 on city sides).
     void getLastTileFieldGroups(int8_t groups[HALF_EDGE_COUNT]) const;
+    // Then the dragon moves if the tile was a dragon tile, else the turn ends.
     void placeMeeple(int pos);
+
+    bool dragonInPlay() const { return dragon_x >= 0; }
+    // The sides (0 N, 1 E, 2 S, 3 W) the dragon can step to in PHASE_DRAGON.
+    FixedVector<int, 4> getLegalDragonMoves() const;
+    // One step for the current player; the next step is the other player's.
+    void moveDragon(int side);
+    // The cell the current decision is about: the dragon's in PHASE_DRAGON,
+    // else the tile last placed.
+    int focusX() const { return current_phase == PHASE_DRAGON ? dragon_x : last_x; }
+    int focusY() const { return current_phase == PHASE_DRAGON ? dragon_y : last_y; }
 };

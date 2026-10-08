@@ -43,14 +43,15 @@ float GlobalValue(const std::vector<float>& tensor, int index) {
 
 bool Near(float left, float right) { return std::abs(left - right) < 1e-6f; }
 
-// Every expansion's tiles, with the rules of those that have them (the river,
-// Inns & Cathedrals, the builder).
+// Every expansion's tiles, with all their rules (of The Princess & the Dragon
+// the dragon only so far).
 constexpr const char* kAllExpansionsGame =
     "carcassonne(inns_cathedrals=on,traders_builders=on,river=on,"
-    "princess_dragon=tiles)";
+    "princess_dragon=on)";
 constexpr const char* kRiverGame = "carcassonne(river=on)";
 constexpr const char* kInnsCathedralsGame = "carcassonne(inns_cathedrals=on)";
 constexpr const char* kTradersBuildersGame = "carcassonne(traders_builders=on)";
+constexpr const char* kDragonGame = "carcassonne(princess_dragon=on)";
 
 int TestTerrainIndex(EdgeType edge_type) {
   switch (edge_type) {
@@ -175,11 +176,11 @@ void ObservationTensorSmokeTest() {
   const std::vector<int> shape = game->ObservationTensorShape();
 
   SPIEL_CHECK_EQ(shape.size(), 3);
-  SPIEL_CHECK_EQ(shape[0], 151);
+  SPIEL_CHECK_EQ(shape[0], 185);
   SPIEL_CHECK_EQ(shape[0], kObservationPlanes);
   SPIEL_CHECK_EQ(shape[1], VIEW_SIZE);
   SPIEL_CHECK_EQ(shape[2], VIEW_SIZE);
-  SPIEL_CHECK_EQ(game->NumDistinctActions(), 4 * VIEW_SIZE * VIEW_SIZE + 41);
+  SPIEL_CHECK_EQ(game->NumDistinctActions(), 4 * VIEW_SIZE * VIEW_SIZE + 41 + 4);
 
   SPIEL_CHECK_EQ(state->ObservationTensor(0).size(), kObservationTensorSize);
   SPIEL_CHECK_EQ(state->ObservationTensor(1).size(), kObservationTensorSize);
@@ -1451,6 +1452,8 @@ void CheckBuilders(const State& state) {
   const int player = core.currentPlayer;
   const Placement last = core.getPlacement(core.last_x, core.last_y);
   const Tile& last_tile = full_deck[last.id][last.rotation];
+  // Nothing goes on a volcano, where the dragon is.
+  const bool volcano = core.dragon_rules && (last_tile.tile_marks & TILE_VOLCANO);
   std::vector<int> expected;
   std::vector<const Feature*> last_features;
   for (int side = 0; side < 4; ++side) {
@@ -1461,7 +1464,7 @@ void CheckBuilders(const State& state) {
       continue;  // named by its lowest side
     }
     last_features.push_back(&feature);
-    if (core.holding_builders[player] > 0 && feature.meeple_count[player] > 0) {
+    if (!volcano && core.holding_builders[player] > 0 && feature.meeple_count[player] > 0) {
       expected.push_back(MEEPLE_POS_BUILDER + side);
     }
   }
@@ -1596,8 +1599,9 @@ void BuilderTest() {
                 ? SampleAction(state->ChanceOutcomes(), rng).first
                 : legal[std::uniform_int_distribution<int>(0, legal.size() - 1)(rng)];
         const bool meeple_phase = core.current_phase == PHASE_MEEPLE;
+        const bool dragon_phase = core.current_phase == PHASE_DRAGON;
         const bool extra_tile = core.builder_extra_tile;
-        const int mover = core.currentPlayer;
+        const int mover = dragon_phase ? core.dragon_turn_player : core.currentPlayer;
         const int held[2] = {core.holding_builders[0], core.holding_builders[1]};
         if (meeple_phase && isBuilderPos(DecodeMeepleActionForTest(action))) {
           ++builders_placed;
@@ -1606,7 +1610,10 @@ void BuilderTest() {
         for (Player player = 0; player < kNumPlayers; ++player) {
           builders_returned += core.holding_builders[player] > held[player];
         }
-        if (meeple_phase && !state->IsTerminal()) {
+        // The turn ends with the meeple move, or after it with the dragon's
+        // last step.
+        if ((meeple_phase || dragon_phase) && core.current_phase != PHASE_DRAGON &&
+            !state->IsTerminal()) {
           SPIEL_CHECK_EQ(core.currentPlayer, extra_tile ? mover : 1 - mover);
           SPIEL_CHECK_EQ(core.builder_second_tile, extra_tile);
           double_turns += extra_tile;
@@ -1694,6 +1701,8 @@ void CheckPigs(const State& state, int* pig_bonuses) {
   const int player = core.currentPlayer;
   const Placement last = core.getPlacement(core.last_x, core.last_y);
   const Tile& last_tile = full_deck[last.id][last.rotation];
+  // Nothing goes on a volcano, where the dragon is.
+  const bool volcano = core.dragon_rules && (last_tile.tile_marks & TILE_VOLCANO);
   std::vector<int> expected;
   std::vector<int> last_roots;
   for (int half_edge = 0; half_edge < HALF_EDGE_COUNT; ++half_edge) {
@@ -1703,7 +1712,7 @@ void CheckPigs(const State& state, int* pig_bonuses) {
       continue;  // named by its lowest half-edge
     }
     last_roots.push_back(root);
-    if (core.holding_pigs[player] > 0 &&
+    if (!volcano && core.holding_pigs[player] > 0 &&
         core.fieldAtRoot(root).farmer_count[player] > 0) {
       expected.push_back(MEEPLE_POS_PIG + half_edge);
     }
@@ -2072,6 +2081,294 @@ void GoodsTest() {
   SPIEL_CHECK_GT(tokens_handed_out, 0);
 }
 
+// Every piece on the board has a record (Carcassonne::pieces) on the tile it
+// was placed on, one a tile, and the records add up to what the features,
+// fields and monasteries count and to the pieces out of hand. The observation
+// shows each on its tile, its spot planes holding its strength / 2.
+void CheckPieces(const State& state) {
+  const ::Carcassonne& core =
+      dynamic_cast<const CarcassonneState&>(state).UnderlyingState();
+  const std::vector<float> observations[2] = {state.ObservationTensor(0),
+                                              state.ObservationTensor(1)};
+  int out[2][4] = {};  // by owner and PieceKind
+  int farmers[2] = {0, 0};
+  std::vector<std::pair<const Feature*, std::array<int, 2>>> features;
+  std::vector<std::pair<int, std::array<int, 2>>> fields;
+  auto feature_strength = [&](const Feature* feature) -> std::array<int, 2>& {
+    for (auto& entry : features) {
+      if (entry.first == feature) return entry.second;
+    }
+    features.push_back({feature, {0, 0}});
+    return features.back().second;
+  };
+  auto field_strength = [&](int root) -> std::array<int, 2>& {
+    for (auto& entry : fields) {
+      if (entry.first == root) return entry.second;
+    }
+    fields.push_back({root, {0, 0}});
+    return fields.back().second;
+  };
+  for (int i = 0; i < core.pieces.size(); ++i) {
+    const Piece& piece = core.pieces[i];
+    for (int j = 0; j < i; ++j) {
+      SPIEL_CHECK_FALSE(core.pieces[j].x == piece.x && core.pieces[j].y == piece.y);
+    }
+    // No piece shares a tile with the dragon.
+    SPIEL_CHECK_FALSE(piece.x == core.dragon_x && piece.y == core.dragon_y);
+    const Placement placement = core.getPlacement(piece.x, piece.y);
+    SPIEL_CHECK_EQ(placement.id, piece.tile_id);
+    const Tile& tile = full_deck[placement.id][placement.rotation];
+    const int owner = piece.owner;
+    ++out[owner][piece.kind];
+    const int strength = piece.kind == PIECE_BIG_MEEPLE ? 2 : 1;
+    const int local = piece.spot == MEEPLE_POS_INNER_FIELD
+                          ? tile.innerField()
+                          : (piece.spot >= MEEPLE_POS_FIELD ? tile.field[piece.spot - MEEPLE_POS_FIELD] : -1);
+    if (piece.kind == PIECE_BUILDER) {
+      SPIEL_CHECK_EQ(static_cast<int>(core.featureAt(piece.tile_id, piece.spot).builders[owner]), 1);
+    } else if (piece.kind == PIECE_PIG) {
+      SPIEL_CHECK_EQ(static_cast<int>(core.fieldAtRoot(core.fieldRoot(piece.tile_id, local)).pigs[owner]), 1);
+    } else if (piece.spot < MEEPLE_POS_MONASTERY) {
+      feature_strength(&core.featureAt(piece.tile_id, piece.spot))[owner] += strength;
+    } else if (piece.spot == MEEPLE_POS_MONASTERY) {
+      SPIEL_CHECK_EQ(core.monasteryOwner(piece.x, piece.y), owner);
+      SPIEL_CHECK_EQ(core.monasteryBigMeepleOwner(piece.x, piece.y),
+                     piece.kind == PIECE_BIG_MEEPLE ? owner : -1);
+    } else {
+      field_strength(core.fieldRoot(piece.tile_id, local))[owner] += strength;
+      ++farmers[owner];
+    }
+    for (Player player = 0; player < kNumPlayers; ++player) {
+      const std::vector<float>& obs = observations[player];
+      const bool mine = owner == player;
+      // SPIEL_CHECK_EQ's own locals are called x and y.
+      const int tx = piece.x;
+      const int ty = piece.y;
+      if (piece.kind == PIECE_BUILDER) {
+        SPIEL_CHECK_EQ(BoardPlaneValue(obs, core, mine ? kMyBuilderTilePlane : kOpponentBuilderTilePlane, tx, ty),
+                       1.0f);
+      } else if (piece.kind == PIECE_PIG) {
+        SPIEL_CHECK_EQ(BoardPlaneValue(obs, core, mine ? kMyPigTilePlane : kOpponentPigTilePlane, tx, ty), 1.0f);
+      } else {
+        SPIEL_CHECK_EQ(BoardPlaneValue(obs, core, (mine ? kMyPiecePlane : kOpponentPiecePlane) + piece.spot, tx, ty),
+                       strength / 2.0f);
+      }
+    }
+  }
+  // Every follower on a road, city or field is one of the records.
+  for (int ty = 0; ty < BOARD_SIZE; ++ty) {
+    for (int tx = 0; tx < BOARD_SIZE; ++tx) {
+      const Placement placement = core.getPlacement(tx, ty);
+      if (placement.id == 0) continue;
+      const Tile& tile = full_deck[placement.id][placement.rotation];
+      for (int side = 0; side < 4; ++side) {
+        if (!isFeatureEdge(tile.edge[side])) continue;
+        const Feature& feature = core.featureAt(placement.id, side);
+        const std::array<int, 2> strength = feature_strength(&feature);
+        for (Player player = 0; player < kNumPlayers; ++player) {
+          SPIEL_CHECK_EQ(static_cast<int>(feature.meeple_count[player]), strength[player]);
+        }
+      }
+      for (int local = 0; local < tile.field_count; ++local) {
+        const int root = core.fieldRoot(placement.id, local);
+        const std::array<int, 2> strength = field_strength(root);
+        for (Player player = 0; player < kNumPlayers; ++player) {
+          SPIEL_CHECK_EQ(static_cast<int>(core.fieldAtRoot(root).farmer_count[player]), strength[player]);
+        }
+      }
+    }
+  }
+  for (Player player = 0; player < kNumPlayers; ++player) {
+    SPIEL_CHECK_EQ(out[player][PIECE_MEEPLE] + core.holding_meeples[player], MEEPLES_PER_PLAYER);
+    SPIEL_CHECK_EQ(farmers[player], core.farmersOnBoard(player));
+    SPIEL_CHECK_EQ(out[player][PIECE_BIG_MEEPLE] + core.holding_big_meeples[player], core.big_meeple_rules ? 1 : 0);
+    SPIEL_CHECK_EQ(out[player][PIECE_BUILDER] + core.holding_builders[player], core.builder_rules ? 1 : 0);
+    SPIEL_CHECK_EQ(out[player][PIECE_PIG] + core.holding_pigs[player], core.pig_rules ? 1 : 0);
+    SPIEL_CHECK_EQ(PlaneSum(observations[player], kMyBuilderTilePlane), out[player][PIECE_BUILDER]);
+    SPIEL_CHECK_EQ(PlaneSum(observations[player], kOpponentPigTilePlane), out[1 - player][PIECE_PIG]);
+  }
+}
+
+// The dragon as the observation shows it: its tile, in PHASE_DRAGON the tiles
+// of its move and its legal steps, which are the legal actions, and whose step
+// it is.
+void CheckDragon(const State& state) {
+  const ::Carcassonne& core =
+      dynamic_cast<const CarcassonneState&>(state).UnderlyingState();
+  const std::vector<float> obs = state.ObservationTensor(0);
+  const bool moving = core.current_phase == PHASE_DRAGON;
+  SPIEL_CHECK_EQ(GlobalValue(obs, kGlobalDragonInPlay), core.dragonInPlay() ? 1.0f : 0.0f);
+  SPIEL_CHECK_EQ(GlobalValue(obs, kGlobalDragonPhase), moving ? 1.0f : 0.0f);
+  SPIEL_CHECK_EQ(PlaneSum(obs, kDragonPlane), core.dragonInPlay() ? 1.0f : 0.0f);
+  if (core.dragonInPlay()) {
+    SPIEL_CHECK_EQ(BoardPlaneValue(obs, core, kDragonPlane, core.dragon_x, core.dragon_y), 1.0f);
+  }
+  SPIEL_CHECK_EQ(PlaneSum(obs, kDragonVisitedPlane),
+                 moving ? static_cast<float>(core.dragon_visited.size()) : 0.0f);
+  float legal[kDragonActionCount] = {};
+  if (moving) {
+    SPIEL_CHECK_TRUE(core.dragon_rules);
+    SPIEL_CHECK_LT(core.dragon_steps, DRAGON_STEPS);
+    SPIEL_CHECK_EQ(static_cast<int>(core.dragon_visited.size()), core.dragon_steps + 1);
+    // The player who placed the dragon tile takes the first step.
+    SPIEL_CHECK_EQ(state.CurrentPlayer(),
+                   core.dragon_steps % 2 == 0 ? core.dragon_turn_player : 1 - core.dragon_turn_player);
+    SPIEL_CHECK_EQ(GlobalValue(obs, kGlobalMyTurn), core.dragon_turn_player == 0 ? 1.0f : 0.0f);
+    SPIEL_CHECK_TRUE(Near(GlobalValue(obs, kGlobalDragonStepsLeft),
+                          (DRAGON_STEPS - core.dragon_steps) / 6.0f));
+    // The focus cell, where the dragon's actions are read, is the dragon's.
+    SPIEL_CHECK_EQ(BoardPlaneValue(obs, core, kLastPlacedPlane, core.dragon_x, core.dragon_y), 1.0f);
+    const std::vector<Action> actions = state.LegalActions();
+    SPIEL_CHECK_FALSE(actions.empty());
+    for (Action action : actions) {
+      SPIEL_CHECK_GE(action, kDragonActionOffset);
+      legal[action - kDragonActionOffset] = 1.0f;
+    }
+  }
+  for (int side = 0; side < kDragonActionCount; ++side) {
+    SPIEL_CHECK_EQ(GlobalValue(obs, kGlobalLegalDragon + side), legal[side]);
+  }
+}
+
+// The Princess & the Dragon's dragon: a volcano brings it, nothing goes on a
+// volcano, no dragon tile is drawn before the first volcano, and a dragon tile
+// sends it up to six tiles, the players choosing each step in turn from the
+// one who placed the tile, eating every piece on the way before the turn is
+// scored.
+void DragonTest() {
+  const uint32_t dragon = BASE_ONLY | expansionBit(EXP_PRINCESS_DRAGON);
+  SPIEL_CHECK_FALSE(::Carcassonne().dragon_rules);
+  SPIEL_CHECK_FALSE(::Carcassonne(0, START_TILE_ROTATION, dragon, /*rules=*/0u).dragon_rules);
+  const auto offers_dragon_tiles = [](const ::Carcassonne& game) {
+    std::array<ChanceBranch, CANONICAL_TILE_TYPE_COUNT> draws{};
+    int count = 0;
+    game.getAvailableDraws(draws.data(), count);
+    double total = 0.0;
+    bool offered = false;
+    for (int i = 0; i < count; ++i) {
+      total += draws[i].probability;
+      offered = offered || (all_tiles[draws[i].type_id - 1].tile.tile_marks & TILE_DRAGON);
+    }
+    SPIEL_CHECK_TRUE(Near(static_cast<float>(total), 1.0f));
+    return offered;
+  };
+
+  const int c = BOARD_SIZE / 2;
+  ::Carcassonne game(/*max_turns=*/0, START_TILE_ROTATION, dragon);
+  SPIEL_CHECK_TRUE(game.dragon_rules);
+  SPIEL_CHECK_FALSE(game.dragonInPlay());
+  SPIEL_CHECK_FALSE(offers_dragon_tiles(game));
+  // P0: a volcano (type 90, all grass) south of the start tile brings the
+  // dragon; nothing may go on it.
+  PlaceTile(&game, 90, c, c + 1, 0);
+  SPIEL_CHECK_EQ(game.dragon_x, c);
+  SPIEL_CHECK_EQ(game.dragon_y, c + 1);
+  SPIEL_CHECK_EQ(game.getLegalMeepleMoves().size(), 1);
+  SPIEL_CHECK_EQ(game.getLegalMeepleMoves()[0], MEEPLE_POS_SKIP);
+  game.placeMeeple(MEEPLE_POS_SKIP);
+  SPIEL_CHECK_TRUE(offers_dragon_tiles(game));
+  // P1: a monastery ends the start tile's road east (type 2 turned once, its
+  // road west); P1's highwayman on it.
+  PlayTurn(&game, 2, c + 1, c, 1, 3);
+  // P0: a dragon tile with roads ending at a village (type 83) closes that
+  // road west of the start tile: three tiles for P1, unless the dragon eats the
+  // highwayman first.
+  for (bool eaten : {true, false}) {
+    ::Carcassonne turn = game;
+    PlaceTile(&turn, 83, c - 1, c, 0);
+    turn.placeMeeple(MEEPLE_POS_SKIP);
+    SPIEL_CHECK_EQ(turn.current_phase, PHASE_DRAGON);
+    SPIEL_CHECK_EQ(turn.currentPlayer, 0);
+    // From the volcano the only tile next to it is the start tile.
+    SPIEL_CHECK_EQ(turn.getLegalDragonMoves().size(), 1);
+    SPIEL_CHECK_EQ(turn.getLegalDragonMoves()[0], 0);
+    turn.moveDragon(0);
+    // P1 chooses: east onto the highwayman or west onto the dragon tile; not
+    // back south.
+    SPIEL_CHECK_EQ(turn.current_phase, PHASE_DRAGON);
+    SPIEL_CHECK_EQ(turn.currentPlayer, 1);
+    SPIEL_CHECK_EQ(turn.getLegalDragonMoves().size(), 2);
+    SPIEL_CHECK_EQ(turn.getLegalDragonMoves()[0], 1);
+    SPIEL_CHECK_EQ(turn.getLegalDragonMoves()[1], 3);
+    turn.moveDragon(eaten ? 1 : 3);
+    // Every way on is back: the move ends after two steps, the road is scored
+    // and it is P1's turn.
+    SPIEL_CHECK_EQ(turn.current_phase, PHASE_CHANCE);
+    SPIEL_CHECK_EQ(turn.currentPlayer, 1);
+    SPIEL_CHECK_EQ(turn.dragon_x, eaten ? c + 1 : c - 1);
+    SPIEL_CHECK_EQ(turn.dragon_y, c);
+    SPIEL_CHECK_EQ(turn.player_scores[1], eaten ? 0 : 3);
+    SPIEL_CHECK_EQ(turn.holding_meeples[1], MEEPLES_PER_PLAYER);
+    SPIEL_CHECK_EQ(turn.pieces.size(), 0);
+  }
+
+  // Random games: every state checked. The dragon's moves end after six steps
+  // or at a dead end; it eats every kind of piece, and a builder or pig whose
+  // owner loses their last follower there goes home with it.
+  std::mt19937 rng(20261008);
+  int moves = 0;
+  int full_moves = 0;
+  int eaten[4] = {};  // by PieceKind, sent home during a dragon step
+  for (const char* game_string : {kDragonGame, kAllExpansionsGame,
+                                  "carcassonne(inns_cathedrals=on,traders_builders=on,princess_dragon=on)",
+                                  "carcassonne(princess_dragon=tiles)"}) {
+    std::shared_ptr<const Game> random_game = LoadGame(game_string);
+    for (int sim = 0; sim < 15; ++sim) {
+      std::unique_ptr<State> state = random_game->NewInitialState();
+      const ::Carcassonne& core =
+          dynamic_cast<const CarcassonneState&>(*state).UnderlyingState();
+      while (!state->IsTerminal()) {
+        int fast[2];
+        int slow[2];
+        core.getPendingScore(fast);
+        core.getPendingScoreByResolving(slow);
+        SPIEL_CHECK_EQ(fast[0], slow[0]);
+        SPIEL_CHECK_EQ(fast[1], slow[1]);
+        if (state->IsChanceNode()) {
+          // No dragon tile before the dragon is in play.
+          if (core.dragon_rules && !core.dragonInPlay()) {
+            for (const auto& [action, probability] : state->ChanceOutcomes()) {
+              SPIEL_CHECK_FALSE(all_tiles[action].tile.tile_marks & TILE_DRAGON);
+            }
+          }
+          state->ApplyAction(SampleAction(state->ChanceOutcomes(), rng).first);
+          continue;
+        }
+        CheckPieces(*state);
+        CheckDragon(*state);
+        const std::vector<Action> legal = state->LegalActions();
+        if (core.current_phase == PHASE_MEEPLE && core.dragon_rules) {
+          const Placement last = core.getPlacement(core.last_x, core.last_y);
+          if (full_deck[last.id][last.rotation].tile_marks & TILE_VOLCANO) {
+            SPIEL_CHECK_EQ(legal, std::vector<Action>{kMeepleActionOffset});
+          }
+        }
+        const bool stepping = core.current_phase == PHASE_DRAGON;
+        if (stepping && core.dragon_steps == 0) ++moves;
+        int pieces_by_kind[4] = {};
+        for (const Piece& piece : core.pieces) ++pieces_by_kind[piece.kind];
+        state->ApplyAction(legal[std::uniform_int_distribution<int>(0, legal.size() - 1)(rng)]);
+        if (!stepping) continue;
+        if (core.current_phase != PHASE_DRAGON && core.dragon_steps == DRAGON_STEPS) ++full_moves;
+        int left_by_kind[4] = {};
+        for (const Piece& piece : core.pieces) ++left_by_kind[piece.kind];
+        // A step's turn-end scoring sends pieces home too; count only steps
+        // that leave the dragon moving.
+        if (core.current_phase == PHASE_DRAGON) {
+          for (int kind = 0; kind < 4; ++kind) eaten[kind] += pieces_by_kind[kind] - left_by_kind[kind];
+        }
+      }
+      CheckPieces(*state);
+    }
+  }
+  std::cout << "DragonTest: " << moves << " dragon moves, " << full_moves << " of six steps; eaten "
+            << eaten[PIECE_MEEPLE] << " meeples, " << eaten[PIECE_BIG_MEEPLE] << " big meeples, "
+            << eaten[PIECE_BUILDER] << " builders, " << eaten[PIECE_PIG] << " pigs" << std::endl;
+  SPIEL_CHECK_GT(moves, 0);
+  SPIEL_CHECK_GT(full_moves, 0);
+  SPIEL_CHECK_GT(eaten[PIECE_MEEPLE], 0);
+}
+
 void ReturnsMatchScoresTest() {
   absl::BitGen gen;
   std::shared_ptr<const Game> game = LoadGame("carcassonne");
@@ -2294,7 +2591,7 @@ void RotationEquivarianceTest() {
     for (int game = 0; game < 3; ++game) {
       for (const char* game_string : {kAllExpansionsGame, kRiverGame,
                                       kInnsCathedralsGame,
-                                      kTradersBuildersGame}) {
+                                      kTradersBuildersGame, kDragonGame}) {
         renamed_meeple_moves +=
             CheckRotatedTwin({}, k, &rng, &renamed_farmer_moves,
                              &big_meeple_moves, game_string);
@@ -2325,7 +2622,7 @@ void ExpansionOptionsTest() {
     if (expansion != EXP_RIVER) options.push_back({expansion, "tiles"});
     if (bit & RULED_EXPANSIONS) options.push_back({expansion, "on"});
   }
-  SPIEL_CHECK_EQ(static_cast<int>(options.size()), 1 + (EXPANSION_COUNT - 1) + 2);
+  SPIEL_CHECK_EQ(static_cast<int>(options.size()), 1 + (EXPANSION_COUNT - 1) + 3);
   for (const auto& [expansion, mode] : options) {
     uint32_t mask = BASE_ONLY;
     std::string game_string = "carcassonne";
@@ -2631,11 +2928,8 @@ void RiverRulesTest() {
             const bool dealt =
                 (core.expansions & expansionBit(static_cast<Expansion>(expansion))) != 0;
             SPIEL_CHECK_EQ(GlobalValue(obs, cell), dealt ? 1.0f : 0.0f);
-            // Both games deal the river, Inns & Cathedrals and Traders &
-            // Builders, if at all, "on".
-            const bool ruled = dealt && (expansion == EXP_RIVER ||
-                                         expansion == EXP_INNS_CATHEDRALS ||
-                                         expansion == EXP_TRADERS_BUILDERS);
+            // Both games deal every expansion they deal "on".
+            const bool ruled = dealt;
             SPIEL_CHECK_EQ(GlobalValue(obs, cell + 1), ruled ? 1.0f : 0.0f);
           }
           const int in_side = (core.river_heading + 2) % 4;
@@ -2847,9 +3141,10 @@ void ObservationDenominatorTest() {
 
   std::mt19937 rng(20261005);
   for (int g = 0; g < 20; ++g) {
-    // Half of them with the big meeple, which counts 2 in the meeple planes.
-    std::shared_ptr<const Game> game =
-        LoadGame(g % 2 == 0 ? "carcassonne" : kInnsCathedralsGame);
+    // A third with the big meeple, which counts 2 in the meeple planes, and a
+    // third with the dragon.
+    std::shared_ptr<const Game> game = LoadGame(
+        g % 3 == 0 ? "carcassonne" : (g % 3 == 1 ? kInnsCathedralsGame : kDragonGame));
     std::unique_ptr<State> state = game->NewInitialState();
     while (!state->IsTerminal()) {
       if (state->IsChanceNode()) {
@@ -2888,15 +3183,18 @@ void BasicCarcassonneTests() {
   testing::LoadGameTest(kInnsCathedralsGame);
   testing::LoadGameTest("carcassonne(inns_cathedrals=tiles)");
   testing::LoadGameTest(kTradersBuildersGame);
+  testing::LoadGameTest(kDragonGame);
   testing::ChanceOutcomesTest(*LoadGame("carcassonne"));
   testing::ChanceOutcomesTest(*LoadGame(kAllExpansionsGame));
   testing::ChanceOutcomesTest(*LoadGame(kRiverGame));
   testing::ChanceOutcomesTest(*LoadGame(kInnsCathedralsGame));
   testing::ChanceOutcomesTest(*LoadGame(kTradersBuildersGame));
+  testing::ChanceOutcomesTest(*LoadGame(kDragonGame));
   testing::RandomSimTest(*LoadGame("carcassonne"), 50);
   testing::RandomSimTest(*LoadGame(kRiverGame), 20);
   testing::RandomSimTest(*LoadGame(kInnsCathedralsGame), 20);
   testing::RandomSimTest(*LoadGame(kTradersBuildersGame), 20);
+  testing::RandomSimTest(*LoadGame(kDragonGame), 20);
   ObservationTensorSmokeTest();
   ViewTest();
   RelativePerspectiveTest();
@@ -2916,6 +3214,7 @@ void BasicCarcassonneTests() {
   BuilderTest();
   PigTest();
   GoodsTest();
+  DragonTest();
   ReturnsMatchScoresTest();
   ShortGameMaxTurnsTest();
   LastUnplaceableTileTest();

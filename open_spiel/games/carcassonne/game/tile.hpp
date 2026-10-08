@@ -44,9 +44,11 @@ constexpr uint32_t ALL_EXPANSIONS = (1u << EXPANSION_COUNT) - 1;
 // The expansions whose rules the engine plays: these can be dealt "on" (their
 // tiles and their rules) as well as "tiles" (their tiles only). Inns &
 // Cathedrals: the big meeple, inns and cathedrals. Traders & Builders: the
-// builder, the pig and the goods.
-constexpr uint32_t RULED_EXPANSIONS =
-    expansionBit(EXP_INNS_CATHEDRALS) | expansionBit(EXP_TRADERS_BUILDERS) | expansionBit(EXP_RIVER);
+// builder, the pig and the goods. The Princess & the Dragon: so far the dragon
+// alone (volcano and dragon tiles); the princess, the magic portal and the
+// fairy are not played yet, their tiles are plain tiles.
+constexpr uint32_t RULED_EXPANSIONS = expansionBit(EXP_INNS_CATHEDRALS) | expansionBit(EXP_TRADERS_BUILDERS) |
+                                      expansionBit(EXP_RIVER) | expansionBit(EXP_PRINCESS_DRAGON);
 // Those whose tiles make no sense without their rules: dealt, they are "on".
 constexpr uint32_t RULES_REQUIRED_EXPANSIONS = expansionBit(EXP_RIVER);
 
@@ -94,9 +96,11 @@ constexpr uint8_t ROAD_MARKS = MARK_INN;
 // Marks on the whole tile. The cathedral needs none: it is one tile type,
 // CATHEDRAL_TYPE.
 constexpr uint8_t TILE_MONASTERY = 1 << 0;
-constexpr uint8_t TILE_DRAGON = 1 << 1;   // The Princess & the Dragon; no rule yet
+// The Princess & the Dragon: a dragon tile sets the dragon moving, a volcano
+// brings it there (Carcassonne::dragon_rules).
+constexpr uint8_t TILE_DRAGON = 1 << 1;
 constexpr uint8_t TILE_VOLCANO = 1 << 2;
-constexpr uint8_t TILE_PORTAL = 1 << 3;   // magic portal
+constexpr uint8_t TILE_PORTAL = 1 << 3;   // magic portal; no rule yet
 constexpr uint8_t ALL_TILE_MARKS = TILE_MONASTERY | TILE_DRAGON | TILE_VOLCANO | TILE_PORTAL;
 
 // MARK_* bits per side, in the order N, E, S, W.
@@ -515,6 +519,17 @@ constexpr int tileCountIn(uint32_t expansions) {
     int total = 0;
     for (const TileBlueprint &bp : all_tiles) {
         if (expansions & expansionBit(bp.expansion)) {
+            total += bp.count;
+        }
+    }
+    return total;
+}
+
+// Of those, the tiles carrying tile mark `mark` (TILE_*).
+constexpr int tileCountWithMark(uint32_t expansions, uint8_t mark) {
+    int total = 0;
+    for (const TileBlueprint &bp : all_tiles) {
+        if ((expansions & expansionBit(bp.expansion)) && (bp.tile.tile_marks & mark)) {
             total += bp.count;
         }
     }

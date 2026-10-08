@@ -30,11 +30,15 @@ inline constexpr int kTileActionCount = VIEW_SIZE * VIEW_SIZE * 4;
 // sides 0-3, then the pig on the fields of half-edges 0-7.
 inline constexpr int kMeepleActionCount = MEEPLE_POS_COUNT;
 inline constexpr int kMeepleActionOffset = kTileActionCount;
-inline constexpr int kNumDistinctPlayerActions = kTileActionCount + kMeepleActionCount;
+// One step of the dragon (The Princess & the Dragon) to the side N, E, S or W
+// of its tile.
+inline constexpr int kDragonActionCount = 4;
+inline constexpr int kDragonActionOffset = kMeepleActionOffset + kMeepleActionCount;
+inline constexpr int kNumDistinctPlayerActions = kDragonActionOffset + kDragonActionCount;
 // The conv policy head of alpha_zero_torch (model.cc) reads at most
-// kMaxExtraActions = 64 actions beyond the tile placements; with more it
-// silently falls back to the dense head.
-static_assert(kMeepleActionCount <= 64, "alpha_zero_torch's conv policy head would not fit");
+// kMaxExtraActions = 64 actions beyond the tile placements, from the focus cell
+// (kLastPlacedPlane); with more it silently falls back to the dense head.
+static_assert(kMeepleActionCount + kDragonActionCount <= 64, "alpha_zero_torch's conv policy head would not fit");
 
 // Observation: spatial planes for what is on the board, then one plane that
 // is not spatial. Its first kGlobalFeatures cells hold a vector of board-wide
@@ -60,6 +64,8 @@ inline constexpr int kSideLinkPlane = kMonasteryPlane + 1;
 // Where the tile in hand can go.
 inline constexpr int kFrontierPlane = kSideLinkPlane + kNumSidePairs;
 inline constexpr int kLegalPlacementPlane = kFrontierPlane + 1; // one per rotation
+// The focus cell, which the actions beyond the tile placements are about: the
+// tile just placed (the meeple moves), or the dragon's tile in PHASE_DRAGON.
 inline constexpr int kLastPlacedPlane = kLegalPlacementPlane + kLegalPlacementPlanes;
 // The feature each city or road side of a tile belongs to, one plane per side
 // for each quantity. Summing them along a feature needs the whole feature in view,
@@ -111,11 +117,29 @@ inline constexpr int kFieldOpponentPigPlane = kFieldMyPigPlane + HALF_EDGE_COUNT
 // goods of that kind in the table (9, 6, 5). Whoever places the tile that
 // completes the city takes them.
 inline constexpr int kFeatureGoodsPlane = kFieldOpponentPigPlane + HALF_EDGE_COUNT;
-inline constexpr int kSpatialPlanes = kFeatureGoodsPlane + 4 * GOODS_KINDS;
+// The tile each piece stands on, which the feature planes do not tell (they
+// show a feature's pieces on every tile of it) and the dragon eats by. On my /
+// the opponent's meeple's tile, its strength / 2 (the big meeple 1, the meeple
+// 1/2) on its spot: every side of its road or city on that tile, the monastery,
+// every half-edge of its field or the inner field, as in the meeple spots
+// (plane + 0..3 sides, + 4 monastery, + 5..12 half-edges, + 13 inner field).
+inline constexpr int kPieceSpotPlanes = MEEPLE_POS_INNER_FIELD + 1;
+inline constexpr int kMyPiecePlane = kFeatureGoodsPlane + 4 * GOODS_KINDS;
+inline constexpr int kOpponentPiecePlane = kMyPiecePlane + kPieceSpotPlanes;
+// 1 on the tile my / the opponent's builder, and pig, stands on.
+inline constexpr int kMyBuilderTilePlane = kOpponentPiecePlane + kPieceSpotPlanes;
+inline constexpr int kOpponentBuilderTilePlane = kMyBuilderTilePlane + 1;
+inline constexpr int kMyPigTilePlane = kOpponentBuilderTilePlane + 1;
+inline constexpr int kOpponentPigTilePlane = kMyPigTilePlane + 1;
+// The dragon (The Princess & the Dragon): its tile, and in PHASE_DRAGON the
+// tiles of the current move, where it may not go back.
+inline constexpr int kDragonPlane = kOpponentPigTilePlane + 1;
+inline constexpr int kDragonVisitedPlane = kDragonPlane + 1;
+inline constexpr int kSpatialPlanes = kDragonVisitedPlane + 1;
 inline constexpr int kGlobalFeaturePlane = kSpatialPlanes;
 inline constexpr int kObservationPlanes = kGlobalFeaturePlane + 1;
 static_assert(kLastPlacedPlane == 33);
-static_assert(kSpatialPlanes == 150);
+static_assert(kSpatialPlanes == 184);
 
 // Offsets in the global vector, all from the observing player's side.
 inline constexpr int kGlobalMyScore = 0;           // clip(/100)
@@ -144,8 +168,8 @@ inline constexpr int kGlobalIsPlayer0 = kGlobalLegalPlacements + 1;
 inline constexpr int kGlobalMyFieldPending = kGlobalIsPlayer0 + 1;
 inline constexpr int kGlobalOpponentFieldPending = kGlobalMyFieldPending + 1;
 // Meeples on the board as farmers, the big meeple not included, / 7. They
-// never come back, so with the meeples held they also give how many are out on
-// features and will return.
+// never come back (unless the dragon eats them), so with the meeples held they
+// also give how many are out on features and will return.
 inline constexpr int kGlobalMyFarmers = kGlobalOpponentFieldPending + 1;
 inline constexpr int kGlobalOpponentFarmers = kGlobalMyFarmers + 1;
 // Each expansion other than the base, in Expansion order (inns_cathedrals,
@@ -179,8 +203,18 @@ inline constexpr int kGlobalOpponentPig = kGlobalMyPig + 1;
 // the table; 0 without their rules.
 inline constexpr int kGlobalMyGoods = kGlobalOpponentPig + 1;
 inline constexpr int kGlobalOpponentGoods = kGlobalMyGoods + GOODS_KINDS;
-inline constexpr int kGlobalFeatures = kGlobalOpponentGoods + GOODS_KINDS;
-static_assert(kGlobalFeatures == 86 + 2 * CANONICAL_TILE_TYPE_COUNT);
+// The dragon: in play (after the first volcano), moving (PHASE_DRAGON), the
+// steps it has left in this move / 6, and whether this turn is the observing
+// player's: in PHASE_DRAGON the players decide the steps in turn, so the one
+// deciding is not always the one who placed the tile.
+inline constexpr int kGlobalDragonInPlay = kGlobalOpponentGoods + GOODS_KINDS;
+inline constexpr int kGlobalDragonPhase = kGlobalDragonInPlay + 1;
+inline constexpr int kGlobalDragonStepsLeft = kGlobalDragonPhase + 1;
+inline constexpr int kGlobalMyTurn = kGlobalDragonStepsLeft + 1;
+// Legal dragon steps, N, E, S, W, in action order.
+inline constexpr int kGlobalLegalDragon = kGlobalMyTurn + 1;
+inline constexpr int kGlobalFeatures = kGlobalLegalDragon + kDragonActionCount;
+static_assert(kGlobalFeatures == 94 + 2 * CANONICAL_TILE_TYPE_COUNT);
 static_assert(kGlobalFeatures <= VIEW_SIZE * VIEW_SIZE);
 inline constexpr int kObservationTensorSize = kObservationPlanes * VIEW_SIZE * VIEW_SIZE;
 
@@ -240,7 +274,11 @@ class CarcassonneGame : public Game {
     std::vector<int> ObservationTensorShape() const override { return {kObservationPlanes, VIEW_SIZE, VIEW_SIZE}; }
     int MaxGameLength() const override {
         const int deck_size = deckSizeOf(expansions_);
-        return max_turns_ > 0 ? (deck_size - 1) + 2 * max_turns_ : (deck_size - 1) * 3;
+        // Each dragon tile adds up to DRAGON_STEPS steps of the dragon.
+        const int dragon_steps = (rules_ & expansionBit(EXP_PRINCESS_DRAGON))
+                                     ? DRAGON_STEPS * tileCountWithMark(expansions_, TILE_DRAGON)
+                                     : 0;
+        return (max_turns_ > 0 ? (deck_size - 1) + 2 * max_turns_ : (deck_size - 1) * 3) + dragon_steps;
     }
     int MaxChanceNodesInHistory() const override { return deckSizeOf(expansions_) - 1; }
 

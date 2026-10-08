@@ -58,9 +58,23 @@ void DeckModule::getAvailableDraws(ChanceBranch *out, int &count) const {
             return;
         }
     }
+    const int drawable = drawableRemaining();
     for (int type_id = 1; type_id <= CANONICAL_TILE_TYPE_COUNT; ++type_id) {
-        if (type_counts[type_id] > 0) {
-            out[count++] = {type_id, static_cast<double>(type_counts[type_id]) / total_remaining};
+        if (type_counts[type_id] > 0 && !(hold_dragon_tiles && (all_tiles[type_id - 1].tile.tile_marks & TILE_DRAGON))) {
+            out[count++] = {type_id, static_cast<double>(type_counts[type_id]) / drawable};
         }
     }
+}
+
+int DeckModule::drawableRemaining() const {
+    if (!hold_dragon_tiles) {
+        return total_remaining;
+    }
+    int held = 0;
+    for (int type_id = 1; type_id <= CANONICAL_TILE_TYPE_COUNT; ++type_id) {
+        if (all_tiles[type_id - 1].tile.tile_marks & TILE_DRAGON) {
+            held += type_counts[type_id];
+        }
+    }
+    return total_remaining - held;
 }

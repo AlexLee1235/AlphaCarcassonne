@@ -169,6 +169,8 @@ std::vector<std::string> PlaneNames() {
   names[kOpponentPigTilePlane] = "opponent_pig_tile";
   names[kDragonPlane] = "dragon";
   names[kDragonVisitedPlane] = "dragon_visited";
+  names[kLegalPortalCellPlane] = "legal_portal_cell";
+  names[kLegalPrincessCellPlane] = "legal_princess_cell";
   names[kGlobalFeaturePlane] = "global_vector";
   return names;
 }
@@ -251,6 +253,8 @@ std::vector<std::string> GlobalFeatureNames() {
   for (int side = 0; side < kDragonActionCount; ++side) {
     names[kGlobalLegalDragon + side] = std::string("legal_dragon_") + "NESW"[side];
   }
+  names[kGlobalSpotPortal] = "spot_phase_portal";
+  names[kGlobalSpotPrincess] = "spot_phase_princess";
   return names;
 }
 

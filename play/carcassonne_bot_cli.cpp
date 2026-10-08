@@ -335,7 +335,7 @@ class CarcassonneBotCli {
         }
 
         if (mirror_.current_phase == PHASE_TILE) {
-            if (action < 0 || action >= open_spiel::carcassonne::kTileActionCount) {
+            if (!open_spiel::carcassonne::IsTileAction(action)) {
                 throw std::runtime_error("Bot did not return a tile placement action.");
             }
             // The action names a cell of the view; the reply gives the board cell.

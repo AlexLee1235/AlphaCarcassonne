@@ -12,7 +12,7 @@
 
 `tiles/` 裡的圖已經照這個順序編好號，填表時照著 type 順序一列一列往下填即可。
 
-目前除了河流、旅館與大教堂、商人與建築師、公主與龍的龍（§8）之外**只做牌的形狀**，擴充的規則一律不算：公主、魔法門、仙女都還沒有效果。
+目前除了河流、旅館與大教堂、商人與建築師、公主與龍的龍、公主、魔法門（§8）之外**只做牌的形狀**，擴充的規則一律不算：仙女還沒有效果。
 
 ---
 
@@ -262,8 +262,8 @@ carcassonne(inns_cathedrals=on,traders_builders=on,river=on,princess_dragon=on)
   - 河流：`off`／`on`，沒有只發牌的選項。
   - 旅館與大教堂：`off`／`tiles`／`on`。`on` = 大米寶＋旅館＋大教堂；`tiles` 的旅館、大教堂只是一般的路和城。
   - 商人與建築師：`off`／`tiles`／`on`。`on` = 建築師＋小豬＋貨物。
-  - 公主與龍：`off`／`tiles`／`on`。`on` 目前只有龍（火山＋龍牌）；公主、魔法門、仙女的符號沒有效果。
-- **觀測和動作的維度不隨參數改變**：global vector 為牌表裡的每一種牌都留了位置（86 + 2 × 牌種數），沒發的牌種一律是 0。
+  - 公主與龍：`off`／`tiles`／`on`。`on` 目前是龍（火山＋龍牌）、公主、魔法門；仙女還沒做。
+- **觀測和動作的維度不隨參數改變**：global vector 為牌表裡的每一種牌都留了位置（96 + 2 × 牌種數），沒發的牌種一律是 0。
   所以**牌表每加一種牌，維度就變一次**。等牌表定案再開始訓練；舊的 checkpoint 也不能載入，`carcassonne_bot_cli` 會直接報錯。
 - 河流規則（`river=on`）：河源取代起始牌放在中央，基本版的起始牌拿掉不用（牌組 72 + 12 − 1 = 83 張）；先抽完河流牌，湖一定最後，之後才抽一般牌。
   每張河流牌都要接在河的出口上，而且連續兩個彎不能往同一邊轉（中間隔著直流也算），所以河只會在兩個方向間交替、不會流回自己旁邊。
@@ -291,6 +291,13 @@ carcassonne(inns_cathedrals=on,traders_builders=on,river=on,princess_dragon=on)
   放磚者先、雙方輪流每人決定一步（`move_dragon(dir=N)`，4 個動作），不能走回本次走過的格；走進的每一格，所有棋子都被吃掉回到供給
   （大米寶、建築師、小豬也是；最後一個 follower 被吃，建築師、小豬跟著回去）。龍走完才計分。
   規則寫在 `game/game.cpp` 的 `placeMeeple`、`moveDragon`、`eatPiecesAt`、`finishTurn`，抽牌在 `DeckModule`。
+- 魔法門（`princess_dragon=on`）：放下魔法門磚（`TILE_PORTAL`）的回合，meeple 或大米寶可以改放到任何一張之前的磚上，
+  那個城／路／田／修道院要沒人、沒完成（這張磚剛完成的也算），龍那格不行；建築師、小豬不行。
+  先選格（每格動作的 plane 4，`portal(x=, y=)`），那格不只一個選項時再選位置（`PHASE_SPOT`，沿用 meeple 動作）。
+- 公主（`princess_dragon=on`）：公主磚上有公主符號（`MARK_PRINCESS`）的那座城，放下後若有騎士，可以改成把其中一個（雙方的都可以）送回供給，
+  這回合就不放棋子；他在那座城沒有 follower 了，建築師也回去。移除在計分之前。
+  先選格（plane 5，`princess(x=, y=)`），那格有好幾個騎士時再選（`remove_knight(edge=N)`）。
+  兩者都寫在 `game/game.cpp` 的 `getLegalPortalCells`、`getLegalPrincessCells`、`chooseCell`、`chooseSpot`。
 - 盤面：牌變多，對局也變大。引擎只在 `VIEW_SIZE`（目前 21）格的視窗裡放磚，視窗每手置中在已放的磚上。
   填完後量全開時要多大的視窗，再決定 `VIEW_SIZE` 要不要加大（`BOARD_SIZE` 只要容得下視窗能移到的地方）：
   ```bash

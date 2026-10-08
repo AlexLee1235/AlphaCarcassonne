@@ -180,6 +180,8 @@ Carcassonne::Carcassonne(int max_turns, int start_rotation, uint32_t expansions,
         holding_pigs[0] = holding_pigs[1] = 1;
     }
     dragon_rules = (this->rules & expansionBit(EXP_PRINCESS_DRAGON)) != 0;
+    portal_rules = dragon_rules;
+    princess_rules = dragon_rules;
     deck.hold_dragon_tiles = dragon_rules;
     // With the river the spring starts the game instead of the base start tile,
     // which the deck leaves out.
@@ -298,14 +300,34 @@ MeepleMoves Carcassonne::getLegalMeepleMoves() const {
     return ret;
 }
 
-void Carcassonne::getLastTileSideGroups(int8_t groups[4]) const {
-    for (int i = 0; i < 4; ++i) {
-        groups[i] = -1;
-    }
-    if (last_x < 0 || last_y < 0) {
+void Carcassonne::getFocusSpotGroups(int8_t sides[4], int8_t half_edges[HALF_EDGE_COUNT]) const {
+    std::fill(sides, sides + 4, -1);
+    std::fill(half_edges, half_edges + HALF_EDGE_COUNT, -1);
+    if (current_phase != PHASE_MEEPLE && current_phase != PHASE_SPOT) {
         return;
     }
-    const Placement &placement = board.board[last_y][last_x];
+    const int x = focusX();
+    const int y = focusY();
+    if (current_phase == PHASE_SPOT && spot_choice == SPOT_PRINCESS) {
+        // A piece is named by its spot, the lowest of its spots.
+        for (const Piece &piece : pieces) {
+            if (piece.x != x || piece.y != y) {
+                continue;
+            }
+            for (int side = 0; side < 4; ++side) {
+                if (piece.spots >> side & 1) {
+                    sides[side] = piece.spot;
+                }
+            }
+            for (int e = 0; e < HALF_EDGE_COUNT; ++e) {
+                if (piece.spots >> (MEEPLE_POS_FIELD + e) & 1) {
+                    half_edges[e] = static_cast<int8_t>(piece.spot - MEEPLE_POS_FIELD);
+                }
+            }
+        }
+        return;
+    }
+    const Placement &placement = board.board[y][x];
     const Tile &tile = full_deck[placement.id][placement.rotation];
     int roots[4];
     for (int i = 0; i < 4; ++i) {
@@ -313,25 +335,15 @@ void Carcassonne::getLastTileSideGroups(int8_t groups[4]) const {
             continue;
         }
         roots[i] = features.featureMap.find(features.edgeIndex(placement.id, i));
-        groups[i] = static_cast<int8_t>(i);
+        sides[i] = static_cast<int8_t>(i);
         for (int j = 0; j < i; ++j) {
-            if (groups[j] != -1 && roots[j] == roots[i]) {
-                groups[i] = groups[j];
+            if (sides[j] != -1 && roots[j] == roots[i]) {
+                sides[i] = sides[j];
                 break;
             }
         }
     }
-}
-
-void Carcassonne::getLastTileFieldGroups(int8_t groups[HALF_EDGE_COUNT]) const {
-    for (int e = 0; e < HALF_EDGE_COUNT; ++e) {
-        groups[e] = -1;
-    }
-    if (last_x < 0 || last_y < 0) {
-        return;
-    }
-    const Placement &placement = board.board[last_y][last_x];
-    fields.getHalfEdgeGroups(placement.id, full_deck[placement.id][placement.rotation], groups);
+    fields.getHalfEdgeGroups(placement.id, tile, half_edges);
 }
 
 void Carcassonne::getPendingScore(int pending[2]) const {
@@ -359,7 +371,8 @@ void Carcassonne::getPendingScoreByResolving(int pending[2]) const {
         return;
     }
     Carcassonne copy = *this;
-    if (copy.current_phase == PHASE_MEEPLE || copy.current_phase == PHASE_DRAGON) {
+    if (copy.current_phase == PHASE_MEEPLE || copy.current_phase == PHASE_DRAGON ||
+        copy.current_phase == PHASE_SPOT) {
         // What the end of the turn settles whatever the moves are.
         copy.features.settleAfterPlaceMeeple(last_x, last_y, copy.board, copy.player_scores, copy.holding_meeples,
                                              copy.holding_big_meeples, copy.holding_builders);
@@ -371,42 +384,229 @@ void Carcassonne::getPendingScoreByResolving(int pending[2]) const {
     pending[1] = copy.player_scores[1] - player_scores[1];
 }
 
-void Carcassonne::placeMeeple(int pos) {
-    int x = last_x;
-    int y = last_y;
-    if (pos != MEEPLE_POS_SKIP) {
-        const PieceKind kind = isBuilderPos(pos)       ? PIECE_BUILDER
-                               : isPigPos(pos)         ? PIECE_PIG
-                               : isBigMeeplePos(pos)   ? PIECE_BIG_MEEPLE
-                                                       : PIECE_MEEPLE;
-        pieces.push_back({static_cast<int8_t>(x), static_cast<int8_t>(y), board.board[y][x].id,
-                          static_cast<int8_t>(meepleSpot(pos)), static_cast<uint8_t>(currentPlayer), kind});
+uint16_t Carcassonne::spotsOf(int x, int y, int spot) const {
+    if (spot == MEEPLE_POS_MONASTERY || spot == MEEPLE_POS_INNER_FIELD) {
+        return static_cast<uint16_t>(1u << spot);
     }
-    if (isBuilderPos(pos)) {
+    const Placement &placement = board.board[y][x];
+    const Tile &tile = full_deck[placement.id][placement.rotation];
+    uint16_t spots = 0;
+    if (spot < MEEPLE_POS_MONASTERY) {
+        const int root = features.featureMap.find(features.edgeIndex(placement.id, spot));
+        for (int side = 0; side < 4; ++side) {
+            if (isFeatureEdge(tile.edge[side]) && features.featureMap.find(features.edgeIndex(placement.id, side)) == root) {
+                spots |= static_cast<uint16_t>(1u << side);
+            }
+        }
+        return spots;
+    }
+    const int root = fields.fieldMap.find(fields.fieldIndex(placement.id, tile.field[spot - MEEPLE_POS_FIELD]));
+    for (int e = 0; e < HALF_EDGE_COUNT; ++e) {
+        if (tile.field[e] != -1 && fields.fieldMap.find(fields.fieldIndex(placement.id, tile.field[e])) == root) {
+            spots |= static_cast<uint16_t>(1u << (MEEPLE_POS_FIELD + e));
+        }
+    }
+    return spots;
+}
+
+void Carcassonne::putPiece(int x, int y, int pos) {
+    const int spot = meepleSpot(pos);
+    const PieceKind kind = isBuilderPos(pos)       ? PIECE_BUILDER
+                           : isPigPos(pos)         ? PIECE_PIG
+                           : isBigMeeplePos(pos)   ? PIECE_BIG_MEEPLE
+                                                   : PIECE_MEEPLE;
+    const Placement &placement = board.board[y][x];
+    const Tile &tile = full_deck[placement.id][placement.rotation];
+    pieces.push_back({static_cast<int8_t>(x), static_cast<int8_t>(y), placement.id, static_cast<int8_t>(spot),
+                      static_cast<uint8_t>(currentPlayer), kind, spotsOf(x, y, spot)});
+    if (kind == PIECE_BUILDER) {
         holding_builders[currentPlayer]--;
-        features.placeBuilder(x, y, meepleSpot(pos), currentPlayer, board);
-    } else if (isPigPos(pos)) {
+        features.placeBuilder(x, y, spot, currentPlayer, board);
+    } else if (kind == PIECE_PIG) {
         // Like a farmer, a pig is never settled or returned.
         holding_pigs[currentPlayer]--;
-        const Placement &placement = board.board[y][x];
-        fields.placePig(placement.id, full_deck[placement.id][placement.rotation], pos - MEEPLE_POS_PIG, currentPlayer);
-    } else if (pos != MEEPLE_POS_SKIP) {
-        const bool big = isBigMeeplePos(pos);
-        const int spot = meepleSpot(pos);
+        fields.placePig(placement.id, tile, pos - MEEPLE_POS_PIG, currentPlayer);
+    } else {
+        const bool big = kind == PIECE_BIG_MEEPLE;
         (big ? holding_big_meeples : holding_meeples)[currentPlayer]--;
         if (spot == MEEPLE_POS_MONASTERY) {
             monasteries.placeMeeple(x, y, currentPlayer, big, board);
         } else if (spot >= MEEPLE_POS_FIELD) {
             // A farmer is never settled or returned.
-            const Placement &placement = board.board[y][x];
-            fields.placeFarmer(placement.id, full_deck[placement.id][placement.rotation], spot, currentPlayer, big);
+            fields.placeFarmer(placement.id, tile, spot, currentPlayer, big);
         } else {
             features.placeMeeple(x, y, spot, currentPlayer, big, board);
         }
     }
+}
 
+void Carcassonne::placeMeeple(int pos) {
+    if (pos != MEEPLE_POS_SKIP) {
+        putPiece(last_x, last_y, pos);
+    }
+    endPiecePhase();
+}
+
+int Carcassonne::princessCityRoot() const {
+    if (!princess_rules || last_x < 0) {
+        return -1;
+    }
+    const Placement &placement = board.board[last_y][last_x];
+    const Tile &tile = full_deck[placement.id][placement.rotation];
+    for (int side = 0; side < 4; ++side) {
+        if (tile.edge[side] == CITY && (tile.marks[side] & MARK_PRINCESS)) {
+            return features.featureMap.find(features.edgeIndex(placement.id, side));
+        }
+    }
+    return -1;
+}
+
+FixedVector<int, MAX_PIECES> Carcassonne::princessKnightsAt(int x, int y) const {
+    FixedVector<int, MAX_PIECES> ret;
+    const int root = princessCityRoot();
+    if (root < 0) {
+        return ret;
+    }
+    for (int i = 0; i < pieces.size(); ++i) {
+        const Piece &p = pieces[i];
+        if (p.x == x && p.y == y && (p.kind == PIECE_MEEPLE || p.kind == PIECE_BIG_MEEPLE) &&
+            p.spot < MEEPLE_POS_MONASTERY && features.featureMap.find(features.edgeIndex(p.tile_id, p.spot)) == root) {
+            ret.push_back(i);
+        }
+    }
+    return ret;
+}
+
+MeepleMoves Carcassonne::portalMovesAt(int x, int y) const {
+    MeepleMoves ret;
+    const bool meeple = holding_meeples[currentPlayer] > 0;
+    const bool big = holding_big_meeples[currentPlayer] > 0;
+    const Placement &placement = board.board[y][x];
+    // No piece shares a tile with the dragon.
+    if ((!meeple && !big) || placement.id == 0 || (x == dragon_x && y == dragon_y)) {
+        return ret;
+    }
+    const Tile &tile = full_deck[placement.id][placement.rotation];
+    // As on the tile just placed, but nothing complete: no closed road or city
+    // (even one the tile just placed closed), no monastery with all 8 tiles
+    // round it. Fields are never complete.
+    MeepleMoves features_free;
+    features.getLegalMeepleMoves(features_free, x, y, board, tile);
+    MeepleMoves spots;
+    for (int side : features_free) {
+        if (featureAt(placement.id, side).opens > 0) {
+            spots.push_back(side);
+        }
+    }
+    if (tile.monastery && monasteries.ownerAt(x, y) == -1 && board.count3x3(x, y) < 9) {
+        spots.push_back(MEEPLE_POS_MONASTERY);
+    }
+    fields.getLegalFarmerMoves(spots, placement.id, tile);
+    for (int i = 0; meeple && i < spots.size(); ++i) {
+        ret.push_back(spots[i]);
+    }
+    for (int i = 0; big && i < spots.size(); ++i) {
+        ret.push_back(spots[i] + MEEPLE_POS_BIG);
+    }
+    return ret;
+}
+
+Cells Carcassonne::getLegalPortalCells() const {
+    Cells ret;
+    if (current_phase != PHASE_MEEPLE || !portal_rules) {
+        return ret;
+    }
+    const Placement &last = board.board[last_y][last_x];
+    if (!(full_deck[last.id][last.rotation].tile_marks & TILE_PORTAL)) {
+        return ret;
+    }
+    for (int y = tiles_y0; y <= tiles_y1; ++y) {
+        for (int x = tiles_x0; x <= tiles_x1; ++x) {
+            if ((x != last_x || y != last_y) && portalMovesAt(x, y).size() > 0) {
+                ret.push_back({static_cast<int8_t>(x), static_cast<int8_t>(y)});
+            }
+        }
+    }
+    return ret;
+}
+
+Cells Carcassonne::getLegalPrincessCells() const {
+    Cells ret;
+    const int root = current_phase == PHASE_MEEPLE ? princessCityRoot() : -1;
+    if (root < 0) {
+        return ret;
+    }
+    for (const Piece &p : pieces) {
+        if ((p.kind != PIECE_MEEPLE && p.kind != PIECE_BIG_MEEPLE) || p.spot >= MEEPLE_POS_MONASTERY ||
+            features.featureMap.find(features.edgeIndex(p.tile_id, p.spot)) != root) {
+            continue;
+        }
+        const std::pair<int8_t, int8_t> cell = {p.x, p.y};
+        if (std::find(ret.begin(), ret.end(), cell) == ret.end()) {
+            ret.push_back(cell);
+        }
+    }
+    std::sort(ret.begin(), ret.end(), [](const auto &a, const auto &b) {
+        return std::make_pair(a.second, a.first) < std::make_pair(b.second, b.first);
+    });
+    return ret;
+}
+
+void Carcassonne::chooseCell(SpotChoice choice, int x, int y) {
+    if (choice == SPOT_PORTAL) {
+        const MeepleMoves moves = portalMovesAt(x, y);
+        if (moves.size() == 1) {
+            putPiece(x, y, moves[0]);
+            endPiecePhase();
+            return;
+        }
+    } else {
+        const FixedVector<int, MAX_PIECES> knights = princessKnightsAt(x, y);
+        if (knights.size() == 1) {
+            sendHome(knights[0]);
+            endPiecePhase();
+            return;
+        }
+    }
+    spot_choice = choice;
+    spot_x = x;
+    spot_y = y;
+    current_phase = PHASE_SPOT;
+}
+
+MeepleMoves Carcassonne::getLegalSpotMoves() const {
+    if (current_phase != PHASE_SPOT) {
+        return {};
+    }
+    if (spot_choice == SPOT_PORTAL) {
+        return portalMovesAt(spot_x, spot_y);
+    }
+    MeepleMoves ret;
+    for (int index : princessKnightsAt(spot_x, spot_y)) {
+        ret.push_back(pieces[index].spot);
+    }
+    std::sort(ret.begin(), ret.end());
+    return ret;
+}
+
+void Carcassonne::chooseSpot(int pos) {
+    if (spot_choice == SPOT_PORTAL) {
+        putPiece(spot_x, spot_y, pos);
+    } else {
+        for (int index : princessKnightsAt(spot_x, spot_y)) {
+            if (pieces[index].spot == pos) {
+                sendHome(index);
+                break;
+            }
+        }
+    }
+    endPiecePhase();
+}
+
+void Carcassonne::endPiecePhase() {
+    spot_x = spot_y = -1;
     // A dragon tile sets the dragon moving before the turn is scored.
-    const Placement &placed = board.board[y][x];
+    const Placement &placed = board.board[last_y][last_x];
     if (dragon_rules && dragonInPlay() && (full_deck[placed.id][placed.rotation].tile_marks & TILE_DRAGON)) {
         dragon_visited = {};
         dragon_visited.push_back({static_cast<int8_t>(dragon_x), static_cast<int8_t>(dragon_y)});
@@ -495,6 +695,50 @@ Piece Carcassonne::removePiece(int index) {
     return piece;
 }
 
+void Carcassonne::sendHome(int index) {
+    const Piece gone = removePiece(index);
+    if (gone.kind != PIECE_MEEPLE && gone.kind != PIECE_BIG_MEEPLE) {
+        return;
+    }
+    // The builder (on a road or city) and the pig (on a field) stay only
+    // with a follower of their owner.
+    const int owner = gone.owner;
+    const Tile &tile = full_deck[gone.tile_id][board.board[gone.y][gone.x].rotation];
+    if (gone.spot < MEEPLE_POS_MONASTERY) {
+        const int root = features.featureMap.find(features.edgeIndex(gone.tile_id, gone.spot));
+        if (features.featureMap.getSetData(root).meeple_count[owner] > 0) {
+            return;
+        }
+        for (int i = 0; i < pieces.size(); ++i) {
+            const Piece &p = pieces[i];
+            if (p.kind == PIECE_BUILDER && p.owner == owner &&
+                features.featureMap.find(features.edgeIndex(p.tile_id, p.spot)) == root) {
+                removePiece(i);
+                return;
+            }
+        }
+    } else if (gone.spot >= MEEPLE_POS_FIELD) {
+        const int local =
+            gone.spot == MEEPLE_POS_INNER_FIELD ? tile.innerField() : tile.field[gone.spot - MEEPLE_POS_FIELD];
+        const int root = fields.fieldMap.find(fields.fieldIndex(gone.tile_id, local));
+        if (fields.fieldMap.getSetData(root).farmer_count[owner] > 0) {
+            return;
+        }
+        for (int i = 0; i < pieces.size(); ++i) {
+            const Piece &p = pieces[i];
+            if (p.kind != PIECE_PIG || p.owner != owner) {
+                continue;
+            }
+            const Tile &pig_tile = full_deck[p.tile_id][board.board[p.y][p.x].rotation];
+            if (fields.fieldMap.find(fields.fieldIndex(p.tile_id, pig_tile.field[p.spot - MEEPLE_POS_FIELD])) ==
+                root) {
+                removePiece(i);
+                return;
+            }
+        }
+    }
+}
+
 void Carcassonne::eatPiecesAt(int x, int y) {
     while (true) {
         int index = -1;
@@ -506,47 +750,7 @@ void Carcassonne::eatPiecesAt(int x, int y) {
         if (index < 0) {
             return;
         }
-        const Piece eaten = removePiece(index);
-        if (eaten.kind != PIECE_MEEPLE && eaten.kind != PIECE_BIG_MEEPLE) {
-            continue;
-        }
-        // The builder (on a road or city) and the pig (on a field) stay only
-        // with a follower of their owner.
-        const int owner = eaten.owner;
-        const Tile &tile = full_deck[eaten.tile_id][board.board[eaten.y][eaten.x].rotation];
-        if (eaten.spot < MEEPLE_POS_MONASTERY) {
-            const int root = features.featureMap.find(features.edgeIndex(eaten.tile_id, eaten.spot));
-            if (features.featureMap.getSetData(root).meeple_count[owner] > 0) {
-                continue;
-            }
-            for (int i = 0; i < pieces.size(); ++i) {
-                const Piece &p = pieces[i];
-                if (p.kind == PIECE_BUILDER && p.owner == owner &&
-                    features.featureMap.find(features.edgeIndex(p.tile_id, p.spot)) == root) {
-                    removePiece(i);
-                    break;
-                }
-            }
-        } else if (eaten.spot >= MEEPLE_POS_FIELD) {
-            const int local =
-                eaten.spot == MEEPLE_POS_INNER_FIELD ? tile.innerField() : tile.field[eaten.spot - MEEPLE_POS_FIELD];
-            const int root = fields.fieldMap.find(fields.fieldIndex(eaten.tile_id, local));
-            if (fields.fieldMap.getSetData(root).farmer_count[owner] > 0) {
-                continue;
-            }
-            for (int i = 0; i < pieces.size(); ++i) {
-                const Piece &p = pieces[i];
-                if (p.kind != PIECE_PIG || p.owner != owner) {
-                    continue;
-                }
-                const Tile &pig_tile = full_deck[p.tile_id][board.board[p.y][p.x].rotation];
-                if (fields.fieldMap.find(fields.fieldIndex(p.tile_id, pig_tile.field[p.spot - MEEPLE_POS_FIELD])) ==
-                    root) {
-                    removePiece(i);
-                    break;
-                }
-            }
-        }
+        sendHome(index);
     }
 }
 

@@ -129,11 +129,13 @@ def test_bot_cli_reports_latest_observation_shape() -> None:
     finally:
         cli.close()
 
-    # 184 spatial planes and one global plane; 41 meeple moves and 4 dragon steps.
-    # The observation and the tile actions cover the view, not the whole board.
-    assert response["observation_shape"] == [185, BOARD_SIZE, BOARD_SIZE]
-    assert response["observation_tensor_size"] == 185 * BOARD_SIZE * BOARD_SIZE
-    assert response["num_distinct_actions"] == BOARD_SIZE * BOARD_SIZE * 4 + 41 + 4
+    # 186 spatial planes and one global plane; six actions per cell (four tile
+    # rotations, a magic portal's cell, the princess's cell), 41 meeple moves and
+    # 4 dragon steps. The observation and the actions by cell cover the view, not
+    # the whole board.
+    assert response["observation_shape"] == [187, BOARD_SIZE, BOARD_SIZE]
+    assert response["observation_tensor_size"] == 187 * BOARD_SIZE * BOARD_SIZE
+    assert response["num_distinct_actions"] == BOARD_SIZE * BOARD_SIZE * 6 + 41 + 4
 
 
 def test_player_spec_builds_per_player_az_env_without_device() -> None:

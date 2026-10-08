@@ -20,24 +20,37 @@ namespace carcassonne {
 
 inline constexpr int kNumPlayers = 2;
 inline constexpr int kChanceActionCount = CANONICAL_TILE_TYPE_COUNT;
-// Tile actions and the observation's cells are those of the view (VIEW_SIZE
-// across), which follows the tiles: (y * VIEW_SIZE + x) * 4 + rot places a tile
-// on cell (x, y) of the view. CarcassonneState::TileAction and TileActionMove
-// convert to and from board cells.
+// Actions by cell come first, kCellActionPlanes per cell of the view (VIEW_SIZE
+// across), which follows the tiles: (y * VIEW_SIZE + x) * kCellActionPlanes +
+// plane is about cell (x, y) of the view. Planes 0-3 place the tile in hand
+// there turned that many quarter turns; plane 4 chooses that cell for a magic
+// portal's meeple, plane 5 for the princess's knight (The Princess & the
+// Dragon; Carcassonne::chooseCell). CarcassonneState::CellAction and
+// TileActionMove convert to and from board cells.
+inline constexpr int kCellActionPlanes = 6;
+inline constexpr int kPortalCellPlane = 4;
+inline constexpr int kPrincessCellPlane = 5;
+inline constexpr int kCellActionCount = VIEW_SIZE * VIEW_SIZE * kCellActionPlanes;
+// Tile placements: one per cell and rotation.
 inline constexpr int kTileActionCount = VIEW_SIZE * VIEW_SIZE * 4;
+inline constexpr bool IsTileAction(Action action) {
+    return action >= 0 && action < kCellActionCount && action % kCellActionPlanes < 4;
+}
 // One action per meeple position, -1 (skip) to MEEPLE_POS_COUNT - 2: skip,
 // the 14 spots with a meeple, the same 14 with the big meeple, the builder on
-// sides 0-3, then the pig on the fields of half-edges 0-7.
+// sides 0-3, then the pig on the fields of half-edges 0-7. In PHASE_SPOT the
+// same spots, on the cell chosen: a portal's meeple or big meeple there, or
+// the princess's knight there by its spot.
 inline constexpr int kMeepleActionCount = MEEPLE_POS_COUNT;
-inline constexpr int kMeepleActionOffset = kTileActionCount;
+inline constexpr int kMeepleActionOffset = kCellActionCount;
 // One step of the dragon (The Princess & the Dragon) to the side N, E, S or W
 // of its tile.
 inline constexpr int kDragonActionCount = 4;
 inline constexpr int kDragonActionOffset = kMeepleActionOffset + kMeepleActionCount;
 inline constexpr int kNumDistinctPlayerActions = kDragonActionOffset + kDragonActionCount;
 // The conv policy head of alpha_zero_torch (model.cc) reads at most
-// kMaxExtraActions = 64 actions beyond the tile placements, from the focus cell
-// (kLastPlacedPlane); with more it silently falls back to the dense head.
+// kMaxExtraActions = 64 actions beyond the actions by cell, from the focus
+// cell (kLastPlacedPlane); with more it silently falls back to the dense head.
 static_assert(kMeepleActionCount + kDragonActionCount <= 64, "alpha_zero_torch's conv policy head would not fit");
 
 // Observation: spatial planes for what is on the board, then one plane that
@@ -64,8 +77,9 @@ inline constexpr int kSideLinkPlane = kMonasteryPlane + 1;
 // Where the tile in hand can go.
 inline constexpr int kFrontierPlane = kSideLinkPlane + kNumSidePairs;
 inline constexpr int kLegalPlacementPlane = kFrontierPlane + 1; // one per rotation
-// The focus cell, which the actions beyond the tile placements are about: the
-// tile just placed (the meeple moves), or the dragon's tile in PHASE_DRAGON.
+// The focus cell, which the actions beyond the actions by cell are about: the
+// tile just placed (the meeple moves), the dragon's tile in PHASE_DRAGON, or
+// the cell chosen in PHASE_SPOT.
 inline constexpr int kLastPlacedPlane = kLegalPlacementPlane + kLegalPlacementPlanes;
 // The feature each city or road side of a tile belongs to, one plane per side
 // for each quantity. Summing them along a feature needs the whole feature in view,
@@ -120,9 +134,11 @@ inline constexpr int kFeatureGoodsPlane = kFieldOpponentPigPlane + HALF_EDGE_COU
 // The tile each piece stands on, which the feature planes do not tell (they
 // show a feature's pieces on every tile of it) and the dragon eats by. On my /
 // the opponent's meeple's tile, its strength / 2 (the big meeple 1, the meeple
-// 1/2) on its spot: every side of its road or city on that tile, the monastery,
-// every half-edge of its field or the inner field, as in the meeple spots
-// (plane + 0..3 sides, + 4 monastery, + 5..12 half-edges, + 13 inner field).
+// 1/2) on each of its spots (Piece::spots, as the tile had them when it was
+// placed: the sides of its road or city there, the monastery, the half-edges
+// of its field or the inner field), as in the meeple spots (plane + 0..3
+// sides, + 4 monastery, + 5..12 half-edges, + 13 inner field). Two pieces on
+// one tile never share a spot.
 inline constexpr int kPieceSpotPlanes = MEEPLE_POS_INNER_FIELD + 1;
 inline constexpr int kMyPiecePlane = kFeatureGoodsPlane + 4 * GOODS_KINDS;
 inline constexpr int kOpponentPiecePlane = kMyPiecePlane + kPieceSpotPlanes;
@@ -135,11 +151,15 @@ inline constexpr int kOpponentPigTilePlane = kMyPigTilePlane + 1;
 // tiles of the current move, where it may not go back.
 inline constexpr int kDragonPlane = kOpponentPigTilePlane + 1;
 inline constexpr int kDragonVisitedPlane = kDragonPlane + 1;
-inline constexpr int kSpatialPlanes = kDragonVisitedPlane + 1;
+// The cells the meeple phase can choose for a magic portal's meeple and for
+// the princess's knight (action planes kPortalCellPlane, kPrincessCellPlane).
+inline constexpr int kLegalPortalCellPlane = kDragonVisitedPlane + 1;
+inline constexpr int kLegalPrincessCellPlane = kLegalPortalCellPlane + 1;
+inline constexpr int kSpatialPlanes = kLegalPrincessCellPlane + 1;
 inline constexpr int kGlobalFeaturePlane = kSpatialPlanes;
 inline constexpr int kObservationPlanes = kGlobalFeaturePlane + 1;
 static_assert(kLastPlacedPlane == 33);
-static_assert(kSpatialPlanes == 184);
+static_assert(kSpatialPlanes == 186);
 
 // Offsets in the global vector, all from the observing player's side.
 inline constexpr int kGlobalMyScore = 0;           // clip(/100)
@@ -160,7 +180,8 @@ inline constexpr int kGlobalTilePhase = kGlobalTileInHand + CANONICAL_TILE_TYPE_
 inline constexpr int kGlobalMeeplePhase = kGlobalTilePhase + 1;
 // Legal meeple moves in action order: skip, sides 0-3, monastery, half-edges
 // 0-7, inner field, then those 14 with the big meeple, then the builder on
-// sides 0-3, then the pig on half-edges 0-7.
+// sides 0-3, then the pig on half-edges 0-7. In PHASE_SPOT, the legal spots
+// on the cell chosen.
 inline constexpr int kGlobalLegalMeeple = kGlobalMeeplePhase + 1;
 inline constexpr int kGlobalLegalPlacements = kGlobalLegalMeeple + kMeepleActionCount; // / 100
 inline constexpr int kGlobalIsPlayer0 = kGlobalLegalPlacements + 1;
@@ -213,8 +234,12 @@ inline constexpr int kGlobalDragonStepsLeft = kGlobalDragonPhase + 1;
 inline constexpr int kGlobalMyTurn = kGlobalDragonStepsLeft + 1;
 // Legal dragon steps, N, E, S, W, in action order.
 inline constexpr int kGlobalLegalDragon = kGlobalMyTurn + 1;
-inline constexpr int kGlobalFeatures = kGlobalLegalDragon + kDragonActionCount;
-static_assert(kGlobalFeatures == 94 + 2 * CANONICAL_TILE_TYPE_COUNT);
+// PHASE_SPOT for a magic portal's meeple, and for the princess's knight; their
+// legal spots are in kGlobalLegalMeeple.
+inline constexpr int kGlobalSpotPortal = kGlobalLegalDragon + kDragonActionCount;
+inline constexpr int kGlobalSpotPrincess = kGlobalSpotPortal + 1;
+inline constexpr int kGlobalFeatures = kGlobalSpotPrincess + 1;
+static_assert(kGlobalFeatures == 96 + 2 * CANONICAL_TILE_TYPE_COUNT);
 static_assert(kGlobalFeatures <= VIEW_SIZE * VIEW_SIZE);
 inline constexpr int kObservationTensorSize = kObservationPlanes * VIEW_SIZE * VIEW_SIZE;
 
@@ -243,11 +268,15 @@ class CarcassonneState : public State {
 
     const ::Carcassonne &UnderlyingState() const { return game_state_; }
 
-    // The tile action of this state that places the tile in hand on board cell
-    // (x, y), which must be in the view, turned rot quarter turns; and back.
-    // The view follows the tiles, so the same action is another board cell in
-    // another state.
-    Action TileAction(int x, int y, int rot) const;
+    // The action by cell of this state on board cell (x, y), which must be in
+    // the view, on plane `plane` (kCellActionPlanes); and the board cell of
+    // one. The view follows the tiles, so the same action is another board
+    // cell in another state.
+    Action CellAction(int x, int y, int plane) const;
+    std::pair<int, int> CellActionCell(Action action) const;
+    // The tile action that places the tile in hand on board cell (x, y)
+    // turned rot quarter turns; and back.
+    Action TileAction(int x, int y, int rot) const { return CellAction(x, y, rot); }
     TileMove TileActionMove(Action action) const;
 
   protected:
@@ -274,11 +303,14 @@ class CarcassonneGame : public Game {
     std::vector<int> ObservationTensorShape() const override { return {kObservationPlanes, VIEW_SIZE, VIEW_SIZE}; }
     int MaxGameLength() const override {
         const int deck_size = deckSizeOf(expansions_);
-        // Each dragon tile adds up to DRAGON_STEPS steps of the dragon.
-        const int dragon_steps = (rules_ & expansionBit(EXP_PRINCESS_DRAGON))
-                                     ? DRAGON_STEPS * tileCountWithMark(expansions_, TILE_DRAGON)
-                                     : 0;
-        return (max_turns_ > 0 ? (deck_size - 1) + 2 * max_turns_ : (deck_size - 1) * 3) + dragon_steps;
+        // With The Princess & the Dragon, each dragon tile adds up to
+        // DRAGON_STEPS steps of the dragon, and each turn may add PHASE_SPOT.
+        const bool princess_dragon = (rules_ & expansionBit(EXP_PRINCESS_DRAGON)) != 0;
+        const int dragon_steps = princess_dragon ? DRAGON_STEPS * tileCountWithMark(expansions_, TILE_DRAGON) : 0;
+        const int decisions_per_turn = princess_dragon ? 3 : 2;
+        return (max_turns_ > 0 ? (deck_size - 1) + decisions_per_turn * max_turns_
+                               : (deck_size - 1) * (1 + decisions_per_turn)) +
+               dragon_steps;
     }
     int MaxChanceNodesInHistory() const override { return deckSizeOf(expansions_) - 1; }
 
@@ -302,12 +334,13 @@ class CarcassonneGame : public Game {
 // to exactly one legal action.
 inline constexpr int kNumBoardRotations = 4;
 
-// Which sides of the just-placed tile belong to the same feature (see
-// Carcassonne::getLastTileSideGroups), then which half-edges belong to the
-// same field (getLastTileFieldGroups); all -1 outside the meeple phase. Meeple
-// actions name a feature by its lowest side and a field by its lowest
-// half-edge, which a rotation can change, and the observation alone does not
-// say which sides share a feature.
+// How the sides, then the half-edges, of the focus cell group into the
+// choices its spot actions name (Carcassonne::getFocusSpotGroups): in the
+// meeple phase and for a portal's meeple, the features and fields of the tile,
+// each named by its lowest side or half-edge; for the princess's knight, the
+// pieces there, each named by its spot. All -1 in other phases. A rotation can
+// change which side is lowest, and the observation alone does not say which
+// sides share a feature.
 inline constexpr int kFieldGroupOffset = 4;
 using SideGroups = std::array<int8_t, kFieldGroupOffset + HALF_EDGE_COUNT>;
 inline constexpr SideGroups kNoSideGroups = {-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1};

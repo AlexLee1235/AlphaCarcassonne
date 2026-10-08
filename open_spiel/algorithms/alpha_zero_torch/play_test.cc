@@ -80,8 +80,10 @@ void PlayerTerminalAndCutoffTest() {
       for (Action action : sample.legal_actions) {
         // The big meeple names the same spots.
         const int pos = meepleSpot(action - carcassonne::kMeepleActionOffset - 1);
-        if (action < carcassonne::kMeepleActionOffset) {
+        if (carcassonne::IsTileAction(action)) {
           SPIEL_CHECK_TRUE(groups == carcassonne::kNoSideGroups);
+        } else if (action < carcassonne::kMeepleActionOffset) {
+          continue;  // A cell chosen for a portal or the princess.
         } else if (pos >= 0 && pos < 4) {
           SPIEL_CHECK_EQ(groups[pos], pos);
         } else if (pos >= MEEPLE_POS_FIELD && pos < MEEPLE_POS_INNER_FIELD) {

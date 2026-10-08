@@ -45,8 +45,8 @@ constexpr uint32_t ALL_EXPANSIONS = (1u << EXPANSION_COUNT) - 1;
 // tiles and their rules) as well as "tiles" (their tiles only). Inns &
 // Cathedrals: the big meeple, inns and cathedrals. Traders & Builders: the
 // builder, the pig and the goods. The Princess & the Dragon: so far the dragon
-// alone (volcano and dragon tiles); the princess, the magic portal and the
-// fairy are not played yet, their tiles are plain tiles.
+// (volcano and dragon tiles), the princess and the magic portal; the fairy is
+// not played yet.
 constexpr uint32_t RULED_EXPANSIONS = expansionBit(EXP_INNS_CATHEDRALS) | expansionBit(EXP_TRADERS_BUILDERS) |
                                       expansionBit(EXP_RIVER) | expansionBit(EXP_PRINCESS_DRAGON);
 // Those whose tiles make no sense without their rules: dealt, they are "on".
@@ -75,10 +75,9 @@ struct FieldLayout {
 };
 
 // Marks on one city or road of a tile. Written on any side of that city or
-// road (Tile::featureMarks() joins its sides); the shield, the inn and the
-// goods have rules so far.
+// road (Tile::featureMarks() joins its sides); all have rules so far.
 constexpr uint8_t MARK_SHIELD = 1 << 0;    // city: one more point, two once closed
-constexpr uint8_t MARK_PRINCESS = 1 << 1;  // city (The Princess & the Dragon)
+constexpr uint8_t MARK_PRINCESS = 1 << 1;  // city (The Princess & the Dragon): may send a knight of it home
 constexpr uint8_t MARK_WINE = 1 << 2;      // city goods (Traders & Builders)
 constexpr uint8_t MARK_CLOTH = 1 << 3;
 constexpr uint8_t MARK_WHEAT = 1 << 4;
@@ -97,10 +96,11 @@ constexpr uint8_t ROAD_MARKS = MARK_INN;
 // CATHEDRAL_TYPE.
 constexpr uint8_t TILE_MONASTERY = 1 << 0;
 // The Princess & the Dragon: a dragon tile sets the dragon moving, a volcano
-// brings it there (Carcassonne::dragon_rules).
+// brings it there (Carcassonne::dragon_rules); a magic portal lets its turn's
+// meeple go on any tile (Carcassonne::portal_rules).
 constexpr uint8_t TILE_DRAGON = 1 << 1;
 constexpr uint8_t TILE_VOLCANO = 1 << 2;
-constexpr uint8_t TILE_PORTAL = 1 << 3;   // magic portal; no rule yet
+constexpr uint8_t TILE_PORTAL = 1 << 3;
 constexpr uint8_t ALL_TILE_MARKS = TILE_MONASTERY | TILE_DRAGON | TILE_VOLCANO | TILE_PORTAL;
 
 // MARK_* bits per side, in the order N, E, S, W.

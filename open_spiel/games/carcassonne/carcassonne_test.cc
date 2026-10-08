@@ -44,7 +44,7 @@ float GlobalValue(const std::vector<float>& tensor, int index) {
 bool Near(float left, float right) { return std::abs(left - right) < 1e-6f; }
 
 // Every expansion's tiles, with all their rules (of The Princess & the Dragon
-// the dragon only so far).
+// all but the fairy so far).
 constexpr const char* kAllExpansionsGame =
     "carcassonne(inns_cathedrals=on,traders_builders=on,river=on,"
     "princess_dragon=on)";
@@ -107,10 +107,12 @@ float PlaneSum(const std::vector<float>& tensor, int plane) {
   return sum;
 }
 
-// The view cell (x, y) of a tile action.
+// The view cell (x, y) of an action by cell, and its plane (for a tile
+// action, the rotation).
 void DecodeTileActionForTest(Action action, int* x, int* y, int* rot) {
-  *rot = action % 4;
-  action /= 4;
+  SPIEL_CHECK_LT(action, kCellActionCount);
+  *rot = action % kCellActionPlanes;
+  action /= kCellActionPlanes;
   *x = action % VIEW_SIZE;
   *y = action / VIEW_SIZE;
 }
@@ -176,11 +178,11 @@ void ObservationTensorSmokeTest() {
   const std::vector<int> shape = game->ObservationTensorShape();
 
   SPIEL_CHECK_EQ(shape.size(), 3);
-  SPIEL_CHECK_EQ(shape[0], 185);
+  SPIEL_CHECK_EQ(shape[0], 187);
   SPIEL_CHECK_EQ(shape[0], kObservationPlanes);
   SPIEL_CHECK_EQ(shape[1], VIEW_SIZE);
   SPIEL_CHECK_EQ(shape[2], VIEW_SIZE);
-  SPIEL_CHECK_EQ(game->NumDistinctActions(), 4 * VIEW_SIZE * VIEW_SIZE + 41 + 4);
+  SPIEL_CHECK_EQ(game->NumDistinctActions(), 6 * VIEW_SIZE * VIEW_SIZE + 41 + 4);
 
   SPIEL_CHECK_EQ(state->ObservationTensor(0).size(), kObservationTensorSize);
   SPIEL_CHECK_EQ(state->ObservationTensor(1).size(), kObservationTensorSize);
@@ -1598,22 +1600,23 @@ void BuilderTest() {
             state->IsChanceNode()
                 ? SampleAction(state->ChanceOutcomes(), rng).first
                 : legal[std::uniform_int_distribution<int>(0, legal.size() - 1)(rng)];
-        const bool meeple_phase = core.current_phase == PHASE_MEEPLE;
+        const bool meeple_phase = core.current_phase == PHASE_MEEPLE || core.current_phase == PHASE_SPOT;
         const bool dragon_phase = core.current_phase == PHASE_DRAGON;
         const bool extra_tile = core.builder_extra_tile;
         const int mover = dragon_phase ? core.dragon_turn_player : core.currentPlayer;
         const int held[2] = {core.holding_builders[0], core.holding_builders[1]};
-        if (meeple_phase && isBuilderPos(DecodeMeepleActionForTest(action))) {
+        if (core.current_phase == PHASE_MEEPLE && action >= kMeepleActionOffset &&
+            isBuilderPos(DecodeMeepleActionForTest(action))) {
           ++builders_placed;
         }
         state->ApplyAction(action);
         for (Player player = 0; player < kNumPlayers; ++player) {
           builders_returned += core.holding_builders[player] > held[player];
         }
-        // The turn ends with the meeple move, or after it with the dragon's
-        // last step.
+        // The turn ends with the meeple move (with its second step if it
+        // chose a cell), or after it with the dragon's last step.
         if ((meeple_phase || dragon_phase) && core.current_phase != PHASE_DRAGON &&
-            !state->IsTerminal()) {
+            core.current_phase != PHASE_SPOT && !state->IsTerminal()) {
           SPIEL_CHECK_EQ(core.currentPlayer, extra_tile ? mover : 1 - mover);
           SPIEL_CHECK_EQ(core.builder_second_tile, extra_tile);
           double_turns += extra_tile;
@@ -2082,9 +2085,12 @@ void GoodsTest() {
 }
 
 // Every piece on the board has a record (Carcassonne::pieces) on the tile it
-// was placed on, one a tile, and the records add up to what the features,
-// fields and monasteries count and to the pieces out of hand. The observation
-// shows each on its tile, its spot planes holding its strength / 2.
+// was placed on, and the records add up to what the features, fields and
+// monasteries count and to the pieces out of hand. A record's spots lie in
+// its own road, city or field (or are the monastery or the inner field), its
+// spot is the lowest of them, and two on one tile share none. The observation
+// shows each on its tile, its spot planes holding its strength / 2, and
+// nothing else.
 void CheckPieces(const State& state) {
   const ::Carcassonne& core =
       dynamic_cast<const CarcassonneState&>(state).UnderlyingState();
@@ -2108,10 +2114,12 @@ void CheckPieces(const State& state) {
     fields.push_back({root, {0, 0}});
     return fields.back().second;
   };
+  float spot_planes[2] = {0.0f, 0.0f};  // by owner: the strength / 2 on every spot
   for (int i = 0; i < core.pieces.size(); ++i) {
     const Piece& piece = core.pieces[i];
     for (int j = 0; j < i; ++j) {
-      SPIEL_CHECK_FALSE(core.pieces[j].x == piece.x && core.pieces[j].y == piece.y);
+      const Piece& other = core.pieces[j];
+      SPIEL_CHECK_FALSE(other.x == piece.x && other.y == piece.y && (other.spots & piece.spots) != 0);
     }
     // No piece shares a tile with the dragon.
     SPIEL_CHECK_FALSE(piece.x == core.dragon_x && piece.y == core.dragon_y);
@@ -2124,6 +2132,26 @@ void CheckPieces(const State& state) {
     const int local = piece.spot == MEEPLE_POS_INNER_FIELD
                           ? tile.innerField()
                           : (piece.spot >= MEEPLE_POS_FIELD ? tile.field[piece.spot - MEEPLE_POS_FIELD] : -1);
+    // Its spots: the lowest is its spot, all in its road, city or field.
+    SPIEL_CHECK_NE(piece.spots, 0);
+    SPIEL_CHECK_EQ(piece.spots & -piece.spots, 1 << piece.spot);
+    for (int spot = 0; spot < kPieceSpotPlanes; ++spot) {
+      if (!(piece.spots >> spot & 1)) continue;
+      if (piece.spot < MEEPLE_POS_MONASTERY) {
+        SPIEL_CHECK_LT(spot, MEEPLE_POS_MONASTERY);
+        SPIEL_CHECK_TRUE(&core.featureAt(piece.tile_id, spot) == &core.featureAt(piece.tile_id, piece.spot));
+      } else if (piece.spot == MEEPLE_POS_MONASTERY || piece.spot == MEEPLE_POS_INNER_FIELD) {
+        SPIEL_CHECK_EQ(spot, piece.spot);
+      } else {
+        SPIEL_CHECK_GE(spot, MEEPLE_POS_FIELD);
+        SPIEL_CHECK_LT(spot, MEEPLE_POS_INNER_FIELD);
+        SPIEL_CHECK_EQ(core.fieldRoot(piece.tile_id, tile.field[spot - MEEPLE_POS_FIELD]),
+                       core.fieldRoot(piece.tile_id, local));
+      }
+      if (piece.kind == PIECE_MEEPLE || piece.kind == PIECE_BIG_MEEPLE) {
+        spot_planes[owner] += strength / 2.0f;
+      }
+    }
     if (piece.kind == PIECE_BUILDER) {
       SPIEL_CHECK_EQ(static_cast<int>(core.featureAt(piece.tile_id, piece.spot).builders[owner]), 1);
     } else if (piece.kind == PIECE_PIG) {
@@ -2150,10 +2178,25 @@ void CheckPieces(const State& state) {
       } else if (piece.kind == PIECE_PIG) {
         SPIEL_CHECK_EQ(BoardPlaneValue(obs, core, mine ? kMyPigTilePlane : kOpponentPigTilePlane, tx, ty), 1.0f);
       } else {
-        SPIEL_CHECK_EQ(BoardPlaneValue(obs, core, (mine ? kMyPiecePlane : kOpponentPiecePlane) + piece.spot, tx, ty),
-                       strength / 2.0f);
+        for (int spot = 0; spot < kPieceSpotPlanes; ++spot) {
+          if (piece.spots >> spot & 1) {
+            SPIEL_CHECK_EQ(BoardPlaneValue(obs, core, (mine ? kMyPiecePlane : kOpponentPiecePlane) + spot, tx, ty),
+                           strength / 2.0f);
+          }
+        }
       }
     }
+  }
+  // Nothing on the spot planes but the pieces' spots.
+  for (Player player = 0; player < kNumPlayers; ++player) {
+    float mine = 0.0f;
+    float theirs = 0.0f;
+    for (int spot = 0; spot < kPieceSpotPlanes; ++spot) {
+      mine += PlaneSum(observations[player], kMyPiecePlane + spot);
+      theirs += PlaneSum(observations[player], kOpponentPiecePlane + spot);
+    }
+    SPIEL_CHECK_TRUE(Near(mine, spot_planes[player]));
+    SPIEL_CHECK_TRUE(Near(theirs, spot_planes[1 - player]));
   }
   // Every follower on a road, city or field is one of the records.
   for (int ty = 0; ty < BOARD_SIZE; ++ty) {
@@ -2369,6 +2412,496 @@ void DragonTest() {
   SPIEL_CHECK_GT(eaten[PIECE_MEEPLE], 0);
 }
 
+bool HasCell(const Cells& cells, int x, int y) {
+  return std::any_of(cells.begin(), cells.end(),
+                     [&](const auto& cell) { return cell.first == x && cell.second == y; });
+}
+
+std::vector<int> SpotMoves(const ::Carcassonne& game) {
+  const MeepleMoves moves = game.getLegalSpotMoves();
+  return std::vector<int>(moves.begin(), moves.end());
+}
+
+// The magic portal: the turn a portal tile is placed, a meeple may go on any
+// tile placed before, on a road, city, field or monastery with no piece that
+// is not complete, never on the dragon's tile; chosen by cell, then by spot if
+// the cell offers more than one. A piece stands on the spots its feature had
+// on its tile when placed: two on one tile keep their own after their cities
+// join, and the observation shows each on its own.
+void PortalTest() {
+  const int c = BOARD_SIZE / 2;
+  std::shared_ptr<const Game> dragon_game = LoadGame(kDragonGame);
+  ::Carcassonne game(/*max_turns=*/0, START_TILE_ROTATION, BASE_ONLY | expansionBit(EXP_PRINCESS_DRAGON));
+  SPIEL_CHECK_TRUE(game.portal_rules);
+  SPIEL_CHECK_TRUE(game.princess_rules);
+  // P0: a volcano east of the start tile, its road continuing the start
+  // tile's (type 88 turned once); the dragon comes to it.
+  PlayTurn(&game, 88, c + 1, c, 1, MEEPLE_POS_SKIP);
+  // P1: south of the start tile, two separate cities east and south (type 14
+  // turned twice); P1's knight on the east one.
+  PlayTurn(&game, 14, c, c + 1, 2, 1);
+  const int two_cities = game.getPlacement(c, c + 1).id;
+  const ::Carcassonne before_portal = game;
+
+  // P0: a portal west of the start tile, its village ending the start tile's
+  // road (type 104). Not on itself (its own meeple moves are that), nor on the
+  // dragon's volcano: the start tile, and the tile of P1's knight.
+  PlaceTile(&game, 104, c - 1, c, 0);
+  Cells cells = game.getLegalPortalCells();
+  SPIEL_CHECK_EQ(cells.size(), 2);
+  SPIEL_CHECK_TRUE(HasCell(cells, c, c));
+  SPIEL_CHECK_TRUE(HasCell(cells, c, c + 1));
+  {
+    ::Carcassonne no_meeples = game;
+    no_meeples.holding_meeples[0] = 0;
+    SPIEL_CHECK_EQ(no_meeples.getLegalPortalCells().size(), 0);
+    // The start tile: its city, its road, its north and south fields.
+    ::Carcassonne at_start = game;
+    at_start.chooseCell(SPOT_PORTAL, c, c);
+    SPIEL_CHECK_EQ(at_start.current_phase, PHASE_SPOT);
+    SPIEL_CHECK_EQ(SpotMoves(at_start), (std::vector<int>{0, 1, MEEPLE_POS_FIELD + 2, MEEPLE_POS_FIELD + 3}));
+  }
+  // The tile of P1's knight: its south city and its field.
+  game.chooseCell(SPOT_PORTAL, c, c + 1);
+  SPIEL_CHECK_EQ(game.current_phase, PHASE_SPOT);
+  SPIEL_CHECK_EQ(game.currentPlayer, 0);
+  SPIEL_CHECK_EQ(game.focusX(), c);
+  SPIEL_CHECK_EQ(game.focusY(), c + 1);
+  SPIEL_CHECK_EQ(SpotMoves(game), (std::vector<int>{2, MEEPLE_POS_FIELD}));
+  {
+    CarcassonneState view(dragon_game, game);
+    const State& state = view;
+    const std::vector<float> obs = state.ObservationTensor(0);
+    SPIEL_CHECK_EQ(GlobalValue(obs, kGlobalSpotPortal), 1.0f);
+    SPIEL_CHECK_EQ(GlobalValue(obs, kGlobalSpotPrincess), 0.0f);
+    SPIEL_CHECK_EQ(GlobalValue(obs, kGlobalMeeplePhase), 0.0f);
+    SPIEL_CHECK_EQ(PlaneSum(obs, kLastPlacedPlane), 1.0f);
+    SPIEL_CHECK_EQ(BoardPlaneValue(obs, game, kLastPlacedPlane, c, c + 1), 1.0f);
+    const std::vector<Action> legal = state.LegalActions();
+    SPIEL_CHECK_EQ(legal, (std::vector<Action>{kMeepleActionOffset + 3, kMeepleActionOffset + MEEPLE_POS_FIELD + 1}));
+    CheckLegalMeepleGlobals(obs, legal);
+    SPIEL_CHECK_EQ(state.ActionToString(0, legal[0]), "place_meeple(edge=2)");
+  }
+  game.chooseSpot(2);
+  // The turn is over and nothing scored.
+  SPIEL_CHECK_EQ(game.current_phase, PHASE_CHANCE);
+  SPIEL_CHECK_EQ(game.currentPlayer, 1);
+  SPIEL_CHECK_EQ(game.holding_meeples[0], MEEPLES_PER_PLAYER - 1);
+  SPIEL_CHECK_EQ(game.player_scores[0], 0);
+  SPIEL_CHECK_EQ(game.pieces.size(), 2);
+  for (const Piece& piece : game.pieces) {
+    SPIEL_CHECK_EQ(piece.x, c);
+    SPIEL_CHECK_EQ(piece.y, c + 1);
+    SPIEL_CHECK_EQ(piece.spots, piece.owner == 0 ? 1 << 2 : 1 << 1);
+  }
+
+  // A city from the east one round to the south one, left open east (type 4
+  // turned twice, type 8, type 8 turned once): both knights in one city, each
+  // still on its own.
+  PlayTurn(&game, 4, c + 1, c + 1, 2, MEEPLE_POS_SKIP);
+  PlayTurn(&game, 8, c + 1, c + 2, 0, MEEPLE_POS_SKIP);
+  PlayTurn(&game, 8, c, c + 2, 1, MEEPLE_POS_SKIP);
+  const Feature& city = game.featureAt(two_cities, 1);
+  SPIEL_CHECK_TRUE(&city == &game.featureAt(two_cities, 2));
+  SPIEL_CHECK_EQ(static_cast<int>(city.meeple_count[0]), 1);
+  SPIEL_CHECK_EQ(static_cast<int>(city.meeple_count[1]), 1);
+  SPIEL_CHECK_GT(city.opens, 0);
+  {
+    CarcassonneState view(dragon_game, game);
+    const State& state = view;
+    for (Player player = 0; player < kNumPlayers; ++player) {
+      const std::vector<float> obs = state.ObservationTensor(player);
+      const int p0 = player == 0 ? kMyPiecePlane : kOpponentPiecePlane;
+      const int p1 = player == 1 ? kMyPiecePlane : kOpponentPiecePlane;
+      SPIEL_CHECK_EQ(BoardPlaneValue(obs, game, p0 + 2, c, c + 1), 0.5f);
+      SPIEL_CHECK_EQ(BoardPlaneValue(obs, game, p0 + 1, c, c + 1), 0.0f);
+      SPIEL_CHECK_EQ(BoardPlaneValue(obs, game, p1 + 1, c, c + 1), 0.5f);
+      SPIEL_CHECK_EQ(BoardPlaneValue(obs, game, p1 + 2, c, c + 1), 0.0f);
+    }
+    CheckPieces(state);
+  }
+
+  {
+    // The princess, with both knights of her city on one tile: P0's princess
+    // cap (type 98 turned three times) closes the city from the east. Chosen
+    // by cell, then by spot; the city scores without the knight sent home: 5
+    // tiles, 10 points.
+    ::Carcassonne princess = game;
+    PlaceTile(&princess, 98, c + 2, c + 1, 3);
+    cells = princess.getLegalPrincessCells();
+    SPIEL_CHECK_EQ(cells.size(), 1);
+    SPIEL_CHECK_TRUE(HasCell(cells, c, c + 1));
+    princess.chooseCell(SPOT_PRINCESS, c, c + 1);
+    SPIEL_CHECK_EQ(princess.current_phase, PHASE_SPOT);
+    SPIEL_CHECK_EQ(SpotMoves(princess), (std::vector<int>{1, 2}));
+    {
+      CarcassonneState view(dragon_game, princess);
+      const State& state = view;
+      const std::vector<float> obs = state.ObservationTensor(0);
+      SPIEL_CHECK_EQ(GlobalValue(obs, kGlobalSpotPrincess), 1.0f);
+      SPIEL_CHECK_EQ(GlobalValue(obs, kGlobalSpotPortal), 0.0f);
+      SPIEL_CHECK_EQ(BoardPlaneValue(obs, princess, kLastPlacedPlane, c, c + 1), 1.0f);
+      SPIEL_CHECK_EQ(state.ActionToString(0, kMeepleActionOffset + 2), "remove_knight(edge=1)");
+      // The knights are named by their spots.
+      SPIEL_CHECK_TRUE(GetSideGroups(view) == (SideGroups{-1, 1, 2, -1, -1, -1, -1, -1, -1, -1, -1, -1}));
+    }
+    for (int removed : {1, 2}) {
+      ::Carcassonne turn = princess;
+      turn.chooseSpot(removed);
+      SPIEL_CHECK_EQ(turn.current_phase, PHASE_CHANCE);
+      SPIEL_CHECK_EQ(turn.player_scores[0], removed == 1 ? 10 : 0);
+      SPIEL_CHECK_EQ(turn.player_scores[1], removed == 1 ? 0 : 10);
+      SPIEL_CHECK_EQ(turn.holding_meeples[0], MEEPLES_PER_PLAYER);
+      SPIEL_CHECK_EQ(turn.holding_meeples[1], MEEPLES_PER_PLAYER);
+      SPIEL_CHECK_EQ(turn.pieces.size(), 0);
+    }
+  }
+
+  // P0: a dragon tile east of the volcano, continuing its road (type 86
+  // turned once). The dragon goes south (P0), then west onto the two knights
+  // (P1): both go home.
+  PlaceTile(&game, 86, c + 2, c, 1);
+  game.placeMeeple(MEEPLE_POS_SKIP);
+  SPIEL_CHECK_EQ(game.current_phase, PHASE_DRAGON);
+  game.moveDragon(2);
+  SPIEL_CHECK_EQ(game.pieces.size(), 2);
+  const FixedVector<int, 4> steps = game.getLegalDragonMoves();
+  SPIEL_CHECK_TRUE(std::find(steps.begin(), steps.end(), 3) != steps.end());
+  game.moveDragon(3);
+  SPIEL_CHECK_EQ(game.pieces.size(), 0);
+  SPIEL_CHECK_EQ(game.holding_meeples[0], MEEPLES_PER_PLAYER);
+  SPIEL_CHECK_EQ(game.holding_meeples[1], MEEPLES_PER_PLAYER);
+
+  // Nothing complete through a portal: a portal closing the start tile's city
+  // (type 101 turned twice, its city south) leaves that city out on the start
+  // tile, though on the portal tile itself it takes a meeple.
+  ::Carcassonne closing = before_portal;
+  PlaceTile(&closing, 101, c, c - 1, 2);
+  const MeepleMoves own = closing.getLegalMeepleMoves();
+  SPIEL_CHECK_TRUE(std::find(own.begin(), own.end(), 2) != own.end());
+  closing.chooseCell(SPOT_PORTAL, c, c);
+  SPIEL_CHECK_EQ(closing.current_phase, PHASE_SPOT);
+  SPIEL_CHECK_EQ(SpotMoves(closing), (std::vector<int>{1, MEEPLE_POS_FIELD + 2, MEEPLE_POS_FIELD + 3}));
+}
+
+// The princess: a princess tile whose city holds knights may send one of
+// them home, either player's, instead of placing a piece; with it goes a
+// builder whose owner has no follower left there.
+void PrincessTest() {
+  const int c = BOARD_SIZE / 2;
+  ::Carcassonne game(/*max_turns=*/0, START_TILE_ROTATION,
+                     BASE_ONLY | expansionBit(EXP_TRADERS_BUILDERS) | expansionBit(EXP_PRINCESS_DRAGON));
+  {
+    // No knight in her city, nothing to choose: a princess cap (type 98
+    // turned twice) closing the start tile's city.
+    ::Carcassonne empty = game;
+    PlaceTile(&empty, 98, c, c - 1, 2);
+    SPIEL_CHECK_EQ(empty.getLegalPrincessCells().size(), 0);
+  }
+  // P0: a city north of the start tile, open east and west (type 4 turned
+  // twice); P0's knight on it.
+  PlayTurn(&game, 4, c, c - 1, 2, 1);
+  // P1: a road east of the start tile (type 21 turned once).
+  PlayTurn(&game, 21, c + 1, c, 1, MEEPLE_POS_SKIP);
+  // P0: the city on east (type 4), P0's builder on it.
+  PlayTurn(&game, 4, c + 1, c - 1, 0, MEEPLE_POS_BUILDER + 0);
+  // P1: a princess cap west of the city (type 98 turned once, its city east).
+  PlaceTile(&game, 98, c - 1, c - 1, 1);
+  const Cells cells = game.getLegalPrincessCells();
+  SPIEL_CHECK_EQ(cells.size(), 1);
+  SPIEL_CHECK_TRUE(HasCell(cells, c, c - 1));
+  // She is a choice: P1 may still place a piece, or nothing.
+  const MeepleMoves meeple_moves = game.getLegalMeepleMoves();
+  SPIEL_CHECK_EQ(meeple_moves[0], MEEPLE_POS_SKIP);
+  SPIEL_CHECK_GT(meeple_moves.size(), 1);
+  {
+    CarcassonneState view(LoadGame("carcassonne(traders_builders=on,princess_dragon=on)"), game);
+    const State& state = view;
+    const Action action = view.CellAction(c, c - 1, kPrincessCellPlane);
+    const std::vector<Action> legal = state.LegalActions();
+    SPIEL_CHECK_TRUE(std::find(legal.begin(), legal.end(), action) != legal.end());
+    SPIEL_CHECK_EQ(state.ActionToString(1, action), absl::StrCat("princess(x=", c, ", y=", c - 1, ")"));
+    const std::vector<float> obs = state.ObservationTensor(1);
+    SPIEL_CHECK_EQ(PlaneSum(obs, kLegalPrincessCellPlane), 1.0f);
+    SPIEL_CHECK_EQ(BoardPlaneValue(obs, game, kLegalPrincessCellPlane, c, c - 1), 1.0f);
+    SPIEL_CHECK_EQ(PlaneSum(obs, kLegalPortalCellPlane), 0.0f);
+  }
+  // One knight there: sent home at once, P0's builder with it. P1's turn is
+  // over with no piece placed.
+  game.chooseCell(SPOT_PRINCESS, c, c - 1);
+  SPIEL_CHECK_EQ(game.current_phase, PHASE_CHANCE);
+  SPIEL_CHECK_EQ(game.currentPlayer, 0);
+  SPIEL_CHECK_EQ(game.holding_meeples[0], MEEPLES_PER_PLAYER);
+  SPIEL_CHECK_EQ(game.holding_builders[0], 1);
+  SPIEL_CHECK_EQ(game.holding_meeples[1], MEEPLES_PER_PLAYER);
+  SPIEL_CHECK_EQ(game.pieces.size(), 0);
+  const Feature& city = game.featureAt(game.getPlacement(c, c - 1).id, 1);
+  SPIEL_CHECK_EQ(static_cast<int>(city.meeple_count[0]), 0);
+  SPIEL_CHECK_EQ(static_cast<int>(city.builders[0]), 0);
+}
+
+// The meeple moves a portal offers on board cell (x, y), as the rules give
+// them: on a tile placed before this turn's, not the dragon's, each spot of a
+// road, city, field or monastery that holds no piece and is not complete, with
+// each piece the player holds.
+std::vector<int> ExpectedPortalMoves(const ::Carcassonne& core, int x, int y) {
+  std::vector<int> moves;
+  const Placement placement = core.getPlacement(x, y);
+  if (placement.id == 0 || (x == core.last_x && y == core.last_y) ||
+      (x == core.dragon_x && y == core.dragon_y)) {
+    return moves;
+  }
+  const Tile& tile = full_deck[placement.id][placement.rotation];
+  std::vector<int> spots;
+  for (int side = 0; side < 4; ++side) {
+    if (!isFeatureEdge(tile.edge[side])) continue;
+    const Feature& feature = core.featureAt(placement.id, side);
+    bool lowest = true;
+    for (int s = 0; s < side; ++s) {
+      lowest = lowest && !(isFeatureEdge(tile.edge[s]) && &core.featureAt(placement.id, s) == &feature);
+    }
+    if (lowest && !feature.hasMeeples() && feature.opens > 0) spots.push_back(side);
+  }
+  if (tile.monastery && core.monasteryOwner(x, y) == -1 && core.coverage3x3(x, y) < 9) {
+    spots.push_back(MEEPLE_POS_MONASTERY);
+  }
+  for (int e = 0; e < HALF_EDGE_COUNT; ++e) {
+    if (tile.field[e] == -1) continue;
+    const int root = core.fieldRoot(placement.id, tile.field[e]);
+    bool lowest = true;
+    for (int f = 0; f < e; ++f) {
+      lowest = lowest && !(tile.field[f] != -1 && core.fieldRoot(placement.id, tile.field[f]) == root);
+    }
+    if (lowest && !core.fieldAtRoot(root).hasFarmers()) spots.push_back(MEEPLE_POS_FIELD + e);
+  }
+  const int inner = tile.innerField();
+  if (inner != -1 && !core.fieldAtRoot(core.fieldRoot(placement.id, inner)).hasFarmers()) {
+    spots.push_back(MEEPLE_POS_INNER_FIELD);
+  }
+  const int player = core.currentPlayer;
+  if (core.holding_meeples[player] > 0) moves.insert(moves.end(), spots.begin(), spots.end());
+  if (core.holding_big_meeples[player] > 0) {
+    for (int spot : spots) moves.push_back(spot + MEEPLE_POS_BIG);
+  }
+  return moves;
+}
+
+// The knights the princess of the tile last placed can send home, as indices
+// into core.pieces: the meeples and big meeples in her city.
+std::vector<int> ExpectedPrincessKnights(const ::Carcassonne& core) {
+  std::vector<int> knights;
+  if (!core.princess_rules) return knights;
+  const Placement last = core.getPlacement(core.last_x, core.last_y);
+  const Tile& tile = full_deck[last.id][last.rotation];
+  const Feature* city = nullptr;
+  for (int side = 0; side < 4; ++side) {
+    if (tile.edge[side] == CITY && (tile.marks[side] & MARK_PRINCESS)) city = &core.featureAt(last.id, side);
+  }
+  for (int i = 0; city != nullptr && i < core.pieces.size(); ++i) {
+    const Piece& piece = core.pieces[i];
+    if ((piece.kind == PIECE_MEEPLE || piece.kind == PIECE_BIG_MEEPLE) && piece.spot < MEEPLE_POS_MONASTERY &&
+        &core.featureAt(piece.tile_id, piece.spot) == city) {
+      knights.push_back(i);
+    }
+  }
+  return knights;
+}
+
+// The cells a portal or the princess can choose, as the rules give them,
+// against the legal actions, the observation and what choosing each does (one
+// choice there is made at once, more wait in PHASE_SPOT); and PHASE_SPOT as
+// the legal actions and the observation give it.
+void CheckPortalPrincess(const State& state) {
+  const auto& carcassonne_state = dynamic_cast<const CarcassonneState&>(state);
+  const ::Carcassonne& core = carcassonne_state.UnderlyingState();
+  const std::vector<float> obs = state.ObservationTensor(0);
+  const std::vector<Action> legal = state.LegalActions();
+  const bool meeple_phase = core.current_phase == PHASE_MEEPLE;
+  const bool spot_phase = core.current_phase == PHASE_SPOT;
+  std::vector<std::pair<int, int>> portal_cells;
+  std::vector<std::pair<int, int>> princess_cells;
+  if (meeple_phase && core.portal_rules) {
+    const Placement last = core.getPlacement(core.last_x, core.last_y);
+    if (full_deck[last.id][last.rotation].tile_marks & TILE_PORTAL) {
+      for (int y = 0; y < BOARD_SIZE; ++y) {
+        for (int x = 0; x < BOARD_SIZE; ++x) {
+          if (!ExpectedPortalMoves(core, x, y).empty()) portal_cells.push_back({x, y});
+        }
+      }
+    }
+  }
+  if (meeple_phase) {
+    for (int i : ExpectedPrincessKnights(core)) {
+      const std::pair<int, int> cell = {core.pieces[i].x, core.pieces[i].y};
+      if (std::find(princess_cells.begin(), princess_cells.end(), cell) == princess_cells.end()) {
+        princess_cells.push_back(cell);
+      }
+    }
+  }
+  // SPIEL_CHECK_EQ's own locals are called x and y.
+  std::vector<Action> expected_cells;
+  for (const auto& [tx, ty] : portal_cells) {
+    expected_cells.push_back(carcassonne_state.CellAction(tx, ty, kPortalCellPlane));
+    SPIEL_CHECK_EQ(BoardPlaneValue(obs, core, kLegalPortalCellPlane, tx, ty), 1.0f);
+  }
+  for (const auto& [tx, ty] : princess_cells) {
+    expected_cells.push_back(carcassonne_state.CellAction(tx, ty, kPrincessCellPlane));
+    SPIEL_CHECK_EQ(BoardPlaneValue(obs, core, kLegalPrincessCellPlane, tx, ty), 1.0f);
+  }
+  std::sort(expected_cells.begin(), expected_cells.end());
+  std::vector<Action> cell_actions;
+  for (Action action : legal) {
+    if (action < kCellActionCount && !IsTileAction(action)) cell_actions.push_back(action);
+  }
+  SPIEL_CHECK_EQ(cell_actions, expected_cells);
+  SPIEL_CHECK_EQ(PlaneSum(obs, kLegalPortalCellPlane), static_cast<float>(portal_cells.size()));
+  SPIEL_CHECK_EQ(PlaneSum(obs, kLegalPrincessCellPlane), static_cast<float>(princess_cells.size()));
+
+  SPIEL_CHECK_EQ(GlobalValue(obs, kGlobalSpotPortal), spot_phase && core.spot_choice == SPOT_PORTAL ? 1.0f : 0.0f);
+  SPIEL_CHECK_EQ(GlobalValue(obs, kGlobalSpotPrincess),
+                 spot_phase && core.spot_choice == SPOT_PRINCESS ? 1.0f : 0.0f);
+  if (spot_phase) {
+    SPIEL_CHECK_EQ(PlaneSum(obs, kLastPlacedPlane), 1.0f);
+    SPIEL_CHECK_EQ(BoardPlaneValue(obs, core, kLastPlacedPlane, core.spot_x, core.spot_y), 1.0f);
+    CheckLegalMeepleGlobals(obs, legal);
+    std::vector<Action> expected;
+    if (core.spot_choice == SPOT_PORTAL) {
+      for (int move : ExpectedPortalMoves(core, core.spot_x, core.spot_y)) {
+        expected.push_back(kMeepleActionOffset + move + 1);
+      }
+    } else {
+      for (int i : ExpectedPrincessKnights(core)) {
+        const Piece& piece = core.pieces[i];
+        if (piece.x == core.spot_x && piece.y == core.spot_y) {
+          expected.push_back(kMeepleActionOffset + piece.spot + 1);
+        }
+      }
+    }
+    std::sort(expected.begin(), expected.end());
+    SPIEL_CHECK_EQ(legal, expected);
+    // One choice would have been made with the cell.
+    SPIEL_CHECK_GE(legal.size(), 2);
+  }
+
+  for (Action action : cell_actions) {
+    const auto [tx, ty] = carcassonne_state.CellActionCell(action);
+    const bool portal = action % kCellActionPlanes == kPortalCellPlane;
+    // The spots of the choices there: a portal's meeple moves, the knights.
+    std::vector<int> options;
+    if (portal) {
+      options = ExpectedPortalMoves(core, tx, ty);
+    } else {
+      for (int i : ExpectedPrincessKnights(core)) {
+        if (core.pieces[i].x == tx && core.pieces[i].y == ty) options.push_back(core.pieces[i].spot);
+      }
+    }
+    const int player = core.currentPlayer;
+    std::unique_ptr<State> child = state.Clone();
+    child->ApplyAction(action);
+    const ::Carcassonne& after = dynamic_cast<const CarcassonneState&>(*child).UnderlyingState();
+    if (options.size() > 1) {
+      SPIEL_CHECK_EQ(after.current_phase, PHASE_SPOT);
+      SPIEL_CHECK_EQ(after.spot_choice, portal ? SPOT_PORTAL : SPOT_PRINCESS);
+      SPIEL_CHECK_EQ(after.spot_x, tx);
+      SPIEL_CHECK_EQ(after.spot_y, ty);
+      SPIEL_CHECK_EQ(child->LegalActions().size(), options.size());
+      continue;
+    }
+    SPIEL_CHECK_EQ(options.size(), 1);
+    SPIEL_CHECK_NE(after.current_phase, PHASE_SPOT);
+    // The portal's meeple stands there, on an open feature the turn's scoring
+    // leaves alone; the knight is gone. A spot names one piece on a tile.
+    const int spot = meepleSpot(options[0]);
+    const int cell_x = tx;
+    const int cell_y = ty;
+    const bool there = std::any_of(after.pieces.begin(), after.pieces.end(), [&](const Piece& piece) {
+      return piece.x == cell_x && piece.y == cell_y && piece.spot == spot && (!portal || piece.owner == player);
+    });
+    SPIEL_CHECK_EQ(there, portal);
+  }
+}
+
+// Whether a piece's spots take in more than one part of its tile: its feature
+// had already joined them when it was placed.
+bool SpansSeveralParts(const ::Carcassonne& core, const Piece& piece) {
+  const Placement placement = core.getPlacement(piece.x, piece.y);
+  const Tile& tile = full_deck[placement.id][placement.rotation];
+  for (int spot = 0; spot < kPieceSpotPlanes; ++spot) {
+    if (!(piece.spots >> spot & 1)) continue;
+    if (spot < MEEPLE_POS_MONASTERY && tile.link[spot] != tile.link[piece.spot]) return true;
+    if (spot >= MEEPLE_POS_FIELD && spot < MEEPLE_POS_INNER_FIELD &&
+        tile.field[spot - MEEPLE_POS_FIELD] != tile.field[piece.spot - MEEPLE_POS_FIELD]) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// Random games with the portal and the princess, every decision checked.
+void PortalPrincessGamesTest() {
+  std::mt19937 rng(20261009);
+  int portal_moves = 0;
+  int princess_moves = 0;
+  int spot_portal = 0;
+  int spot_princess = 0;
+  int shared_tiles = 0;     // decisions with two pieces on one tile
+  int several_parts = 0;    // decisions with a piece on several parts of its tile
+  for (const char* game_string : {kDragonGame, kAllExpansionsGame,
+                                  "carcassonne(inns_cathedrals=on,traders_builders=on,princess_dragon=on)",
+                                  "carcassonne(princess_dragon=tiles)"}) {
+    std::shared_ptr<const Game> game = LoadGame(game_string);
+    for (int sim = 0; sim < 15; ++sim) {
+      std::unique_ptr<State> state = game->NewInitialState();
+      const ::Carcassonne& core = dynamic_cast<const CarcassonneState&>(*state).UnderlyingState();
+      while (!state->IsTerminal()) {
+        if (state->IsChanceNode()) {
+          state->ApplyAction(SampleAction(state->ChanceOutcomes(), rng).first);
+          continue;
+        }
+        int fast[2];
+        int slow[2];
+        core.getPendingScore(fast);
+        core.getPendingScoreByResolving(slow);
+        SPIEL_CHECK_EQ(fast[0], slow[0]);
+        SPIEL_CHECK_EQ(fast[1], slow[1]);
+        CheckPieces(*state);
+        CheckDragon(*state);
+        CheckPortalPrincess(*state);
+        if (core.current_phase == PHASE_SPOT) {
+          SPIEL_CHECK_TRUE(core.portal_rules);
+          ++(core.spot_choice == SPOT_PORTAL ? spot_portal : spot_princess);
+        }
+        bool shared = false;
+        bool several = false;
+        for (int i = 0; i < core.pieces.size(); ++i) {
+          several = several || SpansSeveralParts(core, core.pieces[i]);
+          for (int j = 0; j < i; ++j) {
+            shared = shared || (core.pieces[i].x == core.pieces[j].x && core.pieces[i].y == core.pieces[j].y);
+          }
+        }
+        shared_tiles += shared;
+        several_parts += several;
+        const std::vector<Action> legal = state->LegalActions();
+        const Action action = legal[std::uniform_int_distribution<int>(0, legal.size() - 1)(rng)];
+        if (action < kCellActionCount && !IsTileAction(action)) {
+          ++(action % kCellActionPlanes == kPortalCellPlane ? portal_moves : princess_moves);
+        }
+        state->ApplyAction(action);
+      }
+      CheckPieces(*state);
+    }
+  }
+  std::cout << "PortalPrincessGamesTest: " << portal_moves << " portal cells chosen, " << princess_moves
+            << " princess cells; " << spot_portal << " portal and " << spot_princess
+            << " princess decisions in PHASE_SPOT; " << shared_tiles << " decisions with two pieces on a tile, "
+            << several_parts << " with a piece on several parts of its tile" << std::endl;
+  SPIEL_CHECK_GT(portal_moves, 0);
+  SPIEL_CHECK_GT(princess_moves, 0);
+  SPIEL_CHECK_GT(spot_portal, 0);
+  SPIEL_CHECK_GT(shared_tiles, 0);
+  SPIEL_CHECK_GT(several_parts, 0);
+}
+
 void ReturnsMatchScoresTest() {
   absl::BitGen gen;
   std::shared_ptr<const Game> game = LoadGame("carcassonne");
@@ -2473,11 +3006,13 @@ void LastUnplaceableTileTest() {
 // feature changed), so the caller can check that case was exercised, and adds
 // the same count for farmer moves (half-edge shifts) to `renamed_farmer_moves`
 // and the legal big meeple moves rotated to `big_meeple_moves`. The big meeple
-// names its spots like the meeple, so both count the same way.
+// names its spots like the meeple, so both count the same way. Adds the
+// decisions in PHASE_SPOT to `spot_decisions` if given.
 int CheckRotatedTwin(absl::Span<const Action> history, int k,
                      std::mt19937* rng, int* renamed_farmer_moves,
                      int* big_meeple_moves,
-                     const std::string& game_string = "carcassonne") {
+                     const std::string& game_string = "carcassonne",
+                     int* spot_decisions = nullptr) {
   std::shared_ptr<const Game> game = LoadGame(game_string);
   const auto& carcassonne_game = dynamic_cast<const CarcassonneGame&>(*game);
   const uint32_t expansions = carcassonne_game.Expansions();
@@ -2512,6 +3047,9 @@ int CheckRotatedTwin(absl::Span<const Action> history, int k,
     }
 
     SPIEL_CHECK_EQ(state.CurrentPlayer(), twin.CurrentPlayer());
+    if (spot_decisions != nullptr && state.UnderlyingState().current_phase == PHASE_SPOT) {
+      ++*spot_decisions;
+    }
     const SideGroups groups = GetSideGroups(state);
     const SideGroups rotated_groups = RotateSideGroups(groups, k);
     SPIEL_CHECK_TRUE(rotated_groups == GetSideGroups(twin));
@@ -2580,9 +3118,11 @@ void RotationEquivarianceTest() {
   int renamed_meeple_moves = 0;
   int renamed_farmer_moves = 0;
   int big_meeple_moves = 0;
+  int spot_decisions = 0;
+  const std::vector<Action> fixture = LastUnplaceableTileHistory();
   for (int k = 1; k < kNumBoardRotations; ++k) {
     renamed_meeple_moves +=
-        CheckRotatedTwin(kLastUnplaceableTileHistory, k, &rng,
+        CheckRotatedTwin(fixture, k, &rng,
                          &renamed_farmer_moves, &big_meeple_moves);
     for (int game = 0; game < 20; ++game) {
       renamed_meeple_moves += CheckRotatedTwin({}, k, &rng, &renamed_farmer_moves,
@@ -2594,7 +3134,7 @@ void RotationEquivarianceTest() {
                                       kTradersBuildersGame, kDragonGame}) {
         renamed_meeple_moves +=
             CheckRotatedTwin({}, k, &rng, &renamed_farmer_moves,
-                             &big_meeple_moves, game_string);
+                             &big_meeple_moves, game_string, &spot_decisions);
       }
     }
   }
@@ -2602,10 +3142,12 @@ void RotationEquivarianceTest() {
             << " meeple moves renamed beyond a side shift, "
             << renamed_farmer_moves
             << " farmer moves beyond a half-edge shift, " << big_meeple_moves
-            << " big meeple moves" << std::endl;
+            << " big meeple moves, " << spot_decisions
+            << " decisions in PHASE_SPOT" << std::endl;
   SPIEL_CHECK_GT(renamed_meeple_moves, 0);
   SPIEL_CHECK_GT(renamed_farmer_moves, 0);
   SPIEL_CHECK_GT(big_meeple_moves, 0);
+  SPIEL_CHECK_GT(spot_decisions, 0);
 }
 
 // Each expansion option deals that box's tiles and no others, "on" with its
@@ -3215,6 +3757,9 @@ void BasicCarcassonneTests() {
   PigTest();
   GoodsTest();
   DragonTest();
+  PortalTest();
+  PrincessTest();
+  PortalPrincessGamesTest();
   ReturnsMatchScoresTest();
   ShortGameMaxTurnsTest();
   LastUnplaceableTileTest();

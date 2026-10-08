@@ -142,6 +142,25 @@ inline bool ApplyLoggedAction(Carcassonne &g, const std::string &a, std::string 
         g.placeTile(x, y, rot);
         return true;
     }
+    // A cell chosen for a magic portal's meeple or the princess's knight.
+    const bool portal = sscanf(a.c_str(), "portal(x=%d, y=%d)", &x, &y) == 2;
+    if (portal || sscanf(a.c_str(), "princess(x=%d, y=%d)", &x, &y) == 2) {
+        if (g.current_phase != PHASE_MEEPLE) return fail("不在放 meeple 階段");
+        x += board_shift;
+        y += board_shift;
+        const Cells cells = portal ? g.getLegalPortalCells() : g.getLegalPrincessCells();
+        if (std::none_of(cells.begin(), cells.end(), [&](const auto &c) { return c.first == x && c.second == y; }))
+            return fail("不合法的格子");
+        g.chooseCell(portal ? SPOT_PORTAL : SPOT_PRINCESS, x, y);
+        return true;
+    }
+    if (sscanf(a.c_str(), "remove_knight(edge=%d)", &k) == 1) {
+        if (g.current_phase != PHASE_SPOT || g.spot_choice != SPOT_PRINCESS) return fail("不在選騎士的階段");
+        const MeepleMoves moves = g.getLegalSpotMoves();
+        if (std::none_of(moves.begin(), moves.end(), [&](int m) { return m == k; })) return fail("不合法的騎士");
+        g.chooseSpot(k);
+        return true;
+    }
     const std::string prefix = "place_meeple(";
     const std::string big_prefix = "place_big_meeple(";
     const std::string builder_prefix = "place_builder(";
@@ -167,12 +186,15 @@ inline bool ApplyLoggedAction(Carcassonne &g, const std::string &a, std::string 
         else return fail("看不懂的 meeple 位置");
         if (big) pos += MEEPLE_POS_BIG;  // 大米寶、建築師放在同樣的位置
         if (builder) pos += MEEPLE_POS_BUILDER;
-        if (g.current_phase != PHASE_MEEPLE) return fail("不在放 meeple 階段");
-        const MeepleMoves moves = g.getLegalMeepleMoves();
+        // 魔法門的第二段:選好的格子上的位置
+        const bool portal_spot = g.current_phase == PHASE_SPOT && g.spot_choice == SPOT_PORTAL;
+        if (g.current_phase != PHASE_MEEPLE && !portal_spot) return fail("不在放 meeple 階段");
+        const MeepleMoves moves = portal_spot ? g.getLegalSpotMoves() : g.getLegalMeepleMoves();
         bool legal = false;
         for (int i = 0; i < moves.size(); ++i) legal |= moves[i] == pos;
         if (!legal) return fail("不合法的 meeple 位置");
-        g.placeMeeple(pos);
+        if (portal_spot) g.chooseSpot(pos);
+        else g.placeMeeple(pos);
         return true;
     }
     char dir = 0;
@@ -192,7 +214,7 @@ inline bool ApplyLoggedAction(Carcassonne &g, const std::string &a, std::string 
 
 enum class ReplayResult { kOk, kError, kUnfinished };
 
-// 重播一局,每個決策點(放磚與放 meeple)套用前呼叫 on_decision(game)。
+// 重播一局,每個決策點(放磚、放 meeple 等)套用前呼叫 on_decision(game)。
 // kOk 表示下完,而且勝負與 log 記的 Returns 一致。
 template <typename OnDecision>
 ReplayResult Replay(const LoggedGame &logged, OnDecision on_decision, std::string *error) {

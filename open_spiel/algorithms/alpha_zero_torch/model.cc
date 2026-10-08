@@ -423,23 +423,22 @@ ModelImpl::ModelImpl(const ModelConfig& config, const std::string& device)
     constexpr int kValueHidden = 256;
 
     // A conv policy head needs the actions to factor into a few choices per
-    // board cell plus a handful that belong to no cell. Carcassonne's do: four
-    // tile rotations per cell (1764) and then 41 meeple moves (skip, 14 spots
-    // for the meeple and for the big meeple, 4 sides for the builder, 8
-    // half-edges for the pig) and 4 dragon steps, read from the focus cell
-    // (the tile just placed, or the dragon's). Games whose action count is
-    // nothing like 4 * height * width (tic_tac_toe, connect_four, othello)
-    // keep the dense head.
-    constexpr int kPolicyRotations = 4;
+    // board cell plus a handful that belong to no cell. Carcassonne's do: six
+    // per cell (2646: four tile rotations, a magic portal's cell, the
+    // princess's cell) and then 41 meeple moves (skip, 14 spots for the meeple
+    // and for the big meeple, 4 sides for the builder, 8 half-edges for the
+    // pig) and 4 dragon steps, read from the focus cell (the tile just placed,
+    // the dragon's, or the cell chosen). The choices per cell are as many as
+    // whole boards fit in the action count. Only a game that marks its focus
+    // cell (last_placed_plane) says its actions factor this way; the others
+    // (tic_tac_toe, connect_four, othello) keep the dense head.
     constexpr int kMaxExtraActions = 64;
     constexpr int kPolicyConvFilters = 32;
-    const int placement_actions = kPolicyRotations * height * width;
-    const int extra_actions = config.number_of_actions - placement_actions;
-    // The per-cell actions alone are not enough: the actions tied to the cell
-    // just played are read from the plane that marks it.
-    const bool conv_policy =
-        extra_actions >= 0 && extra_actions <= kMaxExtraActions &&
-        (extra_actions == 0 || config.last_placed_plane >= 0);
+    const int board_cells = height * width;
+    const int planes_per_cell = config.number_of_actions / board_cells;
+    const int extra_actions = config.number_of_actions % board_cells;
+    const bool conv_policy = config.last_placed_plane >= 0 && planes_per_cell >= 1 &&
+                             extra_actions <= kMaxExtraActions;
 
     ResOutputBlockConfig output_config = {
         /*input_channels=*/config.nn_width,
@@ -453,7 +452,7 @@ ModelImpl::ModelImpl(const ModelConfig& config, const std::string& device)
         /*policy_linear_in_features=*/2 * width * height,
         /*policy_linear_out_features=*/config.number_of_actions,
         /*policy_observation_size=*/2 * width * height,
-        /*policy_conv_planes=*/conv_policy ? kPolicyRotations : 0,
+        /*policy_conv_planes=*/conv_policy ? planes_per_cell : 0,
         /*policy_extra_actions=*/conv_policy ? extra_actions : 0,
         /*global_features=*/global_features_};
 

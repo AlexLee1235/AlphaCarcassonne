@@ -65,8 +65,22 @@ constexpr int meepleSpot(int pos) {
 }
 
 // PHASE_DRAGON: the dragon moves, one step a decision, after the meeple phase
-// of a dragon tile and before that turn is scored.
-enum GamePhase { PHASE_CHANCE = 0, PHASE_TILE = 1, PHASE_MEEPLE = 2, PHASE_TERMINAL = 3, PHASE_DRAGON = 4 };
+// of a dragon tile and before that turn is scored. PHASE_SPOT: the second step
+// of a choice the meeple phase made by cell (Carcassonne::chooseCell), a spot
+// on that cell.
+enum GamePhase {
+    PHASE_CHANCE = 0,
+    PHASE_TILE = 1,
+    PHASE_MEEPLE = 2,
+    PHASE_TERMINAL = 3,
+    PHASE_DRAGON = 4,
+    PHASE_SPOT = 5
+};
+
+// The choices the meeple phase makes by cell (The Princess & the Dragon):
+// through a magic portal, a meeple onto a tile placed before; with the
+// princess, a knight off the city she continues.
+enum SpotChoice : uint8_t { SPOT_PORTAL = 0, SPOT_PRINCESS = 1 };
 
 // The dragon moves up to this many tiles each time a dragon tile is placed.
 constexpr int DRAGON_STEPS = 6;
@@ -75,6 +89,14 @@ constexpr int DRAGON_STEPS = 6;
 // it there: a side 0..3 for a road or city (the builder's too), 4 the
 // monastery, MEEPLE_POS_FIELD + half-edge a field (the pig's too), or the inner
 // field.
+//
+// Its spots are where it stands on its tile, one bit per spot 0..13: every
+// side (or half-edge) of the tile that its road, city or field had there when
+// it was placed, or the monastery, or the inner field. The spot is the lowest
+// of them. Taken when placed and never changed: a road or city that later
+// joins another part of the tile does not move the piece. So two pieces on one
+// tile never share a spot (the later one went on a feature with no piece), and
+// the spots turn with the board, as the set is no choice of one side.
 enum PieceKind : uint8_t { PIECE_MEEPLE = 0, PIECE_BIG_MEEPLE = 1, PIECE_BUILDER = 2, PIECE_PIG = 3 };
 struct Piece {
     int8_t x = -1;
@@ -83,7 +105,10 @@ struct Piece {
     int8_t spot = -1;
     uint8_t owner = 0;
     PieceKind kind = PIECE_MEEPLE;
+    uint16_t spots = 0;
 };
+// Board cells, such as the targets of a choice by cell.
+using Cells = FixedVector<std::pair<int8_t, int8_t>, TOTAL_TILE_COUNT>;
 // Every meeple, big meeple, builder and pig of both players.
 constexpr int MAX_PIECES = 2 * (MEEPLES_PER_PLAYER + 3);
 
@@ -383,12 +408,30 @@ class Carcassonne {
     // Drops the records of the pieces that the turn's scoring sent home.
     void forgetSettledPieces();
     // The dragon takes every piece on the tile at (x, y) back to its owner's
-    // supply, and with it a builder or pig whose owner has no follower left on
-    // its road, city or field.
+    // supply (sendHome).
     void eatPiecesAt(int x, int y);
     // Sends piece `index` home and drops its record; returns the piece.
     Piece removePiece(int index);
+    // The same, and with a meeple a builder or pig whose owner has no follower
+    // left on its road, city or field.
+    void sendHome(int index);
     bool dragonCanEnter(int x, int y) const;
+    // Puts down the piece of meeple move `pos` on the tile at (x, y) for the
+    // current player.
+    void putPiece(int x, int y, int pos);
+    // The spots (Piece::spots) of meeple spot `spot` on the tile at (x, y): the
+    // sides or half-edges of the tile in that road, city or field now.
+    uint16_t spotsOf(int x, int y, int spot) const;
+    // After the meeple phase's move, whatever it was: the dragon moves if the
+    // tile was a dragon tile, else the turn ends.
+    void endPiecePhase();
+    // The city of the last tile's princess (princess rules), as a feature root,
+    // or -1.
+    int princessCityRoot() const;
+    // The pieces a choice by cell can pick on (x, y): spots for a portal,
+    // indices into `pieces` (knights) for the princess.
+    MeepleMoves portalMovesAt(int x, int y) const;
+    FixedVector<int, MAX_PIECES> princessKnightsAt(int x, int y) const;
 
   public:
     int last_x = -1;
@@ -459,7 +502,7 @@ class Carcassonne {
     int river_last_turn = 0;    // its last bend, as (out - in heading) % 4: 1 clockwise, 3 anticlockwise; 0 none yet
     int river_tiles_placed = 0; // river tiles on the board, the spring included
 
-    // The Princess & the Dragon, the dragon alone so far. The first volcano
+    // The Princess & the Dragon: the dragon. The first volcano
     // brings it into play and each volcano after that takes it there; until
     // then no dragon tile is drawn (DeckModule::hold_dragon_tiles). After the
     // meeple phase of a dragon tile it moves up to DRAGON_STEPS tiles, one step
@@ -473,6 +516,20 @@ class Carcassonne {
     int dragon_steps = 0;          // taken in the current move
     int dragon_turn_player = -1;   // whose turn the dragon moves in; -1 outside PHASE_DRAGON
     FixedVector<std::pair<int8_t, int8_t>, DRAGON_STEPS + 1> dragon_visited;  // this move, start included
+
+    // The Princess & the Dragon, with the dragon. Magic portal: the turn a
+    // portal tile is placed, a meeple or big meeple may go on any tile placed
+    // before instead of this one, on a road, city, field or monastery that has
+    // no piece and is not complete (the tile just placed may have completed it),
+    // never on the dragon's tile. Princess: when a princess tile's city holds
+    // knights, the player may send one of them home, either player's, instead
+    // of placing a piece. Both are chosen by cell, then if the cell offers
+    // more than one choice, by spot (PHASE_SPOT, chooseSpot).
+    bool portal_rules = false;
+    bool princess_rules = false;
+    SpotChoice spot_choice = SPOT_PORTAL;  // in PHASE_SPOT, which choice
+    int spot_x = -1;                       // and its cell
+    int spot_y = -1;
 
     // Every piece on the board, where it stands.
     FixedVector<Piece, MAX_PIECES> pieces;
@@ -534,15 +591,29 @@ class Carcassonne {
     // then the builder's sides (MEEPLE_POS_BUILDER + side) and the pig's
     // half-edges (MEEPLE_POS_PIG + half-edge) if they have them.
     MeepleMoves getLegalMeepleMoves() const;
-    // For each side of the last placed tile, the lowest side of that tile in the
-    // same feature (-1 for grass, river or no tile). Meeple moves name a feature by that
-    // lowest side, so this is what maps meeple moves under board rotation.
-    void getLastTileSideGroups(int8_t groups[4]) const;
-    // The same for fields: for each half-edge of the last placed tile, the
-    // lowest half-edge of that tile in the same field (-1 on city sides).
-    void getLastTileFieldGroups(int8_t groups[HALF_EDGE_COUNT]) const;
+    // How the spots of the focus cell group, which is what maps the spot moves
+    // of the current decision under board rotation: for each side, the lowest
+    // side of the tile that names the same choice, -1 where none does; then the
+    // same for each half-edge. The meeple phase and a portal's spots name a
+    // feature or field by its lowest side or half-edge on the tile; the
+    // princess's name a piece by its spot (the lowest of its spots).
+    void getFocusSpotGroups(int8_t sides[4], int8_t half_edges[HALF_EDGE_COUNT]) const;
     // Then the dragon moves if the tile was a dragon tile, else the turn ends.
     void placeMeeple(int pos);
+
+    // The cells the meeple phase can choose for a magic portal (the last tile
+    // is one; every tile before it with a spot portalMovesAt offers) and for
+    // the princess (the last tile is one; every tile with a knight in her
+    // city). Empty in other phases.
+    Cells getLegalPortalCells() const;
+    Cells getLegalPrincessCells() const;
+    // Does the choice on that cell, if it offers one move; else waits for it
+    // in PHASE_SPOT.
+    void chooseCell(SpotChoice choice, int x, int y);
+    // PHASE_SPOT: a portal's meeple moves on the cell (a spot, or a spot +
+    // MEEPLE_POS_BIG), or the princess's knights there, each by its spot.
+    MeepleMoves getLegalSpotMoves() const;
+    void chooseSpot(int pos);
 
     bool dragonInPlay() const { return dragon_x >= 0; }
     // The sides (0 N, 1 E, 2 S, 3 W) the dragon can step to in PHASE_DRAGON.
@@ -550,7 +621,11 @@ class Carcassonne {
     // One step for the current player; the next step is the other player's.
     void moveDragon(int side);
     // The cell the current decision is about: the dragon's in PHASE_DRAGON,
-    // else the tile last placed.
-    int focusX() const { return current_phase == PHASE_DRAGON ? dragon_x : last_x; }
-    int focusY() const { return current_phase == PHASE_DRAGON ? dragon_y : last_y; }
+    // the chosen cell in PHASE_SPOT, else the tile last placed.
+    int focusX() const {
+        return current_phase == PHASE_DRAGON ? dragon_x : current_phase == PHASE_SPOT ? spot_x : last_x;
+    }
+    int focusY() const {
+        return current_phase == PHASE_DRAGON ? dragon_y : current_phase == PHASE_SPOT ? spot_y : last_y;
+    }
 };

@@ -48,6 +48,9 @@ MEEPLE_POS_BIG = int(_carcassonne_cpp.MEEPLE_POS_BIG)
 MEEPLE_POS_BUILDER = int(_carcassonne_cpp.MEEPLE_POS_BUILDER)
 MEEPLE_POS_PIG = int(_carcassonne_cpp.MEEPLE_POS_PIG)
 HALF_EDGE_COUNT = int(_carcassonne_cpp.HALF_EDGE_COUNT)
+# Traders & Builders goods, in the engine's order.
+GOODS_NAMES = ("wine", "wheat", "cloth")
+assert len(GOODS_NAMES) == int(_carcassonne_cpp.GOODS_KINDS)
 # Expansions, named as the game parameters name them; EXPANSION_NAMES[0] is the base.
 EXPANSION_NAMES = list(_carcassonne_cpp.EXPANSION_NAMES)
 BASE_ONLY = int(_carcassonne_cpp.BASE_ONLY)
@@ -123,6 +126,23 @@ def _physical_to_art_id(physical_id: int) -> int:
     if physical_id <= 0:
         return 0
     return PHYSICAL_TO_CANONICAL_TYPE[physical_id]
+
+
+def meeple_spot(meeple_pos: int) -> int:
+    """Where a meeple move puts its piece, whichever piece: -1 .. MEEPLE_POS_INNER_FIELD
+    (a pig's is the farmer spot of its field)."""
+    return int(_carcassonne_cpp.meeple_spot(meeple_pos))
+
+
+def meeple_piece(meeple_pos: int) -> str:
+    """The piece a meeple move places: "meeple", or an expansion's "big", "builder" or "pig"."""
+    if meeple_pos >= MEEPLE_POS_PIG:
+        return "pig"
+    if meeple_pos >= MEEPLE_POS_BUILDER:
+        return "builder"
+    if meeple_pos >= MEEPLE_POS_BIG:
+        return "big"
+    return "meeple"
 
 
 def _meeple_action_string(meeple_pos: int) -> str:
@@ -545,6 +565,10 @@ class CppCarcassonneAdapter:
                 "score_deltas": [score_deltas[1], score_deltas[2]],
                 "scores": [int(score) for score in self._engine.player_scores],
                 "meeples": [int(count) for count in self._engine.holding_meeples],
+                "big_meeples": [int(count) for count in self._engine.holding_big_meeples],
+                "builders": [int(count) for count in self._engine.holding_builders],
+                "pigs": [int(count) for count in self._engine.holding_pigs],
+                "goods": [[int(count) for count in tokens] for tokens in self._engine.goods_tokens],
                 "value": bot_value.value if bot_value else None,
                 "raw_value": bot_value.raw_value if bot_value else None,
             }
@@ -771,16 +795,20 @@ class CppCarcassonneAdapter:
                 tile_owner=latest_owner if (x, y) == latest_pos else None,
             )
         # The engine only knows meeple counts per feature, so get_meeple_tokens() marks every
-        # edge of a claimed road/city. Draw each meeple where it was actually placed (from
+        # edge of a claimed road/city. Draw each piece where it was actually placed (from
         # move_records) and use the tokens only to tell whether it is still on the board:
         # completing a feature or monastery clears its token and returns the meeple.
-        # Farmers have no token and are never returned, so they always stay.
+        # - A big meeple counts in the same tokens as a meeple.
+        # - A builder goes on a road or city that holds one of its owner's meeples, which
+        #   stays there till the feature is completed and both go home: it has a token as
+        #   long as the builder is there.
+        # - Farmers and pigs have no token and are never returned, so they always stay.
         live_tokens = set(self._engine.get_meeple_tokens())
         for record in self.move_records:
-            if record.meeple_pos == -1:
+            if record.meeple_pos == MEEPLE_POS_SKIP:
                 continue
-            is_farmer = record.meeple_pos >= MEEPLE_POS_FIELD
-            if not is_farmer and (record.player - 1, record.x, record.y, record.meeple_pos) not in live_tokens:
+            spot = meeple_spot(record.meeple_pos)
+            if spot < MEEPLE_POS_FIELD and (record.player - 1, record.x, record.y, spot) not in live_tokens:
                 continue
             tile = board.get((record.x, record.y))
             if tile is None:
@@ -798,6 +826,15 @@ class CppCarcassonneAdapter:
         scores = self._engine.player_scores
         meeples = self._engine.holding_meeples
         current_player_ui = self._engine.current_player + 1
+        holdings = {
+            "big": (self._engine.big_meeple_rules, self._engine.holding_big_meeples),
+            "builder": (self._engine.builder_rules, self._engine.holding_builders),
+            "pig": (self._engine.pig_rules, self._engine.holding_pigs),
+        }
+        piece_kinds = tuple(kind for kind, (rules, _) in holdings.items() if rules)
+        goods = {}
+        if self._engine.goods_rules:
+            goods = {player + 1: tuple(int(n) for n in tokens) for player, tokens in enumerate(self._engine.goods_tokens)}
 
         return GameState(
             board=self._build_board(),
@@ -809,4 +846,10 @@ class CppCarcassonneAdapter:
             meeples_remaining={1: meeples[0], 2: meeples[1]},
             game_over=game_over,
             turn=self._turn,
+            piece_kinds=piece_kinds,
+            pieces_remaining={
+                player: {kind: int(holdings[kind][1][player - 1]) for kind in piece_kinds} for player in (1, 2)
+            },
+            goods=goods,
+            builder_extra_tile=bool(self._engine.builder_second_tile) and not game_over,
         )

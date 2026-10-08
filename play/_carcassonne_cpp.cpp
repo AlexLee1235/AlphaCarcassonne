@@ -104,6 +104,27 @@ std::vector<int> HoldingMeeples(const Carcassonne &game) {
     return {game.holding_meeples[0], game.holding_meeples[1]};
 }
 
+std::vector<int> HoldingBigMeeples(const Carcassonne &game) {
+    return {game.holding_big_meeples[0], game.holding_big_meeples[1]};
+}
+
+std::vector<int> HoldingBuilders(const Carcassonne &game) {
+    return {game.holding_builders[0], game.holding_builders[1]};
+}
+
+std::vector<int> HoldingPigs(const Carcassonne &game) {
+    return {game.holding_pigs[0], game.holding_pigs[1]};
+}
+
+// Each player's goods tokens, by kind in GOODS_MARKS_BY_KIND order: wine, wheat, cloth.
+std::vector<std::vector<int>> GoodsTokens(const Carcassonne &game) {
+    std::vector<std::vector<int>> result;
+    for (int player = 0; player < 2; ++player) {
+        result.emplace_back(game.goods_tokens[player], game.goods_tokens[player] + GOODS_KINDS);
+    }
+    return result;
+}
+
 } // namespace
 
 PYBIND11_MODULE(_carcassonne_cpp, m) {
@@ -124,6 +145,9 @@ PYBIND11_MODULE(_carcassonne_cpp, m) {
     m.attr("MEEPLE_POS_BUILDER") = MEEPLE_POS_BUILDER;
     m.attr("MEEPLE_POS_PIG") = MEEPLE_POS_PIG;
     m.attr("HALF_EDGE_COUNT") = HALF_EDGE_COUNT;
+    m.attr("GOODS_KINDS") = GOODS_KINDS;
+    // Where a meeple move puts its piece, whichever piece: -1 .. 13.
+    m.def("meeple_spot", [](int pos) { return meepleSpot(pos); });
     // Expansions, as the game parameters name them (EXPANSION_NAMES[0] is the base).
     m.attr("EXPANSION_NAMES") = std::vector<std::string>(EXPANSION_NAMES, EXPANSION_NAMES + EXPANSION_COUNT);
     m.attr("BASE_ONLY") = BASE_ONLY;
@@ -149,6 +173,16 @@ PYBIND11_MODULE(_carcassonne_cpp, m) {
                                [](const Carcassonne &game) { return game.current_tile_in_hand; })
         .def_property_readonly("player_scores", &PlayerScores)
         .def_property_readonly("holding_meeples", &HoldingMeeples)
+        .def_property_readonly("holding_big_meeples", &HoldingBigMeeples)
+        .def_property_readonly("holding_builders", &HoldingBuilders)
+        .def_property_readonly("holding_pigs", &HoldingPigs)
+        .def_property_readonly("goods_tokens", &GoodsTokens)
+        .def_readonly("big_meeple_rules", &Carcassonne::big_meeple_rules)
+        .def_readonly("builder_rules", &Carcassonne::builder_rules)
+        .def_readonly("pig_rules", &Carcassonne::pig_rules)
+        .def_readonly("goods_rules", &Carcassonne::goods_rules)
+        // The current player is on the second tile their builder gave them.
+        .def_readonly("builder_second_tile", &Carcassonne::builder_second_tile)
         // The first cell of the view, which follows the tiles: every tile and
         // every legal move is in the VIEW_SIZE x VIEW_SIZE cells from it.
         .def_property_readonly("view_origin",

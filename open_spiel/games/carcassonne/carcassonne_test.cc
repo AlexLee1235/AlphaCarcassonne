@@ -178,11 +178,11 @@ void ObservationTensorSmokeTest() {
   const std::vector<int> shape = game->ObservationTensorShape();
 
   SPIEL_CHECK_EQ(shape.size(), 3);
-  SPIEL_CHECK_EQ(shape[0], 187);
+  SPIEL_CHECK_EQ(shape[0], 203);
   SPIEL_CHECK_EQ(shape[0], kObservationPlanes);
   SPIEL_CHECK_EQ(shape[1], VIEW_SIZE);
   SPIEL_CHECK_EQ(shape[2], VIEW_SIZE);
-  SPIEL_CHECK_EQ(game->NumDistinctActions(), 6 * VIEW_SIZE * VIEW_SIZE + 41 + 4);
+  SPIEL_CHECK_EQ(game->NumDistinctActions(), 7 * VIEW_SIZE * VIEW_SIZE + 41 + 4);
 
   SPIEL_CHECK_EQ(state->ObservationTensor(0).size(), kObservationTensorSize);
   SPIEL_CHECK_EQ(state->ObservationTensor(1).size(), kObservationTensorSize);
@@ -553,9 +553,6 @@ const std::vector<int> kHiddenFieldTypes = {
     67,  // corner city, roads from its gate on both free sides; wall between them
     94,  // corner city, wall into the opposite corner (vs plain corner cities)
     95,  // two cities, a diagonal strip of grass between them (vs type 38)
-    // The roads end in the grass short of the city, so they do not cut the
-    // grass, where in 45 and 72 they reach the city gates.
-    76,
 };
 
 void PrintAll(const char* what, const std::vector<std::string>& messages) {
@@ -651,6 +648,13 @@ void TileCheckTest() {
   // A river going on to the far side, but one field on both its halves.
   SPIEL_CHECK_TRUE(fails(Tile(RIVER, GRASS, RIVER, GRASS, 0, 1, 0, 2,
                               {{0, 0, 0, 0, 0, 0, 0, 0}, 1, {}})));
+  // A road through a tunnel under a city cuts no grass (type 76); without
+  // the tunnel it would.
+  const FieldLayout round_the_road = {{0, 0, -1, -1, 1, 1, -1, -1}, 2, {SIDE_E | SIDE_W, SIDE_E | SIDE_W}};
+  SPIEL_CHECK_TRUE(tile_check::CheckTile(Tile(ROAD, CITY, ROAD, CITY, 0, 1, 0, 1, round_the_road, {},
+                                              TILE_TUNNEL))
+                       .empty());
+  SPIEL_CHECK_TRUE(fails(Tile(ROAD, CITY, ROAD, CITY, 0, 1, 0, 1, round_the_road)));
   // A field listing only one side of the city it borders.
   SPIEL_CHECK_TRUE(fails(Tile(CITY, CITY, GRASS, CITY, 0, 0, 1, 0,
                               {{-1, -1, -1, -1, 0, 0, -1, -1}, 1, {SIDE_N}})));
@@ -2245,6 +2249,8 @@ void CheckDragon(const State& state) {
   SPIEL_CHECK_EQ(PlaneSum(obs, kDragonPlane), core.dragonInPlay() ? 1.0f : 0.0f);
   if (core.dragonInPlay()) {
     SPIEL_CHECK_EQ(BoardPlaneValue(obs, core, kDragonPlane, core.dragon_x, core.dragon_y), 1.0f);
+    // Never on the fairy's tile, nor ever stepping there.
+    SPIEL_CHECK_FALSE(core.dragon_x == core.fairy_x && core.dragon_y == core.fairy_y);
   }
   SPIEL_CHECK_EQ(PlaneSum(obs, kDragonVisitedPlane),
                  moving ? static_cast<float>(core.dragon_visited.size()) : 0.0f);
@@ -2263,9 +2269,13 @@ void CheckDragon(const State& state) {
     SPIEL_CHECK_EQ(BoardPlaneValue(obs, core, kLastPlacedPlane, core.dragon_x, core.dragon_y), 1.0f);
     const std::vector<Action> actions = state.LegalActions();
     SPIEL_CHECK_FALSE(actions.empty());
+    constexpr int kStepX[4] = {0, 1, 0, -1};
+    constexpr int kStepY[4] = {-1, 0, 1, 0};
     for (Action action : actions) {
       SPIEL_CHECK_GE(action, kDragonActionOffset);
-      legal[action - kDragonActionOffset] = 1.0f;
+      const int side = action - kDragonActionOffset;
+      legal[side] = 1.0f;
+      SPIEL_CHECK_FALSE(core.dragon_x + kStepX[side] == core.fairy_x && core.dragon_y + kStepY[side] == core.fairy_y);
     }
   }
   for (int side = 0; side < kDragonActionCount; ++side) {
@@ -2383,7 +2393,16 @@ void DragonTest() {
         if (core.current_phase == PHASE_MEEPLE && core.dragon_rules) {
           const Placement last = core.getPlacement(core.last_x, core.last_y);
           if (full_deck[last.id][last.rotation].tile_marks & TILE_VOLCANO) {
-            SPIEL_CHECK_EQ(legal, std::vector<Action>{kMeepleActionOffset});
+            // No piece on it; the fairy may move.
+            std::vector<Action> meeple_moves;
+            for (Action action : legal) {
+              if (action >= kMeepleActionOffset) {
+                meeple_moves.push_back(action);
+              } else {
+                SPIEL_CHECK_EQ(action % kCellActionPlanes, kFairyCellPlane);
+              }
+            }
+            SPIEL_CHECK_EQ(meeple_moves, std::vector<Action>{kMeepleActionOffset});
           }
         }
         const bool stepping = core.current_phase == PHASE_DRAGON;
@@ -2707,46 +2726,65 @@ std::vector<int> ExpectedPrincessKnights(const ::Carcassonne& core) {
   return knights;
 }
 
-// The cells a portal or the princess can choose, as the rules give them,
-// against the legal actions, the observation and what choosing each does (one
-// choice there is made at once, more wait in PHASE_SPOT); and PHASE_SPOT as
-// the legal actions and the observation give it.
-void CheckPortalPrincess(const State& state) {
+// The meeples the current player may put the fairy next to, as indices into
+// core.pieces: their meeples and big meeples, but the one it is next to.
+std::vector<int> ExpectedFairyMeeples(const ::Carcassonne& core) {
+  std::vector<int> meeples;
+  if (!core.fairy_rules) return meeples;
+  for (int i = 0; i < core.pieces.size(); ++i) {
+    const Piece& piece = core.pieces[i];
+    const bool fairys = piece.x == core.fairy_x && piece.y == core.fairy_y && piece.spot == core.fairy_spot;
+    if (piece.owner == core.currentPlayer && (piece.kind == PIECE_MEEPLE || piece.kind == PIECE_BIG_MEEPLE) &&
+        !fairys) {
+      meeples.push_back(i);
+    }
+  }
+  return meeples;
+}
+
+// The cells a portal, the princess or the fairy can choose, as the rules give
+// them, against the legal actions, the observation and what choosing each does
+// (one choice there is made at once, more wait in PHASE_SPOT); and PHASE_SPOT
+// as the legal actions and the observation give it.
+void CheckCellChoices(const State& state) {
   const auto& carcassonne_state = dynamic_cast<const CarcassonneState&>(state);
   const ::Carcassonne& core = carcassonne_state.UnderlyingState();
   const std::vector<float> obs = state.ObservationTensor(0);
   const std::vector<Action> legal = state.LegalActions();
   const bool meeple_phase = core.current_phase == PHASE_MEEPLE;
   const bool spot_phase = core.current_phase == PHASE_SPOT;
-  std::vector<std::pair<int, int>> portal_cells;
-  std::vector<std::pair<int, int>> princess_cells;
+  // The pieces each choice of the princess or the fairy can pick.
+  const std::vector<int> knights = ExpectedPrincessKnights(core);
+  const std::vector<int> fairy_meeples = ExpectedFairyMeeples(core);
+  std::vector<std::pair<int, int>> cells[3];  // portal, princess, fairy
   if (meeple_phase && core.portal_rules) {
     const Placement last = core.getPlacement(core.last_x, core.last_y);
     if (full_deck[last.id][last.rotation].tile_marks & TILE_PORTAL) {
       for (int y = 0; y < BOARD_SIZE; ++y) {
         for (int x = 0; x < BOARD_SIZE; ++x) {
-          if (!ExpectedPortalMoves(core, x, y).empty()) portal_cells.push_back({x, y});
+          if (!ExpectedPortalMoves(core, x, y).empty()) cells[0].push_back({x, y});
         }
       }
     }
   }
-  if (meeple_phase) {
-    for (int i : ExpectedPrincessKnights(core)) {
+  for (int choice : {1, 2}) {
+    for (int i : (choice == 1 ? knights : fairy_meeples)) {
       const std::pair<int, int> cell = {core.pieces[i].x, core.pieces[i].y};
-      if (std::find(princess_cells.begin(), princess_cells.end(), cell) == princess_cells.end()) {
-        princess_cells.push_back(cell);
+      if (meeple_phase && std::find(cells[choice].begin(), cells[choice].end(), cell) == cells[choice].end()) {
+        cells[choice].push_back(cell);
       }
     }
   }
+  constexpr int kChoicePlanes[3] = {kPortalCellPlane, kPrincessCellPlane, kFairyCellPlane};
+  constexpr int kLegalPlanes[3] = {kLegalPortalCellPlane, kLegalPrincessCellPlane, kLegalFairyCellPlane};
   // SPIEL_CHECK_EQ's own locals are called x and y.
   std::vector<Action> expected_cells;
-  for (const auto& [tx, ty] : portal_cells) {
-    expected_cells.push_back(carcassonne_state.CellAction(tx, ty, kPortalCellPlane));
-    SPIEL_CHECK_EQ(BoardPlaneValue(obs, core, kLegalPortalCellPlane, tx, ty), 1.0f);
-  }
-  for (const auto& [tx, ty] : princess_cells) {
-    expected_cells.push_back(carcassonne_state.CellAction(tx, ty, kPrincessCellPlane));
-    SPIEL_CHECK_EQ(BoardPlaneValue(obs, core, kLegalPrincessCellPlane, tx, ty), 1.0f);
+  for (int choice = 0; choice < 3; ++choice) {
+    for (const auto& [tx, ty] : cells[choice]) {
+      expected_cells.push_back(carcassonne_state.CellAction(tx, ty, kChoicePlanes[choice]));
+      SPIEL_CHECK_EQ(BoardPlaneValue(obs, core, kLegalPlanes[choice], tx, ty), 1.0f);
+    }
+    SPIEL_CHECK_EQ(PlaneSum(obs, kLegalPlanes[choice]), static_cast<float>(cells[choice].size()));
   }
   std::sort(expected_cells.begin(), expected_cells.end());
   std::vector<Action> cell_actions;
@@ -2754,12 +2792,11 @@ void CheckPortalPrincess(const State& state) {
     if (action < kCellActionCount && !IsTileAction(action)) cell_actions.push_back(action);
   }
   SPIEL_CHECK_EQ(cell_actions, expected_cells);
-  SPIEL_CHECK_EQ(PlaneSum(obs, kLegalPortalCellPlane), static_cast<float>(portal_cells.size()));
-  SPIEL_CHECK_EQ(PlaneSum(obs, kLegalPrincessCellPlane), static_cast<float>(princess_cells.size()));
 
-  SPIEL_CHECK_EQ(GlobalValue(obs, kGlobalSpotPortal), spot_phase && core.spot_choice == SPOT_PORTAL ? 1.0f : 0.0f);
-  SPIEL_CHECK_EQ(GlobalValue(obs, kGlobalSpotPrincess),
-                 spot_phase && core.spot_choice == SPOT_PRINCESS ? 1.0f : 0.0f);
+  constexpr int kSpotGlobals[3] = {kGlobalSpotPortal, kGlobalSpotPrincess, kGlobalSpotFairy};
+  for (int choice = 0; choice < 3; ++choice) {
+    SPIEL_CHECK_EQ(GlobalValue(obs, kSpotGlobals[choice]), spot_phase && core.spot_choice == choice ? 1.0f : 0.0f);
+  }
   if (spot_phase) {
     SPIEL_CHECK_EQ(PlaneSum(obs, kLastPlacedPlane), 1.0f);
     SPIEL_CHECK_EQ(BoardPlaneValue(obs, core, kLastPlacedPlane, core.spot_x, core.spot_y), 1.0f);
@@ -2770,7 +2807,7 @@ void CheckPortalPrincess(const State& state) {
         expected.push_back(kMeepleActionOffset + move + 1);
       }
     } else {
-      for (int i : ExpectedPrincessKnights(core)) {
+      for (int i : (core.spot_choice == SPOT_PRINCESS ? knights : fairy_meeples)) {
         const Piece& piece = core.pieces[i];
         if (piece.x == core.spot_x && piece.y == core.spot_y) {
           expected.push_back(kMeepleActionOffset + piece.spot + 1);
@@ -2785,13 +2822,17 @@ void CheckPortalPrincess(const State& state) {
 
   for (Action action : cell_actions) {
     const auto [tx, ty] = carcassonne_state.CellActionCell(action);
-    const bool portal = action % kCellActionPlanes == kPortalCellPlane;
-    // The spots of the choices there: a portal's meeple moves, the knights.
+    const int plane = action % kCellActionPlanes;
+    const SpotChoice choice = plane == kPortalCellPlane     ? SPOT_PORTAL
+                              : plane == kPrincessCellPlane ? SPOT_PRINCESS
+                                                            : SPOT_FAIRY;
+    // The spots of the choices there: a portal's meeple moves, the knights,
+    // the meeples for the fairy.
     std::vector<int> options;
-    if (portal) {
+    if (choice == SPOT_PORTAL) {
       options = ExpectedPortalMoves(core, tx, ty);
     } else {
-      for (int i : ExpectedPrincessKnights(core)) {
+      for (int i : (choice == SPOT_PRINCESS ? knights : fairy_meeples)) {
         if (core.pieces[i].x == tx && core.pieces[i].y == ty) options.push_back(core.pieces[i].spot);
       }
     }
@@ -2801,7 +2842,7 @@ void CheckPortalPrincess(const State& state) {
     const ::Carcassonne& after = dynamic_cast<const CarcassonneState&>(*child).UnderlyingState();
     if (options.size() > 1) {
       SPIEL_CHECK_EQ(after.current_phase, PHASE_SPOT);
-      SPIEL_CHECK_EQ(after.spot_choice, portal ? SPOT_PORTAL : SPOT_PRINCESS);
+      SPIEL_CHECK_EQ(after.spot_choice, choice);
       SPIEL_CHECK_EQ(after.spot_x, tx);
       SPIEL_CHECK_EQ(after.spot_y, ty);
       SPIEL_CHECK_EQ(child->LegalActions().size(), options.size());
@@ -2809,15 +2850,65 @@ void CheckPortalPrincess(const State& state) {
     }
     SPIEL_CHECK_EQ(options.size(), 1);
     SPIEL_CHECK_NE(after.current_phase, PHASE_SPOT);
+    const int spot = meepleSpot(options[0]);
+    if (choice == SPOT_FAIRY) {
+      // The fairy is there, next to that meeple, unless the turn's scoring
+      // has just sent it home.
+      SPIEL_CHECK_EQ(after.fairy_x, tx);
+      SPIEL_CHECK_EQ(after.fairy_y, ty);
+      SPIEL_CHECK_TRUE(after.fairy_spot == spot || after.fairy_spot == -1);
+      continue;
+    }
     // The portal's meeple stands there, on an open feature the turn's scoring
     // leaves alone; the knight is gone. A spot names one piece on a tile.
-    const int spot = meepleSpot(options[0]);
     const int cell_x = tx;
     const int cell_y = ty;
+    const bool portal = choice == SPOT_PORTAL;
     const bool there = std::any_of(after.pieces.begin(), after.pieces.end(), [&](const Piece& piece) {
       return piece.x == cell_x && piece.y == cell_y && piece.spot == spot && (!portal || piece.owner == player);
     });
     SPIEL_CHECK_EQ(there, portal);
+  }
+}
+
+// The fairy as the state and the observation give it: in the supply, or on a
+// tile that is not the dragon's, next to a meeple or big meeple there or to no
+// one; its planes and the global vector show the same to both players.
+void CheckFairy(const State& state) {
+  const ::Carcassonne& core = dynamic_cast<const CarcassonneState&>(state).UnderlyingState();
+  const bool on_board = core.fairy_x >= 0;
+  SPIEL_CHECK_TRUE(core.fairy_rules || !on_board);
+  SPIEL_CHECK_TRUE(on_board || core.fairy_spot == -1);
+  SPIEL_CHECK_FALSE(on_board && core.fairy_x == core.dragon_x && core.fairy_y == core.dragon_y);
+  const Piece* fairy_piece = nullptr;
+  for (const Piece& piece : core.pieces) {
+    if (piece.x == core.fairy_x && piece.y == core.fairy_y && piece.spot == core.fairy_spot &&
+        (piece.kind == PIECE_MEEPLE || piece.kind == PIECE_BIG_MEEPLE)) {
+      fairy_piece = &piece;
+    }
+  }
+  // Its meeple's record goes with the meeple.
+  SPIEL_CHECK_EQ(fairy_piece != nullptr, core.fairy_spot >= 0);
+  const int owner = fairy_piece != nullptr ? fairy_piece->owner : -1;
+  SPIEL_CHECK_EQ(core.fairyOwner(), owner);
+  for (Player player = 0; player < kNumPlayers; ++player) {
+    const std::vector<float> obs = state.ObservationTensor(player);
+    SPIEL_CHECK_EQ(PlaneSum(obs, kFairyPlane), on_board ? 1.0f : 0.0f);
+    float spots = 0.0f;
+    for (int spot = 0; spot < kPieceSpotPlanes; ++spot) {
+      spots += PlaneSum(obs, kFairyPiecePlane + spot);
+      if (fairy_piece != nullptr) {
+        SPIEL_CHECK_EQ(BoardPlaneValue(obs, core, kFairyPiecePlane + spot, core.fairy_x, core.fairy_y),
+                       (fairy_piece->spots >> spot & 1) ? 1.0f : 0.0f);
+      }
+    }
+    SPIEL_CHECK_EQ(spots, fairy_piece != nullptr ? static_cast<float>(__builtin_popcount(fairy_piece->spots)) : 0.0f);
+    if (on_board) {
+      SPIEL_CHECK_EQ(BoardPlaneValue(obs, core, kFairyPlane, core.fairy_x, core.fairy_y), 1.0f);
+    }
+    SPIEL_CHECK_EQ(GlobalValue(obs, kGlobalFairyInSupply), core.fairy_rules && !on_board ? 1.0f : 0.0f);
+    SPIEL_CHECK_EQ(GlobalValue(obs, kGlobalMyFairy), owner == player ? 1.0f : 0.0f);
+    SPIEL_CHECK_EQ(GlobalValue(obs, kGlobalOpponentFairy), owner == 1 - player ? 1.0f : 0.0f);
   }
 }
 
@@ -2837,15 +2928,19 @@ bool SpansSeveralParts(const ::Carcassonne& core, const Piece& piece) {
   return false;
 }
 
-// Random games with the portal and the princess, every decision checked.
-void PortalPrincessGamesTest() {
+// Random games with the portal, the princess and the fairy, every decision
+// checked.
+void CellChoiceGamesTest() {
   std::mt19937 rng(20261009);
   int portal_moves = 0;
   int princess_moves = 0;
-  int spot_portal = 0;
-  int spot_princess = 0;
-  int shared_tiles = 0;     // decisions with two pieces on one tile
-  int several_parts = 0;    // decisions with a piece on several parts of its tile
+  int fairy_moves = 0;
+  int spot_decisions[3] = {};  // in PHASE_SPOT, by SpotChoice
+  int shared_tiles = 0;        // decisions with two pieces on one tile
+  int several_parts = 0;       // decisions with a piece on several parts of its tile
+  int fairy_turn_points = 0;   // turns started with the fairy's point
+  int fairy_scored = 0;        // the fairy's meeple scored during the game
+  int dragon_blocked = 0;      // dragon steps the fairy forbids
   for (const char* game_string : {kDragonGame, kAllExpansionsGame,
                                   "carcassonne(inns_cathedrals=on,traders_builders=on,princess_dragon=on)",
                                   "carcassonne(princess_dragon=tiles)"}) {
@@ -2866,10 +2961,22 @@ void PortalPrincessGamesTest() {
         SPIEL_CHECK_EQ(fast[1], slow[1]);
         CheckPieces(*state);
         CheckDragon(*state);
-        CheckPortalPrincess(*state);
+        CheckCellChoices(*state);
+        CheckFairy(*state);
         if (core.current_phase == PHASE_SPOT) {
           SPIEL_CHECK_TRUE(core.portal_rules);
-          ++(core.spot_choice == SPOT_PORTAL ? spot_portal : spot_princess);
+          ++spot_decisions[core.spot_choice];
+        }
+        if (core.current_phase == PHASE_DRAGON) {
+          constexpr int kStepX[4] = {0, 1, 0, -1};
+          constexpr int kStepY[4] = {-1, 0, 1, 0};
+          for (int side = 0; side < 4; ++side) {
+            const int nx = core.dragon_x + kStepX[side];
+            const int ny = core.dragon_y + kStepY[side];
+            const bool visited = std::any_of(core.dragon_visited.begin(), core.dragon_visited.end(),
+                                             [&](const auto& cell) { return cell.first == nx && cell.second == ny; });
+            dragon_blocked += nx == core.fairy_x && ny == core.fairy_y && !visited;
+          }
         }
         bool shared = false;
         bool several = false;
@@ -2883,23 +2990,233 @@ void PortalPrincessGamesTest() {
         several_parts += several;
         const std::vector<Action> legal = state->LegalActions();
         const Action action = legal[std::uniform_int_distribution<int>(0, legal.size() - 1)(rng)];
-        if (action < kCellActionCount && !IsTileAction(action)) {
-          ++(action % kCellActionPlanes == kPortalCellPlane ? portal_moves : princess_moves);
+        const bool cell_action = action < kCellActionCount && !IsTileAction(action);
+        const int plane = action % kCellActionPlanes;
+        if (cell_action) {
+          ++(plane == kPortalCellPlane ? portal_moves : plane == kPrincessCellPlane ? princess_moves : fairy_moves);
         }
+        const bool princess = (cell_action && plane == kPrincessCellPlane) ||
+                               (core.current_phase == PHASE_SPOT && core.spot_choice == SPOT_PRINCESS);
+        const bool fairy_assigned = core.fairy_spot >= 0;
+        const int turns = core.completed_turns;
         state->ApplyAction(action);
+        // A meeple the fairy is next to leaves the board only when scored or
+        // sent home by the princess.
+        fairy_scored += fairy_assigned && core.fairy_spot == -1 && !princess;
+        fairy_turn_points += core.completed_turns == turns + 1 && core.current_phase == PHASE_CHANCE &&
+                             !core.builder_second_tile && core.fairyOwner() == core.currentPlayer;
       }
       CheckPieces(*state);
+      CheckFairy(*state);
     }
   }
-  std::cout << "PortalPrincessGamesTest: " << portal_moves << " portal cells chosen, " << princess_moves
-            << " princess cells; " << spot_portal << " portal and " << spot_princess
-            << " princess decisions in PHASE_SPOT; " << shared_tiles << " decisions with two pieces on a tile, "
-            << several_parts << " with a piece on several parts of its tile" << std::endl;
+  std::cout << "CellChoiceGamesTest: " << portal_moves << " portal cells chosen, " << princess_moves
+            << " princess cells, " << fairy_moves << " fairy cells; " << spot_decisions[SPOT_PORTAL] << " portal, "
+            << spot_decisions[SPOT_PRINCESS] << " princess and " << spot_decisions[SPOT_FAIRY]
+            << " fairy decisions in PHASE_SPOT; " << shared_tiles << " decisions with two pieces on a tile, "
+            << several_parts << " with a piece on several parts of its tile; the fairy gave " << fairy_turn_points
+            << " turn points, scored " << fairy_scored << " times and blocked " << dragon_blocked
+            << " dragon steps" << std::endl;
   SPIEL_CHECK_GT(portal_moves, 0);
   SPIEL_CHECK_GT(princess_moves, 0);
-  SPIEL_CHECK_GT(spot_portal, 0);
+  SPIEL_CHECK_GT(fairy_moves, 0);
+  SPIEL_CHECK_GT(spot_decisions[SPOT_PORTAL], 0);
   SPIEL_CHECK_GT(shared_tiles, 0);
   SPIEL_CHECK_GT(several_parts, 0);
+  SPIEL_CHECK_GT(fairy_turn_points, 0);
+  SPIEL_CHECK_GT(fairy_scored, 0);
+  SPIEL_CHECK_GT(dragon_blocked, 0);
+}
+
+// The fairy: put next to one of the player's meeples instead of placing a
+// piece; then its owner scores 1 at the start of each of their turns and 3
+// when that meeple's feature is scored, majority or not, at the end too. The
+// dragon never enters its tile, and it stays there when the meeple goes home.
+void FairyTest() {
+  const int c = BOARD_SIZE / 2;
+  {
+    // With the big meeple: P1's big meeple and P0's knight (through a portal)
+    // on the two cities of one tile, later joined.
+    std::shared_ptr<const Game> big_game = LoadGame("carcassonne(inns_cathedrals=on,princess_dragon=on)");
+    ::Carcassonne game(/*max_turns=*/0, START_TILE_ROTATION,
+                       BASE_ONLY | expansionBit(EXP_INNS_CATHEDRALS) | expansionBit(EXP_PRINCESS_DRAGON));
+    SPIEL_CHECK_TRUE(game.fairy_rules);
+    SPIEL_CHECK_EQ(game.fairy_x, -1);
+    // P0: a volcano east of the start tile (type 88 turned once). P0 has no
+    // meeple out: no fairy.
+    PlaceTile(&game, 88, c + 1, c, 1);
+    SPIEL_CHECK_EQ(game.getLegalFairyCells().size(), 0);
+    game.placeMeeple(MEEPLE_POS_SKIP);
+    // P1: south of the start tile, two cities east and south (type 14 turned
+    // twice); P1's big meeple on the east one.
+    PlayTurn(&game, 14, c, c + 1, 2, MEEPLE_POS_BIG + 1);
+    // P0: a portal west of the start tile (type 104); P0's knight on the
+    // south city through it.
+    PlaceTile(&game, 104, c - 1, c, 0);
+    SPIEL_CHECK_EQ(game.getLegalFairyCells().size(), 0);
+    game.chooseCell(SPOT_PORTAL, c, c + 1);
+    game.chooseSpot(2);
+    // P1: the east city on (type 4 turned twice); P1 could put the fairy by
+    // its big meeple.
+    PlaceTile(&game, 4, c + 1, c + 1, 2);
+    SPIEL_CHECK_EQ(game.getLegalFairyCells().size(), 1);
+    game.placeMeeple(MEEPLE_POS_SKIP);
+    // P0: the city on round (type 8); instead of a piece, the fairy next to
+    // P0's knight, its one meeple there: no second step.
+    PlaceTile(&game, 8, c + 1, c + 2, 0);
+    Cells cells = game.getLegalFairyCells();
+    SPIEL_CHECK_EQ(cells.size(), 1);
+    SPIEL_CHECK_TRUE(HasCell(cells, c, c + 1));
+    {
+      CarcassonneState view(big_game, game);
+      const State& state = view;
+      const Action action = view.CellAction(c, c + 1, kFairyCellPlane);
+      const std::vector<Action> legal = state.LegalActions();
+      SPIEL_CHECK_TRUE(std::find(legal.begin(), legal.end(), action) != legal.end());
+      SPIEL_CHECK_EQ(state.ActionToString(0, action), absl::StrCat("move_fairy(x=", c, ", y=", c + 1, ")"));
+      CheckCellChoices(state);
+    }
+    game.chooseCell(SPOT_FAIRY, c, c + 1);
+    SPIEL_CHECK_EQ(game.current_phase, PHASE_CHANCE);
+    SPIEL_CHECK_EQ(game.currentPlayer, 1);
+    SPIEL_CHECK_EQ(game.fairy_x, c);
+    SPIEL_CHECK_EQ(game.fairy_y, c + 1);
+    SPIEL_CHECK_EQ(game.fairy_spot, 2);
+    SPIEL_CHECK_EQ(game.fairyOwner(), 0);
+    SPIEL_CHECK_EQ(game.holding_meeples[0], MEEPLES_PER_PLAYER - 1);
+    SPIEL_CHECK_EQ(game.player_scores[0], 0);
+    {
+      CarcassonneState view(big_game, game);
+      const State& state = view;
+      CheckFairy(state);
+      SPIEL_CHECK_EQ(GlobalValue(state.ObservationTensor(0), kGlobalMyFairy), 1.0f);
+      SPIEL_CHECK_EQ(GlobalValue(state.ObservationTensor(1), kGlobalOpponentFairy), 1.0f);
+      SPIEL_CHECK_EQ(BoardPlaneValue(state.ObservationTensor(1), game, kFairyPiecePlane + 2, c, c + 1), 1.0f);
+    }
+    // P1: the city round to the south one (type 8 turned once): one city, P1's
+    // big meeple and P0's knight in it. P0's turn starts: 1 point.
+    PlayTurn(&game, 8, c, c + 2, 1, MEEPLE_POS_SKIP);
+    SPIEL_CHECK_EQ(game.player_scores[0], FAIRY_TURN_POINTS);
+    SPIEL_CHECK_EQ(game.player_scores[1], 0);
+    // P0: a princess cap closing the city from the east (type 98 turned three
+    // times). P0's one meeple out is the fairy's already: no fairy cell.
+    PlaceTile(&game, 98, c + 2, c + 1, 3);
+    SPIEL_CHECK_EQ(game.getLegalFairyCells().size(), 0);
+    // 5 tiles, 10 points. P1's big meeple has the majority; P0's knight has
+    // the fairy, 3 more, unless the princess sends it home.
+    for (int knight : {-1, 1, 2}) {
+      ::Carcassonne turn = game;
+      if (knight < 0) {
+        turn.placeMeeple(MEEPLE_POS_SKIP);
+      } else {
+        turn.chooseCell(SPOT_PRINCESS, c, c + 1);
+        turn.chooseSpot(knight);
+      }
+      SPIEL_CHECK_EQ(turn.current_phase, PHASE_CHANCE);
+      const int scores[3][2] = {{1 + 3, 10}, {1 + 10 + 3, 0}, {1, 10}};
+      SPIEL_CHECK_EQ(turn.player_scores[0], scores[knight < 0 ? 0 : knight][0]);
+      SPIEL_CHECK_EQ(turn.player_scores[1], scores[knight < 0 ? 0 : knight][1]);
+      // The fairy stays, next to no one.
+      SPIEL_CHECK_EQ(turn.fairy_x, c);
+      SPIEL_CHECK_EQ(turn.fairy_y, c + 1);
+      SPIEL_CHECK_EQ(turn.fairy_spot, -1);
+      SPIEL_CHECK_EQ(turn.fairyOwner(), -1);
+      SPIEL_CHECK_EQ(turn.pieces.size(), 0);
+    }
+    game.placeMeeple(MEEPLE_POS_SKIP);
+    // P1: a dragon tile east of the volcano (type 85). The dragon goes south
+    // (P1); P0 may not take it west onto the fairy's tile.
+    PlaceTile(&game, 85, c + 2, c, 0);
+    game.placeMeeple(MEEPLE_POS_SKIP);
+    SPIEL_CHECK_EQ(game.current_phase, PHASE_DRAGON);
+    game.moveDragon(2);
+    const FixedVector<int, 4> steps = game.getLegalDragonMoves();
+    SPIEL_CHECK_EQ(std::vector<int>(steps.begin(), steps.end()), (std::vector<int>{1, 2}));
+    SPIEL_CHECK_EQ(game.player_scores[0], 4);
+    SPIEL_CHECK_EQ(game.player_scores[1], 10);
+  }
+  {
+    // Two of P0's knights on one tile (the second through a portal): the
+    // fairy chooses between them by spot.
+    std::shared_ptr<const Game> dragon_game = LoadGame(kDragonGame);
+    ::Carcassonne game(/*max_turns=*/0, START_TILE_ROTATION, BASE_ONLY | expansionBit(EXP_PRINCESS_DRAGON));
+    // P0: south of the start tile, two cities (type 14 turned twice); P0's
+    // knight on the east one. P1: a road east (type 21 turned once).
+    PlayTurn(&game, 14, c, c + 1, 2, 1);
+    PlayTurn(&game, 21, c + 1, c, 1, MEEPLE_POS_SKIP);
+    // P0: a portal west (type 104); P0's knight on the south city.
+    PlaceTile(&game, 104, c - 1, c, 0);
+    game.chooseCell(SPOT_PORTAL, c, c + 1);
+    game.chooseSpot(2);
+    // P1: the road on. P0: a monastery north of the road, then the fairy.
+    PlayTurn(&game, 21, c + 2, c, 1, MEEPLE_POS_SKIP);
+    PlaceTile(&game, 1, c + 1, c - 1, 0);
+    Cells cells = game.getLegalFairyCells();
+    SPIEL_CHECK_EQ(cells.size(), 1);
+    SPIEL_CHECK_TRUE(HasCell(cells, c, c + 1));
+    game.chooseCell(SPOT_FAIRY, c, c + 1);
+    SPIEL_CHECK_EQ(game.current_phase, PHASE_SPOT);
+    SPIEL_CHECK_EQ(SpotMoves(game), (std::vector<int>{1, 2}));
+    {
+      CarcassonneState view(dragon_game, game);
+      const State& state = view;
+      SPIEL_CHECK_EQ(GlobalValue(state.ObservationTensor(0), kGlobalSpotFairy), 1.0f);
+      SPIEL_CHECK_EQ(state.ActionToString(0, kMeepleActionOffset + 3), "fairy_meeple(edge=2)");
+      SPIEL_CHECK_TRUE(GetSideGroups(view) == (SideGroups{-1, 1, 2, -1, -1, -1, -1, -1, -1, -1, -1, -1}));
+      CheckCellChoices(state);
+      CheckFairy(state);
+    }
+    game.chooseSpot(2);
+    SPIEL_CHECK_EQ(game.fairy_spot, 2);
+    SPIEL_CHECK_EQ(game.currentPlayer, 1);
+    // P1: the road on. P0's turn starts: 1 point.
+    PlayTurn(&game, 21, c + 3, c, 1, MEEPLE_POS_SKIP);
+    SPIEL_CHECK_EQ(game.player_scores[0], FAIRY_TURN_POINTS);
+    // P0: another monastery; the fairy to P0's other knight there, the only
+    // one it is not next to: no second step.
+    PlaceTile(&game, 1, c + 2, c - 1, 0);
+    game.chooseCell(SPOT_FAIRY, c, c + 1);
+    SPIEL_CHECK_EQ(game.current_phase, PHASE_CHANCE);
+    SPIEL_CHECK_EQ(game.fairy_spot, 1);
+  }
+  {
+    // The fairy moved to a knight of the city the tile just closed scores
+    // with it: 3 tiles, 6 points, and 3.
+    ::Carcassonne game(/*max_turns=*/0, START_TILE_ROTATION, BASE_ONLY | expansionBit(EXP_PRINCESS_DRAGON));
+    // P0: a corner city on the start tile's (type 8 turned three times), P0's
+    // knight on it. P1: a road east.
+    PlayTurn(&game, 8, c, c - 1, 3, 2);
+    PlayTurn(&game, 21, c + 1, c, 1, MEEPLE_POS_SKIP);
+    // P0: a cap closing the city (type 16 turned once), and the fairy.
+    PlaceTile(&game, 16, c - 1, c - 1, 1);
+    game.chooseCell(SPOT_FAIRY, c, c - 1);
+    SPIEL_CHECK_EQ(game.player_scores[0], 6 + FAIRY_SCORE_POINTS);
+    SPIEL_CHECK_EQ(game.holding_meeples[0], MEEPLES_PER_PLAYER);
+    SPIEL_CHECK_EQ(game.fairy_x, c);
+    SPIEL_CHECK_EQ(game.fairy_y, c - 1);
+    SPIEL_CHECK_EQ(game.fairy_spot, -1);
+  }
+  {
+    // At the end the fairy's meeple scores with its open road: 3 tiles, and
+    // 3. No point for a turn that never starts.
+    ::Carcassonne game(/*max_turns=*/4, START_TILE_ROTATION, BASE_ONLY | expansionBit(EXP_PRINCESS_DRAGON));
+    // P0: a road east (type 21 turned once), P0's highwayman on it. P1: a
+    // corner city on the start tile's.
+    PlayTurn(&game, 21, c + 1, c, 1, 1);
+    PlayTurn(&game, 8, c, c - 1, 3, MEEPLE_POS_SKIP);
+    // P0: a monastery, and the fairy by the highwayman.
+    PlaceTile(&game, 1, c + 1, c - 1, 0);
+    game.chooseCell(SPOT_FAIRY, c + 1, c);
+    SPIEL_CHECK_EQ(game.fairy_spot, 1);
+    int pending[2];
+    game.getPendingScore(pending);
+    SPIEL_CHECK_EQ(pending[0], 2 + FAIRY_SCORE_POINTS);
+    // P1: the road on, the fourth turn: the end.
+    PlayTurn(&game, 21, c + 2, c, 1, MEEPLE_POS_SKIP);
+    SPIEL_CHECK_EQ(game.current_phase, PHASE_TERMINAL);
+    SPIEL_CHECK_EQ(game.player_scores[0], 3 + FAIRY_SCORE_POINTS);
+    SPIEL_CHECK_EQ(game.player_scores[1], 0);
+  }
 }
 
 void ReturnsMatchScoresTest() {
@@ -3759,7 +4076,8 @@ void BasicCarcassonneTests() {
   DragonTest();
   PortalTest();
   PrincessTest();
-  PortalPrincessGamesTest();
+  CellChoiceGamesTest();
+  FairyTest();
   ReturnsMatchScoresTest();
   ShortGameMaxTurnsTest();
   LastUnplaceableTileTest();

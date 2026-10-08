@@ -142,16 +142,19 @@ inline bool ApplyLoggedAction(Carcassonne &g, const std::string &a, std::string 
         g.placeTile(x, y, rot);
         return true;
     }
-    // A cell chosen for a magic portal's meeple or the princess's knight.
+    // A cell chosen for a magic portal's meeple, the princess's knight or the fairy.
     const bool portal = sscanf(a.c_str(), "portal(x=%d, y=%d)", &x, &y) == 2;
-    if (portal || sscanf(a.c_str(), "princess(x=%d, y=%d)", &x, &y) == 2) {
+    const bool princess = !portal && sscanf(a.c_str(), "princess(x=%d, y=%d)", &x, &y) == 2;
+    const bool fairy = !portal && !princess && sscanf(a.c_str(), "move_fairy(x=%d, y=%d)", &x, &y) == 2;
+    if (portal || princess || fairy) {
         if (g.current_phase != PHASE_MEEPLE) return fail("不在放 meeple 階段");
         x += board_shift;
         y += board_shift;
-        const Cells cells = portal ? g.getLegalPortalCells() : g.getLegalPrincessCells();
+        const Cells cells = portal ? g.getLegalPortalCells() : princess ? g.getLegalPrincessCells()
+                                                                        : g.getLegalFairyCells();
         if (std::none_of(cells.begin(), cells.end(), [&](const auto &c) { return c.first == x && c.second == y; }))
             return fail("不合法的格子");
-        g.chooseCell(portal ? SPOT_PORTAL : SPOT_PRINCESS, x, y);
+        g.chooseCell(portal ? SPOT_PORTAL : princess ? SPOT_PRINCESS : SPOT_FAIRY, x, y);
         return true;
     }
     if (sscanf(a.c_str(), "remove_knight(edge=%d)", &k) == 1) {
@@ -165,11 +168,15 @@ inline bool ApplyLoggedAction(Carcassonne &g, const std::string &a, std::string 
     const std::string big_prefix = "place_big_meeple(";
     const std::string builder_prefix = "place_builder(";
     const std::string pig_prefix = "place_pig(";
+    const std::string fairy_prefix = "fairy_meeple(";
     const bool big = a.rfind(big_prefix, 0) == 0;
     const bool builder = a.rfind(builder_prefix, 0) == 0;
     const bool pig = a.rfind(pig_prefix, 0) == 0;
-    if ((big || builder || pig || a.rfind(prefix, 0) == 0) && a.back() == ')') {
-        const size_t start = (big ? big_prefix : builder ? builder_prefix : pig ? pig_prefix : prefix).size();
+    const bool fairy_meeple = a.rfind(fairy_prefix, 0) == 0;
+    if ((big || builder || pig || fairy_meeple || a.rfind(prefix, 0) == 0) && a.back() == ')') {
+        const size_t start =
+            (big ? big_prefix : builder ? builder_prefix : pig ? pig_prefix : fairy_meeple ? fairy_prefix : prefix)
+                .size();
         const std::string arg = a.substr(start, a.size() - start - 1);
         int pos;
         if (pig) {
@@ -177,7 +184,7 @@ inline bool ApplyLoggedAction(Carcassonne &g, const std::string &a, std::string 
             if (sscanf(arg.c_str(), "field=%d", &k) != 1) return fail("看不懂的小豬位置");
             pos = MEEPLE_POS_PIG + k;
         }
-        else if (arg == "skip" && !big && !builder) pos = MEEPLE_POS_SKIP;
+        else if (arg == "skip" && !big && !builder && !fairy_meeple) pos = MEEPLE_POS_SKIP;
         else if (sscanf(arg.c_str(), "edge=%d", &k) == 1) pos = k;
         else if (builder) return fail("看不懂的建築師位置");  // 建築師只放城、路
         else if (arg == "monastery") pos = MEEPLE_POS_MONASTERY;
@@ -186,14 +193,16 @@ inline bool ApplyLoggedAction(Carcassonne &g, const std::string &a, std::string 
         else return fail("看不懂的 meeple 位置");
         if (big) pos += MEEPLE_POS_BIG;  // 大米寶、建築師放在同樣的位置
         if (builder) pos += MEEPLE_POS_BUILDER;
-        // 魔法門的第二段:選好的格子上的位置
-        const bool portal_spot = g.current_phase == PHASE_SPOT && g.spot_choice == SPOT_PORTAL;
-        if (g.current_phase != PHASE_MEEPLE && !portal_spot) return fail("不在放 meeple 階段");
-        const MeepleMoves moves = portal_spot ? g.getLegalSpotMoves() : g.getLegalMeepleMoves();
+        // 魔法門、仙女的第二段:選好的格子上的位置
+        const bool spot_phase =
+            g.current_phase == PHASE_SPOT && g.spot_choice == (fairy_meeple ? SPOT_FAIRY : SPOT_PORTAL);
+        if (fairy_meeple && !spot_phase) return fail("不在選仙女 meeple 的階段");
+        if (g.current_phase != PHASE_MEEPLE && !spot_phase) return fail("不在放 meeple 階段");
+        const MeepleMoves moves = spot_phase ? g.getLegalSpotMoves() : g.getLegalMeepleMoves();
         bool legal = false;
         for (int i = 0; i < moves.size(); ++i) legal |= moves[i] == pos;
         if (!legal) return fail("不合法的 meeple 位置");
-        if (portal_spot) g.chooseSpot(pos);
+        if (spot_phase) g.chooseSpot(pos);
         else g.placeMeeple(pos);
         return true;
     }

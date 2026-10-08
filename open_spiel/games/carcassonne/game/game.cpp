@@ -107,6 +107,11 @@ void Carcassonne::resolveEndGameScore() {
     monasteries.resolveEndGameScore(player_scores);
     fields.accumulateScore(player_scores, features);
     accumulateGoodsScore(player_scores);
+    // Every meeple left is on a feature the end scores, the fairy's too.
+    const int fairy_owner = fairyOwner();
+    if (fairy_owner >= 0) {
+        player_scores[fairy_owner] += FAIRY_SCORE_POINTS;
+    }
 }
 
 void Carcassonne::resolveNoMoreDraws() {
@@ -182,6 +187,7 @@ Carcassonne::Carcassonne(int max_turns, int start_rotation, uint32_t expansions,
     dragon_rules = (this->rules & expansionBit(EXP_PRINCESS_DRAGON)) != 0;
     portal_rules = dragon_rules;
     princess_rules = dragon_rules;
+    fairy_rules = dragon_rules;
     deck.hold_dragon_tiles = dragon_rules;
     // With the river the spring starts the game instead of the base start tile,
     // which the deck leaves out.
@@ -308,7 +314,7 @@ void Carcassonne::getFocusSpotGroups(int8_t sides[4], int8_t half_edges[HALF_EDG
     }
     const int x = focusX();
     const int y = focusY();
-    if (current_phase == PHASE_SPOT && spot_choice == SPOT_PRINCESS) {
+    if (current_phase == PHASE_SPOT && spot_choice != SPOT_PORTAL) {
         // A piece is named by its spot, the lowest of its spots.
         for (const Piece &piece : pieces) {
             if (piece.x != x || piece.y != y) {
@@ -355,6 +361,11 @@ void Carcassonne::getPendingScore(int pending[2]) const {
     monasteries.accumulatePendingScore(pending);
     fields.accumulateScore(pending, features);
     accumulateGoodsScore(pending);
+    // The fairy's meeple is scored this turn or at the end, either way once.
+    const int fairy_owner = fairyOwner();
+    if (fairy_owner >= 0) {
+        pending[fairy_owner] += FAIRY_SCORE_POINTS;
+    }
 }
 
 void Carcassonne::getPendingFieldScore(int pending[2]) const {
@@ -374,10 +385,7 @@ void Carcassonne::getPendingScoreByResolving(int pending[2]) const {
     if (copy.current_phase == PHASE_MEEPLE || copy.current_phase == PHASE_DRAGON ||
         copy.current_phase == PHASE_SPOT) {
         // What the end of the turn settles whatever the moves are.
-        copy.features.settleAfterPlaceMeeple(last_x, last_y, copy.board, copy.player_scores, copy.holding_meeples,
-                                             copy.holding_big_meeples, copy.holding_builders);
-        copy.monasteries.settleCompletedMonasteries(copy.player_scores, copy.holding_meeples,
-                                                    copy.holding_big_meeples);
+        copy.settleTurn();
     }
     copy.resolveEndGameScore();
     pending[0] = copy.player_scores[0] - player_scores[0];
@@ -552,6 +560,59 @@ Cells Carcassonne::getLegalPrincessCells() const {
     return ret;
 }
 
+FixedVector<int, MAX_PIECES> Carcassonne::fairyMeeplesAt(int x, int y) const {
+    FixedVector<int, MAX_PIECES> ret;
+    if (!fairy_rules) {
+        return ret;
+    }
+    const int current = fairyPiece();
+    for (int i = 0; i < pieces.size(); ++i) {
+        const Piece &p = pieces[i];
+        if (p.x == x && p.y == y && p.owner == currentPlayer &&
+            (p.kind == PIECE_MEEPLE || p.kind == PIECE_BIG_MEEPLE) && i != current) {
+            ret.push_back(i);
+        }
+    }
+    return ret;
+}
+
+int Carcassonne::fairyPiece() const {
+    if (fairy_spot < 0) {
+        return -1;
+    }
+    for (int i = 0; i < pieces.size(); ++i) {
+        const Piece &p = pieces[i];
+        if (p.x == fairy_x && p.y == fairy_y && p.spot == fairy_spot &&
+            (p.kind == PIECE_MEEPLE || p.kind == PIECE_BIG_MEEPLE)) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+void Carcassonne::assignFairy(int index) {
+    fairy_x = pieces[index].x;
+    fairy_y = pieces[index].y;
+    fairy_spot = pieces[index].spot;
+}
+
+Cells Carcassonne::getLegalFairyCells() const {
+    Cells ret;
+    if (current_phase != PHASE_MEEPLE || !fairy_rules) {
+        return ret;
+    }
+    for (const Piece &p : pieces) {
+        const std::pair<int8_t, int8_t> cell = {p.x, p.y};
+        if (std::find(ret.begin(), ret.end(), cell) == ret.end() && fairyMeeplesAt(p.x, p.y).size() > 0) {
+            ret.push_back(cell);
+        }
+    }
+    std::sort(ret.begin(), ret.end(), [](const auto &a, const auto &b) {
+        return std::make_pair(a.second, a.first) < std::make_pair(b.second, b.first);
+    });
+    return ret;
+}
+
 void Carcassonne::chooseCell(SpotChoice choice, int x, int y) {
     if (choice == SPOT_PORTAL) {
         const MeepleMoves moves = portalMovesAt(x, y);
@@ -561,9 +622,14 @@ void Carcassonne::chooseCell(SpotChoice choice, int x, int y) {
             return;
         }
     } else {
-        const FixedVector<int, MAX_PIECES> knights = princessKnightsAt(x, y);
-        if (knights.size() == 1) {
-            sendHome(knights[0]);
+        const FixedVector<int, MAX_PIECES> choices =
+            choice == SPOT_PRINCESS ? princessKnightsAt(x, y) : fairyMeeplesAt(x, y);
+        if (choices.size() == 1) {
+            if (choice == SPOT_PRINCESS) {
+                sendHome(choices[0]);
+            } else {
+                assignFairy(choices[0]);
+            }
             endPiecePhase();
             return;
         }
@@ -582,7 +648,8 @@ MeepleMoves Carcassonne::getLegalSpotMoves() const {
         return portalMovesAt(spot_x, spot_y);
     }
     MeepleMoves ret;
-    for (int index : princessKnightsAt(spot_x, spot_y)) {
+    for (int index :
+         spot_choice == SPOT_PRINCESS ? princessKnightsAt(spot_x, spot_y) : fairyMeeplesAt(spot_x, spot_y)) {
         ret.push_back(pieces[index].spot);
     }
     std::sort(ret.begin(), ret.end());
@@ -593,9 +660,14 @@ void Carcassonne::chooseSpot(int pos) {
     if (spot_choice == SPOT_PORTAL) {
         putPiece(spot_x, spot_y, pos);
     } else {
-        for (int index : princessKnightsAt(spot_x, spot_y)) {
+        for (int index :
+             spot_choice == SPOT_PRINCESS ? princessKnightsAt(spot_x, spot_y) : fairyMeeplesAt(spot_x, spot_y)) {
             if (pieces[index].spot == pos) {
-                sendHome(index);
+                if (spot_choice == SPOT_PRINCESS) {
+                    sendHome(index);
+                } else {
+                    assignFairy(index);
+                }
                 break;
             }
         }
@@ -639,7 +711,8 @@ bool Carcassonne::dragonCanEnter(int x, int y) const {
             return false;
         }
     }
-    return true;
+    // The dragon is afraid of the fairy, next to a meeple or not.
+    return x != fairy_x || y != fairy_y;
 }
 
 void Carcassonne::moveDragon(int side) {
@@ -659,6 +732,10 @@ void Carcassonne::moveDragon(int side) {
 
 Piece Carcassonne::removePiece(int index) {
     const Piece piece = pieces[index];
+    // The fairy stays where it is, next to no one.
+    if (index == fairyPiece()) {
+        fairy_spot = -1;
+    }
     pieces.swap_pop_erase_at(index);
     const int owner = piece.owner;
     const Tile &tile = full_deck[piece.tile_id][board.board[piece.y][piece.x].rotation];
@@ -765,23 +842,45 @@ void Carcassonne::forgetSettledPieces() {
                                        features.featureMap.getSetData(features.edgeIndex(piece.tile_id, piece.spot))
                                                .opens == 0;
         if (settled) {
+            // The fairy stays where it is, next to no one.
+            if (i == fairyPiece()) {
+                fairy_spot = -1;
+            }
             pieces.swap_pop_erase_at(i);
         }
     }
 }
 
-void Carcassonne::finishTurn() {
+void Carcassonne::settleTurn() {
+    // The fairy's meeple scores with its road, city or monastery, completed
+    // by the last tile; fields score only at the end.
+    const int fairy = fairyPiece();
+    if (fairy >= 0) {
+        const Piece &piece = pieces[fairy];
+        const bool scored = piece.spot == MEEPLE_POS_MONASTERY
+                                ? board.count3x3(piece.x, piece.y) == 9
+                                : piece.spot < MEEPLE_POS_MONASTERY &&
+                                      featureAt(piece.tile_id, piece.spot).opens == 0;
+        if (scored) {
+            player_scores[piece.owner] += FAIRY_SCORE_POINTS;
+        }
+    }
     features.settleAfterPlaceMeeple(last_x, last_y, board, player_scores, holding_meeples, holding_big_meeples,
                                     holding_builders);
     monasteries.settleCompletedMonasteries(player_scores, holding_meeples, holding_big_meeples);
     forgetSettledPieces();
+}
+
+void Carcassonne::finishTurn() {
+    settleTurn();
 
     completed_turns++;
     // The builder's double turn: the same player draws once more, never a
     // third time.
     builder_second_tile = builder_extra_tile;
     builder_extra_tile = false;
-    if (!builder_second_tile) {
+    const bool new_turn = !builder_second_tile;
+    if (new_turn) {
         currentPlayer = 1 - currentPlayer;
     }
     if (max_turns > 0 && completed_turns >= max_turns) {
@@ -791,6 +890,10 @@ void Carcassonne::finishTurn() {
     if (deck.drawableRemaining() == 0) {
         resolveNoMoreDraws();
         return;
+    }
+    // The fairy's point at the start of its owner's turn.
+    if (new_turn && fairyOwner() == currentPlayer) {
+        player_scores[currentPlayer] += FAIRY_TURN_POINTS;
     }
     current_phase = PHASE_CHANCE;
 }

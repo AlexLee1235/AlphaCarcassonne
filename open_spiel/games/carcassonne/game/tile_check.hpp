@@ -100,8 +100,10 @@ inline std::vector<std::string> CheckTile(const Tile &tile) {
             error(where + " is grass: both half-edges must be the same field");
         }
         // A road or river that carries on to another side cuts the tile, so the
-        // grass on its two sides cannot be one field here.
-        if ((tile.edge[side] == ROAD || tile.edge[side] == RIVER) && a == b && SidesLinkedTo(tile, side) > 1) {
+        // grass on its two sides cannot be one field here; but for a road
+        // through a tunnel, which runs under the city.
+        if ((tile.edge[side] == ROAD || tile.edge[side] == RIVER) && a == b && SidesLinkedTo(tile, side) > 1 &&
+            !(tile.edge[side] == ROAD && (tile.tile_marks & TILE_TUNNEL))) {
             error(where + ": the " + EdgeName(tile.edge[side]) +
                   " carries on to another side, so its two half-edges must be different fields");
         }

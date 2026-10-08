@@ -96,7 +96,7 @@ const std::vector<PlaneGroup>& PlaneGroups() {
       {"feature wheat", kFeatureGoodsPlane + 4, 4},
       {"feature cloth", kFeatureGoodsPlane + 8, 4},
       {"piece spots (mine, theirs)", kMyPiecePlane, 2 * kPieceSpotPlanes},
-      {"builder and pig tiles, dragon, portal and princess cells", kMyBuilderTilePlane,
+      {"builder and pig tiles, dragon, portal, princess and fairy cells, fairy", kMyBuilderTilePlane,
        kSpatialPlanes - kMyBuilderTilePlane},
   };
   return groups;

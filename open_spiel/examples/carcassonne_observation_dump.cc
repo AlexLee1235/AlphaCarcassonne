@@ -171,6 +171,16 @@ std::vector<std::string> PlaneNames() {
   names[kDragonVisitedPlane] = "dragon_visited";
   names[kLegalPortalCellPlane] = "legal_portal_cell";
   names[kLegalPrincessCellPlane] = "legal_princess_cell";
+  names[kLegalFairyCellPlane] = "legal_fairy_cell";
+  names[kFairyPlane] = "fairy";
+  for (int side = 0; side < 4; ++side) {
+    names[kFairyPiecePlane + side] = "fairy_piece_side_" + std::to_string(side);
+  }
+  names[kFairyPiecePlane + MEEPLE_POS_MONASTERY] = "fairy_piece_monastery";
+  for (int half_edge = 0; half_edge < HALF_EDGE_COUNT; ++half_edge) {
+    names[kFairyPiecePlane + MEEPLE_POS_FIELD + half_edge] = "fairy_piece_half_edge_" + std::to_string(half_edge);
+  }
+  names[kFairyPiecePlane + MEEPLE_POS_INNER_FIELD] = "fairy_piece_inner_field";
   names[kGlobalFeaturePlane] = "global_vector";
   return names;
 }
@@ -255,6 +265,10 @@ std::vector<std::string> GlobalFeatureNames() {
   }
   names[kGlobalSpotPortal] = "spot_phase_portal";
   names[kGlobalSpotPrincess] = "spot_phase_princess";
+  names[kGlobalFairyInSupply] = "fairy_in_supply";
+  names[kGlobalMyFairy] = "my_fairy";
+  names[kGlobalOpponentFairy] = "opponent_fairy";
+  names[kGlobalSpotFairy] = "spot_phase_fairy";
   return names;
 }
 

@@ -44,9 +44,8 @@ constexpr uint32_t ALL_EXPANSIONS = (1u << EXPANSION_COUNT) - 1;
 // The expansions whose rules the engine plays: these can be dealt "on" (their
 // tiles and their rules) as well as "tiles" (their tiles only). Inns &
 // Cathedrals: the big meeple, inns and cathedrals. Traders & Builders: the
-// builder, the pig and the goods. The Princess & the Dragon: so far the dragon
-// (volcano and dragon tiles), the princess and the magic portal; the fairy is
-// not played yet.
+// builder, the pig and the goods. The Princess & the Dragon: the dragon
+// (volcano and dragon tiles), the princess, the magic portal and the fairy.
 constexpr uint32_t RULED_EXPANSIONS = expansionBit(EXP_INNS_CATHEDRALS) | expansionBit(EXP_TRADERS_BUILDERS) |
                                       expansionBit(EXP_RIVER) | expansionBit(EXP_PRINCESS_DRAGON);
 // Those whose tiles make no sense without their rules: dealt, they are "on".
@@ -101,7 +100,11 @@ constexpr uint8_t TILE_MONASTERY = 1 << 0;
 constexpr uint8_t TILE_DRAGON = 1 << 1;
 constexpr uint8_t TILE_VOLCANO = 1 << 2;
 constexpr uint8_t TILE_PORTAL = 1 << 3;
-constexpr uint8_t ALL_TILE_MARKS = TILE_MONASTERY | TILE_DRAGON | TILE_VOLCANO | TILE_PORTAL;
+// The road runs under the city through a tunnel (type 76): one road on two
+// sides that does not cut the grass, which lies on either side of the city.
+// Only tile_check reads it; the links already make the road one.
+constexpr uint8_t TILE_TUNNEL = 1 << 4;
+constexpr uint8_t ALL_TILE_MARKS = TILE_MONASTERY | TILE_DRAGON | TILE_VOLCANO | TILE_PORTAL | TILE_TUNNEL;
 
 // MARK_* bits per side, in the order N, E, S, W.
 struct SideMarks {
@@ -417,10 +420,12 @@ constexpr TileBlueprint all_tiles[] = {
     {Tile(ROAD, ROAD, ROAD, ROAD, 0, 1, 0, 1, {{0, 1, 1, 2, 2, 3, 3, 0}, 4, {}}), 1, 75, EXP_TRADERS_BUILDERS},
 
     // ---- The Princess & the Dragon: 30 tiles, types 76-104, rows end with EXP_PRINCESS_DRAGON. ----
-    // One city east to west; roads from the north and from the south end in
-    // the grass before they reach it, so the grass runs round each: two fields.
-    {Tile(ROAD, CITY, ROAD, CITY, 0, 1, 2, 1, {{0, 0, -1, -1, 1, 1, -1, -1}, 2, {SIDE_E | SIDE_W, SIDE_E | SIDE_W}}, {},
-          TILE_DRAGON), 1, 76, EXP_PRINCESS_DRAGON},
+    // One city east to west, and one road north to south through a tunnel
+    // under it. The road does not cut the grass: the field north of the city
+    // and the one south of it are each unbroken (Wikicarpedia, The Princess &
+    // the Dragon: "Tunnel").
+    {Tile(ROAD, CITY, ROAD, CITY, 0, 1, 0, 1, {{0, 0, -1, -1, 1, 1, -1, -1}, 2, {SIDE_E | SIDE_W, SIDE_E | SIDE_W}}, {},
+          TILE_DRAGON | TILE_TUNNEL), 1, 76, EXP_PRINCESS_DRAGON},
     // Type 13 (city east to west with the shield).
     {Tile(GRASS, CITY, GRASS, CITY, 0, 1, 2, 1, {{0, 0, -1, -1, 1, 1, -1, -1}, 2, {SIDE_E | SIDE_W, SIDE_E | SIDE_W}},
           {0, MARK_SHIELD, 0, 0}, TILE_DRAGON), 1, 77, EXP_PRINCESS_DRAGON},

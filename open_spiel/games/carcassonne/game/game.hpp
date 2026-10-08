@@ -79,8 +79,14 @@ enum GamePhase {
 
 // The choices the meeple phase makes by cell (The Princess & the Dragon):
 // through a magic portal, a meeple onto a tile placed before; with the
-// princess, a knight off the city she continues.
-enum SpotChoice : uint8_t { SPOT_PORTAL = 0, SPOT_PRINCESS = 1 };
+// princess, a knight off the city she continues; the fairy, next to one of
+// the player's meeples.
+enum SpotChoice : uint8_t { SPOT_PORTAL = 0, SPOT_PRINCESS = 1, SPOT_FAIRY = 2 };
+
+// The fairy's points for the owner of the meeple it stands next to: at the
+// start of each of their turns, and when that meeple's feature is scored.
+constexpr int FAIRY_TURN_POINTS = 1;
+constexpr int FAIRY_SCORE_POINTS = 3;
 
 // The dragon moves up to this many tiles each time a dragon tile is placed.
 constexpr int DRAGON_STEPS = 6;
@@ -403,7 +409,8 @@ class Carcassonne {
     void resolveEndGameScore();
     void resolveNoMoreDraws();
     // The end of a turn, once its pieces are down and the dragon has moved:
-    // scores what the last tile completed, then passes the turn on.
+    // scores what the last tile completed (settleTurn), then passes the turn
+    // on, with the fairy's point if the next player's turn starts.
     void finishTurn();
     // Drops the records of the pieces that the turn's scoring sent home.
     void forgetSettledPieces();
@@ -429,9 +436,19 @@ class Carcassonne {
     // or -1.
     int princessCityRoot() const;
     // The pieces a choice by cell can pick on (x, y): spots for a portal,
-    // indices into `pieces` (knights) for the princess.
+    // indices into `pieces` (knights) for the princess, and for the fairy the
+    // current player's meeples and big meeples but the one it is next to.
     MeepleMoves portalMovesAt(int x, int y) const;
     FixedVector<int, MAX_PIECES> princessKnightsAt(int x, int y) const;
+    FixedVector<int, MAX_PIECES> fairyMeeplesAt(int x, int y) const;
+    // The index in `pieces` of the meeple the fairy is next to, or -1.
+    int fairyPiece() const;
+    // Puts the fairy next to piece `index`.
+    void assignFairy(int index);
+    // The end of a turn's scoring: the fairy's points if its meeple's feature
+    // is complete, then the features and monasteries the last tile completed,
+    // and the records of the pieces they sent home.
+    void settleTurn();
 
   public:
     int last_x = -1;
@@ -531,6 +548,24 @@ class Carcassonne {
     int spot_x = -1;                       // and its cell
     int spot_y = -1;
 
+    // The Princess & the Dragon, with the dragon: the fairy, a neutral figure.
+    // On a turn the player places no piece and sends no knight home, they may
+    // put it next to one of their meeples or big meeples (chosen by cell,
+    // then by spot). While it is, its owner scores FAIRY_TURN_POINTS at the
+    // start of each of their turns (a builder's second tile is no new turn)
+    // and FAIRY_SCORE_POINTS when that meeple's feature is scored, whoever
+    // has the majority, at the end too. The dragon never enters its tile.
+    // When the meeple goes home the fairy stays there, next to no one.
+    bool fairy_rules = false;
+    int fairy_x = -1;      // -1 while in the supply
+    int fairy_y = -1;
+    int fairy_spot = -1;   // the Piece::spot of its meeple on its tile; -1 for none
+    // The player whose meeple the fairy is next to, or -1.
+    int fairyOwner() const {
+        const int index = fairyPiece();
+        return index < 0 ? -1 : pieces[index].owner;
+    }
+
     // Every piece on the board, where it stands.
     FixedVector<Piece, MAX_PIECES> pieces;
 
@@ -602,16 +637,19 @@ class Carcassonne {
     void placeMeeple(int pos);
 
     // The cells the meeple phase can choose for a magic portal (the last tile
-    // is one; every tile before it with a spot portalMovesAt offers) and for
-    // the princess (the last tile is one; every tile with a knight in her
-    // city). Empty in other phases.
+    // is one; every tile before it with a spot portalMovesAt offers), for the
+    // princess (the last tile is one; every tile with a knight in her city)
+    // and for the fairy (every tile with a meeple fairyMeeplesAt gives). Empty
+    // in other phases.
     Cells getLegalPortalCells() const;
     Cells getLegalPrincessCells() const;
+    Cells getLegalFairyCells() const;
     // Does the choice on that cell, if it offers one move; else waits for it
     // in PHASE_SPOT.
     void chooseCell(SpotChoice choice, int x, int y);
     // PHASE_SPOT: a portal's meeple moves on the cell (a spot, or a spot +
-    // MEEPLE_POS_BIG), or the princess's knights there, each by its spot.
+    // MEEPLE_POS_BIG), or the princess's knights or the fairy's meeples there,
+    // each by its spot.
     MeepleMoves getLegalSpotMoves() const;
     void chooseSpot(int pos);
 

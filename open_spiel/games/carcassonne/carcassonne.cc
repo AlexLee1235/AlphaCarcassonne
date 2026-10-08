@@ -252,7 +252,7 @@ int RotatePlane(int plane, int k) {
                       kFeatureOpponentMeeplesPlane, kFeatureSignedScorePlane, kFeatureMyBigMeeplePlane,
                       kFeatureOpponentBigMeeplePlane, kFeatureInnCathedralPlane, kFeatureMyBuilderPlane,
                       kFeatureOpponentBuilderPlane, kFeatureGoodsPlane, kFeatureGoodsPlane + 4,
-                      kFeatureGoodsPlane + 8, kMyPiecePlane, kOpponentPiecePlane}) {
+                      kFeatureGoodsPlane + 8, kMyPiecePlane, kOpponentPiecePlane, kFairyPiecePlane}) {
         if (plane >= first && plane < first + 4) {
             return first + (plane - first + k) % 4;
         }
@@ -260,7 +260,8 @@ int RotatePlane(int plane, int k) {
     // A quarter turn moves each half-edge two places on.
     for (int first : {kFieldMyFarmersPlane, kFieldOpponentFarmersPlane, kFieldScorePlane, kFieldSizePlane,
                       kFieldOpenCitiesPlane, kFieldMyPigPlane, kFieldOpponentPigPlane,
-                      kMyPiecePlane + MEEPLE_POS_FIELD, kOpponentPiecePlane + MEEPLE_POS_FIELD}) {
+                      kMyPiecePlane + MEEPLE_POS_FIELD, kOpponentPiecePlane + MEEPLE_POS_FIELD,
+                      kFairyPiecePlane + MEEPLE_POS_FIELD}) {
         if (plane >= first && plane < first + HALF_EDGE_COUNT) {
             return first + (plane - first + 2 * k) % HALF_EDGE_COUNT;
         }
@@ -374,8 +375,11 @@ std::string CarcassonneState::ActionToString(Player player, Action action) const
     }
     if (action < kCellActionCount) {
         const auto [x, y] = CellActionCell(action);
-        return absl::StrCat(action % kCellActionPlanes == kPortalCellPlane ? "portal(" : "princess(", "x=", x,
-                            ", y=", y, ")");
+        const int plane = action % kCellActionPlanes;
+        return absl::StrCat(plane == kPortalCellPlane     ? "portal("
+                            : plane == kPrincessCellPlane ? "princess("
+                                                          : "move_fairy(",
+                            "x=", x, ", y=", y, ")");
     }
     if (action >= kDragonActionOffset) {
         return absl::StrCat("move_dragon(dir=", std::string(1, kSideLetters[DecodeDragonAction(action)]), ")");
@@ -385,10 +389,13 @@ std::string CarcassonneState::ActionToString(Player player, Action action) const
     if (meeple_pos == MEEPLE_POS_SKIP) {
         return "place_meeple(skip)";
     }
-    // The princess's knight, by its spot on the cell chosen.
-    const bool knight =
-        game_state_.current_phase == PHASE_SPOT && game_state_.spot_choice == SPOT_PRINCESS;
+    // The princess's knight or the fairy's meeple, by its spot on the cell
+    // chosen.
+    const bool spot_phase = game_state_.current_phase == PHASE_SPOT;
+    const bool knight = spot_phase && game_state_.spot_choice == SPOT_PRINCESS;
+    const bool fairy = spot_phase && game_state_.spot_choice == SPOT_FAIRY;
     const char *verb = knight                       ? "remove_knight("
+                       : fairy                      ? "fairy_meeple("
                        : isPigPos(meeple_pos)       ? "place_pig("
                        : isBuilderPos(meeple_pos)   ? "place_builder("
                        : isBigMeeplePos(meeple_pos) ? "place_big_meeple("
@@ -451,8 +458,16 @@ std::string CarcassonneState::ToString() const {
             absl::StrAppend(&expansion_pieces, " dragon_steps=", game_state_.dragon_steps);
         }
     }
+    if (game_state_.fairy_rules && game_state_.fairy_x >= 0) {
+        // Its tile, and the player whose meeple it is next to (-1 for none).
+        absl::StrAppend(&expansion_pieces, " fairy=(", game_state_.fairy_x, ", ", game_state_.fairy_y, ") of ",
+                        game_state_.fairyOwner());
+    }
     if (game_state_.current_phase == PHASE_SPOT) {
-        absl::StrAppend(&expansion_pieces, game_state_.spot_choice == SPOT_PORTAL ? " portal=(" : " princess=(",
+        absl::StrAppend(&expansion_pieces,
+                        game_state_.spot_choice == SPOT_PORTAL     ? " portal_spot=("
+                        : game_state_.spot_choice == SPOT_PRINCESS ? " princess_spot=("
+                                                                   : " fairy_spot=(",
                         game_state_.spot_x, ", ", game_state_.spot_y, ")");
     }
     return absl::StrCat("phase=", PhaseToString(game_state_.current_phase), " current_player=", game_state_.currentPlayer,
@@ -642,13 +657,35 @@ void CarcassonneState::ObservationTensor(Player player, absl::Span<float> values
         }
     }
 
-    // The cells the meeple phase can choose for a portal's meeple or the
-    // princess's knight.
+    // The cells the meeple phase can choose for a portal's meeple, the
+    // princess's knight or the fairy.
     for (const auto &[bx, by] : game_state_.getLegalPortalCells()) {
         SetPlaneValue(values, kLegalPortalCellPlane, bx - game_state_.view_x0, by - game_state_.view_y0, 1.0f);
     }
     for (const auto &[bx, by] : game_state_.getLegalPrincessCells()) {
         SetPlaneValue(values, kLegalPrincessCellPlane, bx - game_state_.view_x0, by - game_state_.view_y0, 1.0f);
+    }
+    for (const auto &[bx, by] : game_state_.getLegalFairyCells()) {
+        SetPlaneValue(values, kLegalFairyCellPlane, bx - game_state_.view_x0, by - game_state_.view_y0, 1.0f);
+    }
+
+    // The fairy, and the spots of the meeple it is next to.
+    const int fairy_owner = game_state_.fairyOwner();
+    if (game_state_.fairy_x >= 0) {
+        const int fx = game_state_.fairy_x - game_state_.view_x0;
+        const int fy = game_state_.fairy_y - game_state_.view_y0;
+        SetPlaneValue(values, kFairyPlane, fx, fy, 1.0f);
+        for (const Piece &piece : game_state_.pieces) {
+            if (fairy_owner < 0 || piece.x != game_state_.fairy_x || piece.y != game_state_.fairy_y ||
+                piece.spot != game_state_.fairy_spot || piece.kind == PIECE_BUILDER || piece.kind == PIECE_PIG) {
+                continue;
+            }
+            for (int spot = 0; spot < kPieceSpotPlanes; ++spot) {
+                if (piece.spots >> spot & 1) {
+                    SetPlaneValue(values, kFairyPiecePlane + spot, fx, fy, 1.0f);
+                }
+            }
+        }
     }
 
     const bool dragon_phase = game_state_.current_phase == PHASE_DRAGON;
@@ -742,8 +779,13 @@ void CarcassonneState::ObservationTensor(Player player, absl::Span<float> values
         }
     }
     if (game_state_.current_phase == PHASE_SPOT) {
-        global[game_state_.spot_choice == SPOT_PORTAL ? kGlobalSpotPortal : kGlobalSpotPrincess] = 1.0f;
+        global[game_state_.spot_choice == SPOT_PORTAL     ? kGlobalSpotPortal
+               : game_state_.spot_choice == SPOT_PRINCESS ? kGlobalSpotPrincess
+                                                          : kGlobalSpotFairy] = 1.0f;
     }
+    global[kGlobalFairyInSupply] = game_state_.fairy_rules && game_state_.fairy_x < 0 ? 1.0f : 0.0f;
+    global[kGlobalMyFairy] = fairy_owner == player ? 1.0f : 0.0f;
+    global[kGlobalOpponentFairy] = fairy_owner == opponent ? 1.0f : 0.0f;
 }
 
 std::unique_ptr<State> CarcassonneState::Clone() const { return std::unique_ptr<State>(new CarcassonneState(*this)); }
@@ -821,6 +863,9 @@ std::vector<Action> CarcassonneState::LegalActions() const {
     for (const auto &[x, y] : game_state_.getLegalPrincessCells()) {
         actions.push_back(CellAction(x, y, kPrincessCellPlane));
     }
+    for (const auto &[x, y] : game_state_.getLegalFairyCells()) {
+        actions.push_back(CellAction(x, y, kFairyCellPlane));
+    }
     std::sort(actions.begin(), actions.end());
     return actions;
 }
@@ -851,8 +896,11 @@ void CarcassonneState::DoApplyAction(Action action) {
     if (action < kCellActionCount) {
         const auto [x, y] = CellActionCell(action);
         const int plane = action % kCellActionPlanes;
-        SPIEL_CHECK_TRUE(plane == kPortalCellPlane || plane == kPrincessCellPlane);
-        game_state_.chooseCell(plane == kPortalCellPlane ? SPOT_PORTAL : SPOT_PRINCESS, x, y);
+        SPIEL_CHECK_GE(plane, kPortalCellPlane);
+        game_state_.chooseCell(plane == kPortalCellPlane     ? SPOT_PORTAL
+                               : plane == kPrincessCellPlane ? SPOT_PRINCESS
+                                                             : SPOT_FAIRY,
+                               x, y);
         return;
     }
     game_state_.placeMeeple(DecodeMeepleAction(action));
@@ -982,13 +1030,13 @@ float ObservationPlaneDenominator(int plane) {
     // Each is the normalization ObservationTensor writes the plane with.
     // Everything up to the last-placed plane is 0/1, and so are the big meeple,
     // inn / cathedral, builder and pig planes, the builder's and pig's tiles,
-    // the dragon's and the cells a portal or the princess can choose; the
-    // monastery owners are +-1.
+    // the dragon's, the cells a portal, the princess or the fairy can choose,
+    // and the fairy's; the monastery owners are +-1.
     if (plane <= kLastPlacedPlane || plane == kMonasteryOwnerPlane || in(kFeatureMyBigMeeplePlane, 4) ||
         in(kFeatureOpponentBigMeeplePlane, 4) || plane == kMonasteryBigMeeplePlane ||
         in(kFeatureInnCathedralPlane, 4) || in(kFeatureMyBuilderPlane, 4) || in(kFeatureOpponentBuilderPlane, 4) ||
         in(kFieldMyPigPlane, HALF_EDGE_COUNT) || in(kFieldOpponentPigPlane, HALF_EDGE_COUNT) ||
-        in(kMyBuilderTilePlane, kLegalPrincessCellPlane + 1 - kMyBuilderTilePlane)) {
+        in(kMyBuilderTilePlane, kSpatialPlanes - kMyBuilderTilePlane)) {
         return 1.0f;
     }
     // A piece's strength / 2.

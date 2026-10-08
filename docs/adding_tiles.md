@@ -12,7 +12,7 @@
 
 `tiles/` 裡的圖已經照這個順序編好號，填表時照著 type 順序一列一列往下填即可。
 
-目前除了河流、旅館與大教堂、商人與建築師、公主與龍的龍、公主、魔法門（§8）之外**只做牌的形狀**，擴充的規則一律不算：仙女還沒有效果。
+目前河流、旅館與大教堂、商人與建築師、公主與龍的規則都做好了（§8）；其他擴充**只做牌的形狀**，規則一律不算。
 
 ---
 
@@ -129,8 +129,11 @@
 
 ### 標記：整張牌的
 
-`TILE_MONASTERY`（修道院）、`TILE_DRAGON`（龍）、`TILE_VOLCANO`（火山）、`TILE_PORTAL`（魔法門）。
-多個時用 `|` 連起來。目前只有修道院有規則。
+`TILE_MONASTERY`（修道院）、`TILE_DRAGON`（龍）、`TILE_VOLCANO`（火山）、`TILE_PORTAL`（魔法門）、
+`TILE_TUNNEL`（路從隧道穿過城底下）。多個時用 `|` 連起來。
+
+隧道（type 76）：路的兩段照規則是同一條，link 填成同一個；但它從城底下穿過，不會切開草地，
+所以兩個半邊是同一塊田。一般「路通到別邊就要切開草地」的檢查會擋下這種牌，`TILE_TUNNEL` 讓 `tile_check` 放行。
 
 ### 張數、type、擴充
 
@@ -245,9 +248,9 @@ cd /mnt/c/achieve/Carcassonne/AlphaCarcassonne/build && make carcassonne_test -j
 
 - 先確認不是填錯了。
 - 確認沒填錯，就把造成差異的那一種牌加進 `carcassonne_test.cc` 的 `kHiddenFieldTypes`，並在旁邊寫明原因。
-  只要一對裡有一種在這個清單上，測試就接受。目前清單上有兩種情況：
+  只要一對裡有一種在這個清單上，測試就接受。目前清單上是：
   - 42、62、65、67、94、95：城牆延伸到牌角，把那個角兩側的草地切開。
-  - 76：路在草地中間就結束，沒接到城，所以沒有把草地切開（對手 45、72 的路接到城門）。
+  （76 的路接成穿過城的一條之後，link 跟 45、72 不同，觀測分得出來，已從清單拿掉。）
   這等於接受觀測的這個限制；要真正解決，得做 §2.2 的候選 A（每張牌自己的農田平面）。
 
 ---
@@ -262,8 +265,8 @@ carcassonne(inns_cathedrals=on,traders_builders=on,river=on,princess_dragon=on)
   - 河流：`off`／`on`，沒有只發牌的選項。
   - 旅館與大教堂：`off`／`tiles`／`on`。`on` = 大米寶＋旅館＋大教堂；`tiles` 的旅館、大教堂只是一般的路和城。
   - 商人與建築師：`off`／`tiles`／`on`。`on` = 建築師＋小豬＋貨物。
-  - 公主與龍：`off`／`tiles`／`on`。`on` 目前是龍（火山＋龍牌）、公主、魔法門；仙女還沒做。
-- **觀測和動作的維度不隨參數改變**：global vector 為牌表裡的每一種牌都留了位置（96 + 2 × 牌種數），沒發的牌種一律是 0。
+  - 公主與龍：`off`／`tiles`／`on`。`on` = 龍（火山＋龍牌）＋公主＋魔法門＋仙女。
+- **觀測和動作的維度不隨參數改變**：global vector 為牌表裡的每一種牌都留了位置（100 + 2 × 牌種數），沒發的牌種一律是 0。
   所以**牌表每加一種牌，維度就變一次**。等牌表定案再開始訓練；舊的 checkpoint 也不能載入，`carcassonne_bot_cli` 會直接報錯。
 - 河流規則（`river=on`）：河源取代起始牌放在中央，基本版的起始牌拿掉不用（牌組 72 + 12 − 1 = 83 張）；先抽完河流牌，湖一定最後，之後才抽一般牌。
   每張河流牌都要接在河的出口上，而且連續兩個彎不能往同一邊轉（中間隔著直流也算），所以河只會在兩個方向間交替、不會流回自己旁邊。
@@ -298,6 +301,10 @@ carcassonne(inns_cathedrals=on,traders_builders=on,river=on,princess_dragon=on)
   這回合就不放棋子；他在那座城沒有 follower 了，建築師也回去。移除在計分之前。
   先選格（plane 5，`princess(x=, y=)`），那格有好幾個騎士時再選（`remove_knight(edge=N)`）。
   兩者都寫在 `game/game.cpp` 的 `getLegalPortalCells`、`getLegalPrincessCells`、`chooseCell`、`chooseSpot`。
+- 仙女（`princess_dragon=on`）：沒放任何棋子、也沒用公主移走騎士的回合，可以改成把仙女移到自己場上某個 meeple 或大米寶旁邊
+  （plane 6，`move_fairy(x=, y=)`；那格有好幾顆時再選，`fairy_meeple(edge=N)` 等）。之後主人每回合開始 +1（雙回合不重複），
+  那顆 meeple 的 feature 計分時 +3（不論多數，終局也算），龍不能進仙女那格；meeple 回去後仙女留在原地、照樣擋龍。
+  寫在 `game/game.cpp` 的 `getLegalFairyCells`、`settleTurn`、`finishTurn`、`dragonCanEnter`。
 - 盤面：牌變多，對局也變大。引擎只在 `VIEW_SIZE`（目前 21）格的視窗裡放磚，視窗每手置中在已放的磚上。
   填完後量全開時要多大的視窗，再決定 `VIEW_SIZE` 要不要加大（`BOARD_SIZE` 只要容得下視窗能移到的地方）：
   ```bash

@@ -11,7 +11,7 @@ tiles/<type>.png (the picture in rotation 0, north up):
   - in yellow, next to the side they are written on, the marks of a city or
     road: SH shield, PR princess, WI / CL / WH goods, INN inn;
   - under the picture: the copies, the tile marks (monastery, dragon, volcano,
-    portal), and the city sides each field borders.
+    portal, tunnel), and the city sides each field borders.
 
 One sheet per expansion, results/tile_sheet_<expansion>.png. See
 docs/adding_tiles.md.

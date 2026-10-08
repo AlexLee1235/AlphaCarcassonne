@@ -33,8 +33,10 @@ void WriteJson(const char *path) {
     // The bit values, so render_tile_table.py need not copy them.
     std::fprintf(out, "{\n  \"mark_bits\": {\"SH\": %d, \"PR\": %d, \"WI\": %d, \"CL\": %d, \"WH\": %d, \"INN\": %d},\n",
                  MARK_SHIELD, MARK_PRINCESS, MARK_WINE, MARK_CLOTH, MARK_WHEAT, MARK_INN);
-    std::fprintf(out, "  \"tile_mark_bits\": {\"monastery\": %d, \"dragon\": %d, \"volcano\": %d, \"portal\": %d},\n",
-                 TILE_MONASTERY, TILE_DRAGON, TILE_VOLCANO, TILE_PORTAL);
+    std::fprintf(out,
+                 "  \"tile_mark_bits\": {\"monastery\": %d, \"dragon\": %d, \"volcano\": %d, \"portal\": %d, "
+                 "\"tunnel\": %d},\n",
+                 TILE_MONASTERY, TILE_DRAGON, TILE_VOLCANO, TILE_PORTAL, TILE_TUNNEL);
     std::fprintf(out, "  \"tile_types\": [\n");
     for (int row = 0; row < CANONICAL_TILE_TYPE_COUNT; ++row) {
         const TileBlueprint &bp = all_tiles[row];

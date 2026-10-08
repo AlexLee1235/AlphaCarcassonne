@@ -423,11 +423,11 @@ ModelImpl::ModelImpl(const ModelConfig& config, const std::string& device)
     constexpr int kValueHidden = 256;
 
     // A conv policy head needs the actions to factor into a few choices per
-    // board cell plus a handful that belong to no cell. Carcassonne's do: six
-    // per cell (2646: four tile rotations, a magic portal's cell, the
-    // princess's cell) and then 41 meeple moves (skip, 14 spots for the meeple
-    // and for the big meeple, 4 sides for the builder, 8 half-edges for the
-    // pig) and 4 dragon steps, read from the focus cell (the tile just placed,
+    // board cell plus a handful that belong to no cell. Carcassonne's do:
+    // seven per cell (3087: four tile rotations, a magic portal's cell, the
+    // princess's, the fairy's) and then 41 meeple moves (skip, 14 spots for
+    // the meeple and for the big meeple, 4 sides for the builder, 8 half-edges
+    // for the pig) and 4 dragon steps, read from the focus cell (the tile just placed,
     // the dragon's, or the cell chosen). The choices per cell are as many as
     // whole boards fit in the action count. Only a game that marks its focus
     // cell (last_placed_plane) says its actions factor this way; the others

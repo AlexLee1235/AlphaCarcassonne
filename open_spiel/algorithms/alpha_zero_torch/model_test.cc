@@ -317,21 +317,21 @@ void TestConvPolicyHead() {
   }
   // conv 32*32+32, gpool conv 32*32+32, gpool FC (64+G)*32+32, BN 2*32,
   // per-cell conv P*32+P, meeple conv M*32+M. The G global features (which
-  // grow with the tile table) join the pooled branch; P = 6 actions per cell
-  // (4 rotations, a portal's cell, the princess's cell); M = 41 meeple moves
-  // and 4 dragon steps.
+  // grow with the tile table) join the pooled branch; P = 7 actions per cell
+  // (4 rotations, a portal's cell, the princess's cell, the fairy's cell);
+  // M = 41 meeple moves and 4 dragon steps.
   const int64_t carcassonne_globals = GlobalObservationFeatures(*game);
   const int64_t carcassonne_cells = game->ObservationTensorShape()[1] *
                                     game->ObservationTensorShape()[2];
   const int64_t cell_planes = game->NumDistinctActions() / carcassonne_cells;
   const int64_t meeple_moves = game->NumDistinctActions() % carcassonne_cells;
-  SPIEL_CHECK_EQ(cell_planes, 6);
+  SPIEL_CHECK_EQ(cell_planes, 7);
   SPIEL_CHECK_EQ(meeple_moves, 45);
   SPIEL_CHECK_EQ(policy_parameters,
                  2 * (32 * 32 + 32) + (64 + carcassonne_globals) * 32 + 32 +
                      2 * 32 + (cell_planes * 32 + cell_planes) +
                      (meeple_moves * 32 + meeple_moves));
-  // A dense head would be Linear(2*21*21 -> 2691), 2,376,153 on its own.
+  // A dense head would be Linear(2*21*21 -> 3132), 2,765,556 on its own.
   SPIEL_CHECK_LT(largest_tensor, 50000);
 
   // A game whose actions do not factor per cell keeps the dense head.

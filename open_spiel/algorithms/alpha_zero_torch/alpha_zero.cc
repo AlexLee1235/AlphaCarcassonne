@@ -183,8 +183,10 @@ Trajectory PlayGame(Logger* logger, int game_num, const open_spiel::Game& game,
     }
   }
 
-  logger->Print("Game %d: Returns: %s; Actions: %s", game_num,
-                absl::StrJoin(trajectory.returns, " "),
+  // The game string tells the games of a mixed run apart
+  // (tools/actor_log.hpp).
+  logger->Print("Game %d: Returns: %s; Game: %s; Actions: %s", game_num,
+                absl::StrJoin(trajectory.returns, " "), game.ToString(),
                 absl::StrJoin(history, " "));
   return trajectory;
 }
@@ -213,8 +215,62 @@ int SearchSeed(int worker, int game_num, int player) {
   return static_cast<int>(seed & 0x7fffffff);
 }
 
+GameMix::GameMix(const AlphaZeroConfig& config) {
+  std::vector<GameMixEntry> entries = config.game_mix;
+  if (entries.empty()) entries.push_back({config.game, 1.0});
+  double total = 0;
+  for (const GameMixEntry& entry : entries) {
+    if (!(entry.weight > 0)) {
+      open_spiel::SpielFatalError(
+          absl::StrCat("game_mix: ", entry.game, " has weight ", entry.weight,
+                       "; the weights must be positive."));
+    }
+    std::shared_ptr<const open_spiel::Game> game =
+        open_spiel::LoadGame(entry.game);
+    if (!games_.empty()) {
+      const open_spiel::Game& first = *games_.front();
+      if (game->GetType().short_name != first.GetType().short_name ||
+          game->NumPlayers() != first.NumPlayers() ||
+          game->ObservationTensorShape() != first.ObservationTensorShape() ||
+          game->NumDistinctActions() != first.NumDistinctActions() ||
+          game->MaxUtility() != first.MaxUtility() ||
+          game->MinUtility() != first.MinUtility()) {
+        open_spiel::SpielFatalError(absl::StrCat(
+            "game_mix: ", game->ToString(), " cannot share a model with ",
+            first.ToString(), " (game, players, observation shape, actions "
+            "or utilities differ)."));
+      }
+    }
+    games_.push_back(game);
+    names_.push_back(game->ToString());
+    total += entry.weight;
+    cumulative_.push_back(total);
+  }
+}
+
+double GameMix::Weight(int index) const {
+  return cumulative_[index] - (index > 0 ? cumulative_[index - 1] : 0.0);
+}
+
+int GameMix::MaxGameLength() const {
+  int length = 0;
+  for (const auto& game : games_) {
+    length = std::max(length, game->MaxGameLength());
+  }
+  return length;
+}
+
+int GameMix::Sample(std::mt19937* rng) const {
+  if (games_.size() == 1) return 0;
+  const double r =
+      std::uniform_real_distribution<double>(0.0, cumulative_.back())(*rng);
+  const int index = std::upper_bound(cumulative_.begin(), cumulative_.end(), r) -
+                    cumulative_.begin();
+  return std::min(index, Size() - 1);
+}
+
 // An actor thread runner that generates games and returns trajectories.
-void actor(const open_spiel::Game& game, const AlphaZeroConfig& config, int num,
+void actor(const GameMix& games, const AlphaZeroConfig& config, int num,
            ThreadedQueue<Trajectory>* trajectory_queue,
            std::shared_ptr<VPNetEvaluator> vp_eval, StopToken* stop) {
   std::unique_ptr<Logger> logger;
@@ -226,6 +282,8 @@ void actor(const open_spiel::Game& game, const AlphaZeroConfig& config, int num,
   std::mt19937 rng(absl::ToUnixNanos(absl::Now()));
   absl::uniform_real_distribution<double> dist(0.0, 1.0);
   for (int game_num = 1; !stop->StopRequested(); ++game_num) {
+    const int game_index = games.Sample(&rng);
+    const open_spiel::Game& game = games.Get(game_index);
     std::vector<std::unique_ptr<MCTSBot>> bots;
     bots.reserve(2);
     for (int player = 0; player < 2; player++) {
@@ -235,11 +293,12 @@ void actor(const open_spiel::Game& game, const AlphaZeroConfig& config, int num,
     double cutoff =
         (dist(rng) < config.cutoff_probability ? config.cutoff_value
                                                : game.MaxUtility() + 1);
-    if (!trajectory_queue->Push(
-            PlayGame(logger.get(), game_num, game, &bots, &rng,
-                     config.temperature, config.temperature_drop, cutoff,
-                     /*verbose=*/false, vp_eval.get()),
-            absl::Seconds(10))) {
+    Trajectory trajectory =
+        PlayGame(logger.get(), game_num, game, &bots, &rng, config.temperature,
+                 config.temperature_drop, cutoff,
+                 /*verbose=*/false, vp_eval.get());
+    trajectory.game_index = game_index;
+    if (!trajectory_queue->Push(std::move(trajectory), absl::Seconds(10))) {
       logger->Print("Failed to push a trajectory after 10 seconds.");
     }
   }
@@ -293,7 +352,7 @@ class EvalResults {
 };
 
 // A thread that plays vs standard MCTS.
-void evaluator(const open_spiel::Game& game, const AlphaZeroConfig& config,
+void evaluator(const GameMix& games, const AlphaZeroConfig& config,
                int num, EvalResults* results,
                std::shared_ptr<VPNetEvaluator> vp_eval, StopToken* stop) {
   FileLogger logger(config.path, absl::StrCat("evaluator-", num));
@@ -301,6 +360,9 @@ void evaluator(const open_spiel::Game& game, const AlphaZeroConfig& config,
   auto rand_evaluator = std::make_shared<RandomRolloutEvaluator>(1, num);
 
   for (int game_num = 1; !stop->StopRequested(); ++game_num) {
+    // The results add up over the games of a mix: per game there would be
+    // too few to tell anything.
+    const open_spiel::Game& game = games.Get(games.Sample(&rng));
     auto [difficulty, first] = results->Next();
     int az_player = first ? 0 : 1;
     int rand_max_simulations =
@@ -423,12 +485,14 @@ json::Object LossJson(const VPNetModel::LossInfo& losses) {
 
 }  // namespace
 
-void learner(const open_spiel::Game& game, const AlphaZeroConfig& config,
+void learner(const GameMix& games, const AlphaZeroConfig& config,
              DeviceManager* device_manager,
              std::shared_ptr<VPNetEvaluator> eval,
              ThreadedQueue<Trajectory>* trajectory_queue,
              EvalResults* eval_results, StopToken* stop,
              const StartInfo& start_info) {
+  // Every game of the mix has the same observations: see GameMix.
+  const open_spiel::Game& game = games.Get(0);
   FileLogger logger(config.path, "learner", "a");
   DataLoggerJsonLines data_logger(
       config.path, "learner", true, "a", start_info.start_time);
@@ -463,7 +527,16 @@ void learner(const open_spiel::Game& game, const AlphaZeroConfig& config,
   std::vector<open_spiel::BasicStats> raw_value_accuracies(stage_count);
   std::vector<open_spiel::BasicStats> raw_value_predictions(stage_count);
   open_spiel::BasicStats game_lengths;
-  open_spiel::HistogramNumbered game_lengths_hist(game.MaxGameLength() + 1);
+  open_spiel::HistogramNumbered game_lengths_hist(games.MaxGameLength() + 1);
+  // Per game of a mix, this step: games and states, to see the replay buffer
+  // share each gets, and the network's own value accuracy over every stage,
+  // to see which rules it learns slowly.
+  struct MixStats {
+    int games = 0;
+    int64_t states = 0;
+    open_spiel::BasicStats raw_value_accuracy;
+  };
+  std::vector<MixStats> mix_stats(games.Size());
 
   open_spiel::HistogramNamed outcomes({"Player1", "Player2", "Draw"});
   // Actor threads have likely been contributing for a while, so put `last` in
@@ -476,6 +549,9 @@ void learner(const open_spiel::Game& game, const AlphaZeroConfig& config,
     outcomes.Reset();
     game_lengths.Reset();
     game_lengths_hist.Reset();
+    for (MixStats& stats : mix_stats) {
+      stats = MixStats();
+    }
     for (auto& value_accuracy : value_accuracies) {
       value_accuracy.Reset();
     }
@@ -515,6 +591,9 @@ void learner(const open_spiel::Game& game, const AlphaZeroConfig& config,
         total_trajectories += 1;
         game_lengths.Add(trajectory->states.size());
         game_lengths_hist.Add(trajectory->states.size());
+        MixStats& mix = mix_stats[trajectory->game_index];
+        mix.games += 1;
+        mix.states += trajectory->states.size();
 
         double p1_outcome = trajectory->returns[0];
         outcomes.Add(p1_outcome > 0 ? 0 : (p1_outcome < 0 ? 1 : 2));
@@ -552,6 +631,7 @@ void learner(const open_spiel::Game& game, const AlphaZeroConfig& config,
           if (!std::isnan(s.raw_value)) {
             raw_value_accuracies[stage].Add((s.raw_value >= 0) == player_won);
             raw_value_predictions[stage].Add(std::abs(s.raw_value));
+            mix.raw_value_accuracy.Add((s.raw_value >= 0) == player_won);
           }
         }
       }
@@ -710,6 +790,19 @@ void learner(const open_spiel::Game& game, const AlphaZeroConfig& config,
         {"batch_size_hist", eval->BatchSizeHistogram().ToJson()},
         {"loss", LossJson(losses)},
     };
+    if (games.Size() > 1) {
+      json::Object mix_record;
+      for (int i = 0; i < games.Size(); ++i) {
+        mix_record.emplace(
+            games.Name(i),
+            json::Object({
+                {"games", mix_stats[i].games},
+                {"states", mix_stats[i].states},
+                {"raw_value_accuracy", mix_stats[i].raw_value_accuracy.ToJson()},
+            }));
+      }
+      record.emplace("mix", mix_record);
+    }
 
     // Held-out loss: learner.jsonl only, nothing printed to the log. A
     // default-constructed LossInfo averages over zero batches, so leave a
@@ -756,11 +849,14 @@ void learner(const open_spiel::Game& game, const AlphaZeroConfig& config,
 }
 
 bool AlphaZero(AlphaZeroConfig config, StopToken* stop, bool resuming) {
-  std::shared_ptr<const open_spiel::Game> game =
-      open_spiel::LoadGame(config.game);
+  if (!config.game_mix.empty()) config.game = config.game_mix.front().game;
+  const GameMix games(config);
+  // The model and the replay buffer only need what every game of the mix
+  // shares.
+  const open_spiel::Game& game = games.Get(0);
 
-  open_spiel::GameType game_type = game->GetType();
-  if (game->NumPlayers() != 2)
+  open_spiel::GameType game_type = game.GetType();
+  if (game.NumPlayers() != 2)
     open_spiel::SpielFatalError("AlphaZero can only handle 2-player games.");
   if (game_type.reward_model != open_spiel::GameType::RewardModel::kTerminal)
     open_spiel::SpielFatalError("Game must have terminal rewards.");
@@ -787,7 +883,7 @@ bool AlphaZero(AlphaZeroConfig config, StopToken* stop, bool resuming) {
       std::cout << "Creating model: " << model_path << std::endl;
     }
     SPIEL_CHECK_TRUE(CreateGraphDef(
-        *game, config.learning_rate, config.weight_decay, config.path,
+        game, config.learning_rate, config.weight_decay, config.path,
         config.graph_def, config.nn_model, config.nn_width, config.nn_depth));
   } else {
     std::string model_path = absl::StrCat(config.path, "/", config.graph_def);
@@ -798,7 +894,19 @@ bool AlphaZero(AlphaZeroConfig config, StopToken* stop, bool resuming) {
     }
   }
 
-  std::cout << "Playing game: " << config.game << std::endl;
+  if (games.Size() == 1) {
+    std::cout << "Playing game: " << config.game << std::endl;
+  } else {
+    double total = 0;
+    for (int i = 0; i < games.Size(); ++i) total += games.Weight(i);
+    std::cout << "Playing " << games.Size() << " games:" << std::endl;
+    for (int i = 0; i < games.Size(); ++i) {
+      std::cout << absl::StrFormat("  %5.1f%% of the games: %s",
+                                   100 * games.Weight(i) / total,
+                                   games.Name(i))
+                << std::endl;
+    }
+  }
 
   config.inference_batch_size = std::max(
       1,
@@ -824,7 +932,7 @@ bool AlphaZero(AlphaZeroConfig config, StopToken* stop, bool resuming) {
   DeviceManager device_manager;
   for (const absl::string_view& device : absl::StrSplit(config.devices, ',')) {
     device_manager.AddDevice(
-        VPNetModel(*game, config.path, config.graph_def, std::string(device)));
+        VPNetModel(game, config.path, config.graph_def, std::string(device)));
   }
 
   if (device_manager.Count() == 0) {
@@ -872,15 +980,15 @@ bool AlphaZero(AlphaZeroConfig config, StopToken* stop, bool resuming) {
   actors.reserve(config.actors);
   for (int i = 0; i < config.actors; ++i) {
     actors.emplace_back(
-        [&, i]() { actor(*game, config, i, &trajectory_queue, eval, stop); });
+        [&, i]() { actor(games, config, i, &trajectory_queue, eval, stop); });
   }
   std::vector<Thread> evaluators;
   evaluators.reserve(config.evaluators);
   for (int i = 0; i < config.evaluators; ++i) {
     evaluators.emplace_back(
-        [&, i]() { evaluator(*game, config, i, &eval_results, eval, stop); });
+        [&, i]() { evaluator(games, config, i, &eval_results, eval, stop); });
   }
-  learner(*game, config, &device_manager, eval, &trajectory_queue,
+  learner(games, config, &device_manager, eval, &trajectory_queue,
           &eval_results, stop, start_info);
 
   if (!stop->StopRequested()) {

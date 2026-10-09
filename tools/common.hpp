@@ -101,6 +101,12 @@ inline std::string GameName(const GameRules &rules) {
     return name.empty() ? "base" : name;
 }
 
+// OpenSpiel 的遊戲字串："carcassonne"，或 "carcassonne(inns_cathedrals=on,river=on)"。
+inline std::string OpenSpielGameString(const GameRules &rules) {
+    const std::string name = GameName(rules);
+    return name == "base" ? "carcassonne" : "carcassonne(" + name + ")";
+}
+
 // 命令列的牌組參數：base、river（開河流）、all（所有擴充都 on），或 ParseGameString 的寫法。
 // 看不懂就印出原因並結束。
 inline GameRules DeckArg(const char *arg) {

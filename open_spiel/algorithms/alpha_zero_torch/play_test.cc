@@ -4,6 +4,7 @@
 #include <cmath>
 #include <memory>
 #include <random>
+#include <string>
 #include <vector>
 
 #include "open_spiel/games/carcassonne/carcassonne_test_utils.h"
@@ -136,6 +137,86 @@ void TemperatureDropCountsDecisionsTest() {
   SPIEL_CHECK_GT(last_sampled_off_best, 0);
 }
 
+// A mix picks each game by its weight; its longest game bounds the length
+// histogram.
+void GameMixTest() {
+  AlphaZeroConfig config{};
+  config.game_mix = {{"carcassonne", 1.0}, {"carcassonne(river=on)", 3.0}};
+  const GameMix games(config);
+  SPIEL_CHECK_EQ(games.Size(), 2);
+  SPIEL_CHECK_EQ(games.Name(1), LoadGame("carcassonne(river=on)")->ToString());
+  SPIEL_CHECK_EQ(games.Weight(0), 1.0);
+  SPIEL_CHECK_EQ(games.Weight(1), 3.0);
+  SPIEL_CHECK_EQ(games.MaxGameLength(),
+                 std::max(LoadGame("carcassonne")->MaxGameLength(),
+                          LoadGame("carcassonne(river=on)")->MaxGameLength()));
+  std::mt19937 rng(1);
+  constexpr int kSamples = 4000;
+  int river = 0;
+  for (int i = 0; i < kSamples; ++i) river += games.Sample(&rng);
+  SPIEL_CHECK_LT(std::abs(river / static_cast<double>(kSamples) - 0.75), 0.03);
+
+  // Without a mix there is the one game, and drawing it takes no randomness.
+  AlphaZeroConfig single{};
+  single.game = "carcassonne";
+  const GameMix one(single);
+  SPIEL_CHECK_EQ(one.Size(), 1);
+  std::mt19937 untouched(1);
+  SPIEL_CHECK_EQ(one.Sample(&untouched), 0);
+  SPIEL_CHECK_EQ(untouched(), std::mt19937(1)());
+}
+
+// config.json keeps the mix, and older ones without it read as no mix. A
+// weight written by hand may be an integer.
+void GameMixConfigTest() {
+  AlphaZeroConfig config{};
+  config.game = "carcassonne";
+  config.game_mix = {{"carcassonne", 2.0}, {"carcassonne(river=on)", 0.5}};
+  json::Object saved =
+      json::FromString(json::ToString(config.ToJson())).value().GetObject();
+  AlphaZeroConfig loaded{};
+  loaded.FromJson(saved);
+  SPIEL_CHECK_EQ(loaded.game_mix.size(), 2);
+  SPIEL_CHECK_EQ(loaded.game_mix[1].game, "carcassonne(river=on)");
+  SPIEL_CHECK_EQ(loaded.game_mix[1].weight, 0.5);
+
+  saved.erase("game_mix");
+  AlphaZeroConfig old{};
+  old.FromJson(saved);
+  SPIEL_CHECK_TRUE(old.game_mix.empty());
+
+  const std::vector<GameMixEntry> by_hand = GameMixFromJson(
+      json::Array({json::Object({{"game", "carcassonne"}, {"weight", 3}})}));
+  SPIEL_CHECK_EQ(by_hand[0].weight, 3.0);
+}
+
+class CapturingLogger : public Logger {
+ public:
+  void Print(const std::string& str) override { lines.push_back(str); }
+  std::vector<std::string> lines;
+};
+
+// The actor log names each game's rules, which a mixed run needs to replay
+// its games (tools/actor_log.hpp).
+void PlayGameLogsTheGameTest() {
+  auto game = LoadGame("carcassonne(max_turns=1)");
+  std::mt19937 rng(0);
+  auto evaluator = std::make_shared<RandomRolloutEvaluator>(1, 0);
+  std::vector<std::unique_ptr<MCTSBot>> bots;
+  for (int player = 0; player < 2; ++player) {
+    bots.push_back(std::make_unique<MCTSBot>(
+        *game, evaluator, 2.0, 16, 10, false, player, false,
+        ChildSelectionPolicy::PUCT, 0.0, 0.0, true));
+  }
+  CapturingLogger logger;
+  PlayGame(&logger, 7, *game, &bots, &rng, 1.0, 10, 2.0);
+  SPIEL_CHECK_FALSE(logger.lines.empty());
+  const std::string& line = logger.lines.back();
+  SPIEL_CHECK_EQ(line.rfind("Game 7: Returns: ", 0), 0);
+  SPIEL_CHECK_NE(line.find("; Game: carcassonne(max_turns=1); Actions: draw_type("),
+                 std::string::npos);
+}
+
 }  // namespace
 }  // namespace torch_az
 }  // namespace algorithms
@@ -145,4 +226,7 @@ int main() {
   open_spiel::algorithms::torch_az::ChanceTerminalTest();
   open_spiel::algorithms::torch_az::PlayerTerminalAndCutoffTest();
   open_spiel::algorithms::torch_az::TemperatureDropCountsDecisionsTest();
+  open_spiel::algorithms::torch_az::GameMixTest();
+  open_spiel::algorithms::torch_az::GameMixConfigTest();
+  open_spiel::algorithms::torch_az::PlayGameLogsTheGameTest();
 }

@@ -22,7 +22,7 @@ SRCSFREE := $(GFREE)/Feature.cpp $(GFREE)/FeatureModule.cpp $(GFREE)/FieldModule
 # 副本要跟著引擎更新（牌表 tile.hpp 常常在改）
 ENGINE   := $(wildcard $(GAME)/*.hpp $(GAME)/*.cpp)
 
-TOOLS    := diag_value_gap diag_local_decomp diag_board diag_opens diag_occupancy diag_branching diag_luck diag_value_gap_strong diag_pending_scale diag_plane_scale diag_replay_scale diag_game_report
+TOOLS    := diag_value_gap diag_local_decomp diag_board diag_opens diag_occupancy diag_branching diag_luck diag_value_gap_strong diag_pending_scale diag_plane_scale diag_replay_scale diag_game_report game_mix
 BINS     := $(addprefix build/,$(TOOLS)) build/diag_board_free build/dump_tiles
 PYTHON   ?= python3
 

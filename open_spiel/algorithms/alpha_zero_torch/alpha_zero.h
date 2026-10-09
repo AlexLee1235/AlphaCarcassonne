@@ -51,6 +51,8 @@ struct Trajectory {
 
   std::vector<State> states;
   std::vector<double> returns;
+  // Which game of the run's GameMix this was.
+  int game_index = 0;
 };
 
 // Shared by self-play actors and evaluation workers.
@@ -60,8 +62,41 @@ Trajectory PlayGame(Logger* logger, int game_num, const open_spiel::Game& game,
                     double cutoff_value, bool verbose = false,
                     Evaluator* raw_value_evaluator = nullptr);
 
+// One game of a mixed run, and how often actors and evaluators play it
+// relative to the others.
+struct GameMixEntry {
+  std::string game;
+  double weight;
+};
+
+// game_mix as JSON: [{"game": ..., "weight": ...}, ...]. Other fields are
+// ignored, and a weight may be written as an integer.
+inline json::Array GameMixToJson(const std::vector<GameMixEntry>& mix) {
+  json::Array array;
+  for (const GameMixEntry& entry : mix) {
+    array.push_back(
+        json::Object({{"game", entry.game}, {"weight", entry.weight}}));
+  }
+  return array;
+}
+
+inline std::vector<GameMixEntry> GameMixFromJson(const json::Array& array) {
+  std::vector<GameMixEntry> mix;
+  for (const json::Value& value : array) {
+    const json::Object& entry = value.GetObject();
+    const json::Value& weight = entry.at("weight");
+    mix.push_back({entry.at("game").GetString(),
+                   weight.IsInt() ? static_cast<double>(weight.GetInt())
+                                  : weight.GetDouble()});
+  }
+  return mix;
+}
+
 struct AlphaZeroConfig {
   std::string game;
+  // When not empty, each game actors and evaluators play is one of these,
+  // picked by weight; game is then the first of them (see GameMix).
+  std::vector<GameMixEntry> game_mix;
   std::string path;
   std::string graph_def;
   std::string init_checkpoint;
@@ -106,6 +141,7 @@ struct AlphaZeroConfig {
   json::Object ToJson() const {
     return json::Object({
         {"game", game},
+        {"game_mix", GameMixToJson(game_mix)},
         {"path", path},
         {"graph_def", graph_def},
         {"init_checkpoint", init_checkpoint},
@@ -145,6 +181,10 @@ struct AlphaZeroConfig {
 
   void FromJson(const json::Object& config_json) {
     game = config_json.at("game").GetString();
+    const auto game_mix_it = config_json.find("game_mix");
+    game_mix = game_mix_it == config_json.end()
+                   ? std::vector<GameMixEntry>()
+                   : GameMixFromJson(game_mix_it->second.GetArray());
     path = config_json.at("path").GetString();
     graph_def = config_json.at("graph_def").GetString();
     const auto init_checkpoint_it = config_json.find("init_checkpoint");
@@ -198,6 +238,29 @@ struct AlphaZeroConfig {
     eval_levels = config_json.at("eval_levels").GetInt();
     max_steps = config_json.at("max_steps").GetInt();
   }
+};
+
+// The games of a run: config.game alone, or every game of config.game_mix.
+// One model plays and learns them all, so the constructor checks that they
+// agree on what the network sees and does.
+class GameMix {
+ public:
+  explicit GameMix(const AlphaZeroConfig& config);
+
+  int Size() const { return games_.size(); }
+  const Game& Get(int index) const { return *games_[index]; }
+  // Game::ToString(), e.g. carcassonne(inns_cathedrals=on,river=on).
+  const std::string& Name(int index) const { return names_[index]; }
+  double Weight(int index) const;
+  int MaxGameLength() const;
+  // A game index, each with probability proportional to its weight. Safe to
+  // call from several threads; draws nothing when there is one game.
+  int Sample(std::mt19937* rng) const;
+
+ private:
+  std::vector<std::shared_ptr<const Game>> games_;
+  std::vector<std::string> names_;
+  std::vector<double> cumulative_;  // running sums of the weights
 };
 
 bool AlphaZero(AlphaZeroConfig config, StopToken* stop, bool resuming);

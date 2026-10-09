@@ -99,8 +99,11 @@ head 有沒有在做空間求和（`cos(eff, 1)`）、每個位置的權重有�
   `base`、`river`、`all`（所有擴充都 `on`），或像 `inns_cathedrals=on,princess_dragon=tiles` 的寫法
   （同 OpenSpiel 的遊戲參數，`common.hpp` 的 `DeckArg`）。它們的對局迴圈用 `diag::RandomStep`／`diag::GreedyStep`，
   會走所有決策階段（放磚、放 meeple、魔法門／公主／仙女選格、選位置、龍）。其他工具只下基本版。
-- **actor log 的規則**：`actor_log.hpp` 重播時，訓練的 log 照同目錄 `config.json` 的 `"game"`，
-  GUI 的 log 照檔名（`log-actor-gui-river.txt` 等）建一樣規則的對局。
+- **actor log 的規則**：`actor_log.hpp` 重播時照每行的 `; Game: <遊戲字串>`（`alpha_zero.cc` 2026-10-09 起每局都寫，
+  混合規則的 run 每局不同）建一樣規則的對局；沒有的話，訓練的 log 照同目錄 `config.json` 的 `"game"`，
+  GUI 的 log 照檔名（`log-actor-gui-river.txt` 等）。`diag_replay_scale <目錄> [分段數] [牌組]` 給牌組就只量那種規則的局。
+- **`game_mix`**：產生混合規則訓練的遊戲清單（`alpha_zero_torch_example --game_mix=`）。54 種規則組合，
+  權重預設 ∝ 1 / 平均決策數（每種在 replay buffer 佔一樣多的狀態），`./build/game_mix [每種局數=100] [states|games] > mix.json`。
 - **greedy**（`diag::GreedyStep`）：每個決策選 banked + pending 分差最大的。2026-10-09 以前 pending 用
   `resolveEndGameScore` 的複本算，放磚後剛完成、還沒結算的城、路不算分，greedy 因此不愛完成自己的城、路；
   那之前量的 greedy 數字（CLAUDE.md §4.2 等）偏了，要重量。

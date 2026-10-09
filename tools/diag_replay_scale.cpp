@@ -7,7 +7,8 @@
 // 依每局結束時 learner 已完成的步數分段,看分佈怎麼隨訓練漂移。
 // 只有 actor 0..19 寫 log(alpha_zero.cc),所以這是自我對弈的一個抽樣。
 //
-// 用法: ./diag_replay_scale <訓練目錄> [分段數=2]
+// 用法: ./diag_replay_scale <訓練目錄> [分段數=2] [牌組]
+//   牌組(base、all、或像 inns_cathedrals=on,river=on 的寫法)只量那種規則的局:混合規則的 run 用。
 //   訓練目錄要有 log-actor-*.txt;有 log-learner.txt 才能依步數分段。
 //   牌組與規則照 config.json 的 "game"(actor_log.hpp)。
 #include "actor_log.hpp"
@@ -43,7 +44,7 @@ const Row kRows[] = {
 
 int main(int argc, char **argv) {
     if (argc < 2) {
-        fprintf(stderr, "用法: %s <訓練目錄> [分段數=2]\n", argv[0]);
+        fprintf(stderr, "用法: %s <訓練目錄> [分段數=2] [牌組]\n", argv[0]);
         return 2;
     }
     const std::string dir = argv[1];
@@ -53,7 +54,17 @@ int main(int argc, char **argv) {
         fprintf(stderr, "沒有 log-learner.txt 的步數,不分段\n");
         buckets = 1;
     }
-    const std::vector<diag::LoggedGame> games = diag::ReadActorLogs(dir);
+    std::vector<diag::LoggedGame> games = diag::ReadActorLogs(dir);
+    if (argc > 3) {
+        const std::string deck = diag::GameName(diag::DeckArg(argv[3]));
+        const size_t before = games.size();
+        games.erase(std::remove_if(games.begin(), games.end(),
+                                   [&](const diag::LoggedGame &g) {
+                                       return !g.rules_error.empty() || diag::GameName(g.rules) != deck;
+                                   }),
+                    games.end());
+        printf("只量牌組 %s:%zu 局裡的 %zu 局\n", deck.c_str(), before, games.size());
+    }
     if (games.empty()) {
         fprintf(stderr, "%s 裡沒有 log-actor-*.txt 的對局\n", dir.c_str());
         return 2;

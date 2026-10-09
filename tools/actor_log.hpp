@@ -5,8 +5,9 @@
 // 動作含抽牌,字串是 CarcassonneState::ActionToString 的格式,ParseLoggedMove 照它解析。
 // 格式若改了,解析或合法性檢查會失敗,不會默默重播錯。
 //
-// 牌組與規則:訓練的 log 看同目錄 config.json 的 "game"(alpha_zero.cc 寫的);
-// GUI 的 log 寫在檔名裡(play/engine/adapter.py 的 game_log_file)。
+// 牌組與規則:每一行的 "; Game: <遊戲字串>"(alpha_zero.cc 2026-10-09 起每局都寫,混合規則的 run
+// 每局不同);沒有的話,訓練的 log 看同目錄 config.json 的 "game"(alpha_zero.cc 寫的),
+// GUI 的 log 看檔名(play/engine/adapter.py 的 game_log_file)。
 #pragma once
 
 #include "common.hpp"
@@ -26,7 +27,7 @@ struct LoggedGame {
     std::vector<std::string> actions;
     bool truncated = false;  // 行被截斷(例如下載時 log 還在寫)
     int board_shift = 0;     // 加到 place_tile 與選格的座標上,見 BoardShift
-    GameRules rules;         // 這局的牌組與規則,見 LogGameString
+    GameRules rules;         // 這局的牌組與規則:行裡的 "; Game: ",沒有就看 LogGameString
     std::string rules_error; // 讀不出規則時的原因;不是空的就不重播
 };
 
@@ -98,7 +99,7 @@ inline std::vector<LoggedGame> ReadActorLog(const std::string &path) {
     std::string note, rules_error;
     GameRules rules;
     if (!ParseGameString(LogGameString(path, &note), &rules, &rules_error)) rules_error = file + ": " + rules_error;
-    if (!note.empty()) fprintf(stderr, "%s\n", note.c_str());
+    bool note_printed = false;
     std::string line;
     while (std::getline(in, line)) {
         if (!line.empty() && line.back() == '\r') line.pop_back();
@@ -124,8 +125,17 @@ inline std::vector<LoggedGame> ReadActorLog(const std::string &path) {
             i = end + 1;
         }
         g.board_shift = BoardShift(g.actions);
-        g.rules = rules;
-        g.rules_error = rules_error;
+        const size_t game_field = line.find("; Game: ");
+        if (game_field != std::string::npos && game_field < actions) {
+            const size_t start = game_field + strlen("; Game: ");
+            if (!ParseGameString(line.substr(start, actions - start), &g.rules, &g.rules_error))
+                g.rules_error = g.source + ": " + g.rules_error;
+        } else {
+            g.rules = rules;
+            g.rules_error = rules_error;
+            if (!note.empty() && !note_printed) fprintf(stderr, "%s\n", note.c_str());
+            note_printed = true;
+        }
         games.push_back(std::move(g));
     }
     return games;

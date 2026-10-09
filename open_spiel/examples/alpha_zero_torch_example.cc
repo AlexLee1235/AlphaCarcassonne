@@ -27,6 +27,10 @@
 #include "open_spiel/utils/thread.h"
 
 ABSL_FLAG(std::string, game, "tic_tac_toe", "The name of the game to play.");
+ABSL_FLAG(std::string, game_mix, "",
+          "A JSON file of games to mix, [{\"game\": ..., \"weight\": ...}, "
+          "...]: each game played is one of them, picked by weight. Replaces "
+          "--game; config.json keeps the whole list.");
 ABSL_FLAG(std::string, path, "/tmp/az", "Where to output the logs.");
 ABSL_FLAG(std::string, graph_def, "",
           ("Where to get the graph. This could be from export_model.py, or "
@@ -144,6 +148,23 @@ int main(int argc, char** argv) {
     resuming = false;
 
     config.game = absl::GetFlag(FLAGS_game);
+    const std::string game_mix_path = absl::GetFlag(FLAGS_game_mix);
+    if (!game_mix_path.empty()) {
+      open_spiel::file::File game_mix_file(game_mix_path, "r");
+      const auto game_mix_json =
+          open_spiel::json::FromString(game_mix_file.ReadContents());
+      if (!game_mix_json || !game_mix_json->IsArray()) {
+        open_spiel::SpielFatalError(
+            "--game_mix must name a file holding a JSON array.");
+      }
+      config.game_mix =
+          open_spiel::algorithms::torch_az::GameMixFromJson(
+              game_mix_json->GetArray());
+      if (config.game_mix.empty()) {
+        open_spiel::SpielFatalError("--game_mix lists no games.");
+      }
+      config.game = config.game_mix.front().game;
+    }
     config.path = absl::GetFlag(FLAGS_path);
     config.graph_def = absl::GetFlag(FLAGS_graph_def);
     config.init_checkpoint = absl::GetFlag(FLAGS_init_checkpoint);

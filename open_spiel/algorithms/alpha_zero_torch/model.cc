@@ -424,7 +424,7 @@ ModelImpl::ModelImpl(const ModelConfig& config, const std::string& device)
 
     // A conv policy head needs the actions to factor into a few choices per
     // board cell plus a handful that belong to no cell. Carcassonne's do:
-    // seven per cell (3087: four tile rotations, a magic portal's cell, the
+    // seven per cell (5103: four tile rotations, a magic portal's cell, the
     // princess's, the fairy's) and then 41 meeple moves (skip, 14 spots for
     // the meeple and for the big meeple, 4 sides for the builder, 8 half-edges
     // for the pig) and 4 dragon steps, read from the focus cell (the tile just placed,

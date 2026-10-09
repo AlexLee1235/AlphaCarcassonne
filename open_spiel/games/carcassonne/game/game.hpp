@@ -13,12 +13,13 @@
 
 // Tiles go only inside the view: VIEW_SIZE x VIEW_SIZE cells centred on the
 // tiles placed so far (Carcassonne::view_x0, view_y0), which is what the
-// players see and name their moves by. Following the tiles, 21 holds 99.96% of
-// random base games and 98.5% with the river (greedy games: 100%, 99.7%); kept
-// on the start tile it held 95.5% and 28% (tools/diag_board_free). The board
+// players see and name their moves by. Following the tiles, 27 holds 99.1% of
+// random games with every expansion (greedy games: 99.0%), where 21 held only
+// 31% (41%) though 99.96% of base games (tools/diag_board_free); kept on the
+// start tile 21 held 95.5% of base games and 28% with the river. The board
 // only holds wherever the view can wander: 20 cells each way from the start
 // tile on its centre cell.
-constexpr int VIEW_SIZE = 21;
+constexpr int VIEW_SIZE = 27;
 constexpr int BOARD_SIZE = 41;
 static_assert(BOARD_SIZE % 2 == 1, "the start tile sits on the centre cell");
 static_assert(VIEW_SIZE % 2 == 1 && VIEW_SIZE <= BOARD_SIZE, "the view has a centre cell and fits on the board");

@@ -197,6 +197,9 @@ extension = Extension(
         path(HERE / "_carcassonne_cpp.cpp"),
         *[path(source) for source in carcassonne_sources],
     ],
+    # The engine's headers too: VIEW_SIZE and the tile table live in them, and
+    # without this a change to them alone leaves the old module in place.
+    depends=[path(header) for header in sorted(CARCASSONNE_GAME.glob("*.hpp"))],
     include_dirs=[
         pybind11_include(),
         path(ROOT),

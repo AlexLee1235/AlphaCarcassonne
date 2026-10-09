@@ -13,46 +13,50 @@ namespace carcassonne {
 
 // A legal full-length game with the all-city tile (chance action 2) left in
 // the deck and no matching placement. The next draw must score and terminate
-// directly, without another player decision. Fixed actions make this fixture
+// directly, without another player decision. Fixed moves make this fixture
 // independent of RNG/distribution implementations and legal-move ordering.
 // Random games almost always leave the all-city tile somewhere to go, so this
 // one held it back and placed every tile where it left it the fewest spots.
-// Tile actions name cells of the view, which follows the tiles. The actions
-// are numbered as when the game was found, four per cell (the rotations) and
-// the meeple moves from 1764: LastUnplaceableTileHistory() renumbers them.
-static_assert(VIEW_SIZE == 21, "kLastUnplaceableTileHistory is a game in a 21x21 view");
-inline constexpr Action kLastUnplaceableTileHistory[] = {
-    20,887,1764,15,798,1767,20,715,1766,17,960,1764,7,885,1774,
-    9,891,1765,1,1055,1769,20,1055,1773,0,873,1769,21,790,1764,
-    18,710,1770,21,629,1770,22,973,1770,4,871,1764,5,953,1765,
-    17,1036,1764,14,867,1764,3,962,1764,15,865,1764,0,1037,1770,
-    21,812,1764,18,899,1767,11,786,1764,12,780,1766,6,721,1764,
-    21,860,1767,19,1052,1765,20,818,1764,8,951,1764,21,551,1764,
-    20,1207,1764,21,1204,1764,10,967,1764,21,698,1764,3,1035,1764,
-    21,1202,1764,13,1029,1764,14,731,1764,15,1137,1764,6,1051,1764,
-    16,638,1764,18,1126,1764,16,777,1764,15,1132,1764,1,1196,1764,
-    8,791,1764,20,1221,1764,7,1143,1764,10,1045,1764,3,704,1765,
-    0,1145,1769,19,622,1764,22,1291,1764,20,647,1764,16,1224,1764,
-    19,735,1764,12,1211,1764,0,544,1764,9,893,1764,21,775,1764,
-    15,1287,1764,9,708,1764,23,555,1764,22,642,1764,22,541,1764,
-    13,1213,1764,17,820,1764,7,738,1764,14,465,1764,20,827,1764};
+// Each turn: the chance action drawn, the board cell of the tile as cells
+// from the start tile and its rotation, and the meeple position (-1 skips).
+// Actions name cells of the view, which follows the tiles, so they depend on
+// VIEW_SIZE and kCellActionPlanes: LastUnplaceableTileHistory() makes them.
+struct FixtureTurn {
+  Action draw;
+  int dx, dy, rot;
+  int meeple;
+};
+inline constexpr FixtureTurn kLastUnplaceableTileTurns[] = {
+    {20, 1, 0, 3, -1}, {15, 0, -1, 2, 2}, {20, 0, -2, 3, 1}, {17, -1, 0, 0, -1}, {7, 1, -1, 1, 9},
+    {9, 2, -1, 3, 0}, {1, 1, 1, 3, 4}, {20, 1, 2, 3, 8}, {0, -2, 0, 1, 4}, {21, -2, -1, 2, -1},
+    {18, -1, -2, 2, 5}, {21, 0, -3, 1, 5}, {22, 2, 1, 1, 5}, {4, -3, 0, 3, -1}, {5, -3, 1, 1, 0},
+    {17, -3, 2, 0, -1}, {14, -4, 0, 3, -1}, {3, -2, 1, 2, -1}, {15, -5, 0, 1, -1}, {0, -4, 2, 1, 5},
+    {21, 3, -1, 0, -1}, {18, 3, 0, 3, 2}, {11, -4, -1, 2, -1}, {12, -5, -1, 0, 1}, {6, 1, -2, 1, -1},
+    {21, -6, 0, 0, 2}, {19, 0, 2, 0, 0}, {20, 4, -1, 2, -1}, {8, -5, 1, 3, -1}, {21, 0, -4, 3, -1},
+    {20, -4, 3, 3, -1}, {21, -4, 4, 0, -1}, {10, -1, 1, 3, -1}, {21, -5, -2, 2, -1}, {3, -5, 2, 3, -1},
+    {21, -5, 4, 2, -1}, {13, -6, 2, 1, -1}, {14, 3, -2, 3, -1}, {15, 0, 3, 1, -1}, {6, -1, 2, 3, -1},
+    {16, 1, -3, 2, -1}, {18, -3, 3, 2, -1}, {16, -6, -1, 1, -1}, {15, -1, 3, 0, -1}, {1, -6, 4, 0, -1},
+    {8, -3, -1, 3, -1}, {20, 0, 4, 1, -1}, {7, 1, 3, 3, -1}, {10, -2, 2, 1, -1}, {3, -3, -2, 0, 0},
+    {0, 2, 3, 1, 4}, {19, -3, -3, 2, -1}, {22, -4, 5, 3, -1}, {20, 3, -3, 3, -1}, {16, 1, 4, 0, -1},
+    {19, 4, -2, 3, -1}, {12, -3, 4, 3, -1}, {0, -1, -4, 0, -1}, {9, 2, 0, 1, -1}, {21, -7, -1, 3, -1},
+    {15, -5, 5, 3, -1}, {9, -2, -2, 0, -1}, {23, 1, -4, 3, -1}, {22, 2, -3, 2, -1}, {22, -2, -4, 1, -1},
+    {13, -2, 4, 1, -1}, {17, 5, -1, 0, -1}, {7, 5, -2, 2, -1}, {14, 0, -5, 1, -1}, {20, 6, -1, 3, -1},
+};
 
-// kLastUnplaceableTileHistory in today's action numbers: chance actions stay,
-// tile actions keep their cell and rotation, meeple moves their position.
+// kLastUnplaceableTileTurns as actions: a draw, a tile and a meeple move a
+// turn. Each tile action names its cell in the view of the game so far.
 inline std::vector<Action> LastUnplaceableTileHistory() {
-  constexpr int kOldCellPlanes = 4;
-  constexpr Action kOldMeepleOffset = VIEW_SIZE * VIEW_SIZE * kOldCellPlanes;
+  CarcassonneState state(LoadGame("carcassonne"));
   std::vector<Action> history;
-  int step = 0;
-  for (Action action : kLastUnplaceableTileHistory) {
-    // Every turn is a draw, a tile and a meeple move.
-    if (step++ % 3 == 0) {
-      history.push_back(action);
-    } else if (action < kOldMeepleOffset) {
-      history.push_back(action / kOldCellPlanes * kCellActionPlanes + action % kOldCellPlanes);
-    } else {
-      history.push_back(action - kOldMeepleOffset + kMeepleActionOffset);
-    }
+  auto play = [&](Action action) {
+    history.push_back(action);
+    state.ApplyAction(action);
+  };
+  for (const FixtureTurn& turn : kLastUnplaceableTileTurns) {
+    play(turn.draw);
+    play(state.TileAction(BOARD_SIZE / 2 + turn.dx, BOARD_SIZE / 2 + turn.dy,
+                          turn.rot));
+    play(kMeepleActionOffset + turn.meeple + 1);
   }
   return history;
 }

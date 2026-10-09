@@ -3926,7 +3926,8 @@ void ExpansionGamesTest() {
 // towards the centre cell when they span an even count, and kept on the board.
 // It holds every tile, and every tile action names a board cell in it and
 // back. Frontier cells outside it are no moves, and games do reach them: the
-// view is narrower than games get, the river's above all.
+// view is narrower than games can get. Random games seldom outgrow it, so a
+// few games place every tile as far from the start tile as they can.
 void ViewTest() {
   const auto expected_origin = [](int lo, int hi) {
     int centre = (lo + hi) / 2;
@@ -3936,9 +3937,16 @@ void ViewTest() {
   std::mt19937 rng(20261008);
   int view_moves = 0;
   int outside_frontier = 0;
-  for (const char* game_string : {"carcassonne", kRiverGame}) {
+  struct Games {
+    const char* game_string;
+    int count;
+    bool spread;  // tiles as far from the start tile as they go
+  };
+  for (const auto& [game_string, count, spread] :
+       {Games{"carcassonne", 30, false}, Games{kRiverGame, 30, false},
+        Games{"carcassonne", 3, true}}) {
     std::shared_ptr<const Game> game = LoadGame(game_string);
-    for (int sim = 0; sim < 30; ++sim) {
+    for (int sim = 0; sim < count; ++sim) {
       std::unique_ptr<State> state = game->NewInitialState();
       const auto& carcassonne_state =
           dynamic_cast<const CarcassonneState&>(*state);
@@ -3966,17 +3974,27 @@ void ViewTest() {
         last_x0 = core.view_x0;
         last_y0 = core.view_y0;
         const std::vector<Action> legal = state->LegalActions();
+        Action farthest = kInvalidAction;
+        int farthest_distance = -1;
         if (core.current_phase == PHASE_TILE) {
           for (Action action : legal) {
             const TileMove move = carcassonne_state.TileActionMove(action);
             SPIEL_CHECK_TRUE(core.inView(move.x, move.y));
             SPIEL_CHECK_EQ(carcassonne_state.TileAction(move.x, move.y, move.rot),
                            action);
+            const int distance = std::max(std::abs(move.x - BOARD_SIZE / 2),
+                                          std::abs(move.y - BOARD_SIZE / 2));
+            if (distance > farthest_distance) {
+              farthest_distance = distance;
+              farthest = action;
+            }
           }
         }
         state->ApplyAction(
             state->IsChanceNode()
                 ? SampleAction(state->ChanceOutcomes(), rng).first
+            : spread && farthest != kInvalidAction
+                ? farthest
                 : legal[std::uniform_int_distribution<int>(0, legal.size() - 1)(rng)]);
       }
     }

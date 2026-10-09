@@ -291,7 +291,7 @@ void TestConvPolicyHead() {
   std::cout << "Per-cell logits follow the cell, meeple logits follow the "
                "last-placed plane." << std::endl;
 
-  // A real Carcassonne model: 4 * 21 * 21 placements + 41 meeple moves + 4
+  // A real Carcassonne model: 7 * 27 * 27 actions by cell + 41 meeple moves + 4
   // dragon steps, and a
   // policy head that no longer holds most of the network's parameters.
   std::shared_ptr<const Game> game = LoadGame("carcassonne");
@@ -331,7 +331,7 @@ void TestConvPolicyHead() {
                  2 * (32 * 32 + 32) + (64 + carcassonne_globals) * 32 + 32 +
                      2 * 32 + (cell_planes * 32 + cell_planes) +
                      (meeple_moves * 32 + meeple_moves));
-  // A dense head would be Linear(2*21*21 -> 3132), 2,765,556 on its own.
+  // A dense head would be Linear(2*27*27 -> 5148), 7,510,932 on its own.
   SPIEL_CHECK_LT(largest_tensor, 50000);
 
   // A game whose actions do not factor per cell keeps the dense head.

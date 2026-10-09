@@ -86,10 +86,10 @@ inline constexpr int kLastPlacedPlane = kLegalPlacementPlane + kLegalPlacementPl
 // for each quantity. Summing them along a feature needs the whole feature in view,
 // which the convolutions cannot do, so they are computed here.
 inline constexpr int kFeatureOpensPlane = kLastPlacedPlane + 1;         // min(opens, 6) / 6
-inline constexpr int kFeatureScorePlane = kFeatureOpensPlane + 4;       // getBaseScore() / 30: no inn or cathedral
+inline constexpr int kFeatureScorePlane = kFeatureOpensPlane + 4;       // getBaseScore() / 40: no inn or cathedral
 inline constexpr int kFeatureMyMeeplesPlane = kFeatureScorePlane + 4;   // strength (big meeple 2) / 7
 inline constexpr int kFeatureOpponentMeeplesPlane = kFeatureMyMeeplesPlane + 4;
-inline constexpr int kFeatureSignedScorePlane = kFeatureOpponentMeeplesPlane + 4; // +-getScore() / 30
+inline constexpr int kFeatureSignedScorePlane = kFeatureOpponentMeeplesPlane + 4; // +-getScore() / 40
 // Monasteries: tiles around it / 9, and +1 mine, -1 the opponent's.
 inline constexpr int kMonasteryCoveragePlane = kFeatureSignedScorePlane + 4;
 inline constexpr int kMonasteryOwnerPlane = kMonasteryCoveragePlane + 1;
@@ -97,9 +97,9 @@ inline constexpr int kMonasteryOwnerPlane = kMonasteryCoveragePlane + 1;
 // per half-edge for each quantity; 0 on city sides.
 inline constexpr int kFieldMyFarmersPlane = kMonasteryOwnerPlane + 1;                 // strength / 7
 inline constexpr int kFieldOpponentFarmersPlane = kFieldMyFarmersPlane + HALF_EDGE_COUNT;
-inline constexpr int kFieldScorePlane = kFieldOpponentFarmersPlane + HALF_EDGE_COUNT; // 3 * completed cities / 30
-inline constexpr int kFieldSizePlane = kFieldScorePlane + HALF_EDGE_COUNT;            // tiles / 60
-inline constexpr int kFieldOpenCitiesPlane = kFieldSizePlane + HALF_EDGE_COUNT;       // open cities next to it / 10
+inline constexpr int kFieldScorePlane = kFieldOpponentFarmersPlane + HALF_EDGE_COUNT; // 3 * completed cities / 50
+inline constexpr int kFieldSizePlane = kFieldScorePlane + HALF_EDGE_COUNT;            // tiles / 80
+inline constexpr int kFieldOpenCitiesPlane = kFieldSizePlane + HALF_EDGE_COUNT;       // open cities next to it / 12
 // The same for a tile's inner field, which touches no half-edge.
 inline constexpr int kInnerFieldMyFarmersPlane = kFieldOpenCitiesPlane + HALF_EDGE_COUNT;
 inline constexpr int kInnerFieldOpponentFarmersPlane = kInnerFieldMyFarmersPlane + 1;
@@ -171,12 +171,12 @@ static_assert(kLastPlacedPlane == 33);
 static_assert(kSpatialPlanes == 202);
 
 // Offsets in the global vector, all from the observing player's side.
-inline constexpr int kGlobalMyScore = 0;           // clip(/100)
+inline constexpr int kGlobalMyScore = 0;           // clip(/170)
 inline constexpr int kGlobalOpponentScore = 1;
-inline constexpr int kGlobalScoreDiff = 2;         // clip(diff / 70)
-inline constexpr int kGlobalMyPending = 3;         // clip(/70), see getPendingScore(); goods' points included
+inline constexpr int kGlobalScoreDiff = 2;         // clip(diff / 90)
+inline constexpr int kGlobalMyPending = 3;         // clip(/130), see getPendingScore(); goods' points included
 inline constexpr int kGlobalOpponentPending = 4;
-inline constexpr int kGlobalStaticDiff = 5;        // banked + pending diff: clip(/3), clip(/10), clip(/60)
+inline constexpr int kGlobalStaticDiff = 5;        // banked + pending diff: clip(/3), clip(/10), clip(/120)
 inline constexpr int kStaticDiffScales = 3;
 inline constexpr int kGlobalMyMeeples = kGlobalStaticDiff + kStaticDiffScales; // / 7
 inline constexpr int kGlobalOpponentMeeples = kGlobalMyMeeples + 1;
@@ -192,9 +192,9 @@ inline constexpr int kGlobalMeeplePhase = kGlobalTilePhase + 1;
 // sides 0-3, then the pig on half-edges 0-7. In PHASE_SPOT, the legal spots
 // on the cell chosen.
 inline constexpr int kGlobalLegalMeeple = kGlobalMeeplePhase + 1;
-inline constexpr int kGlobalLegalPlacements = kGlobalLegalMeeple + kMeepleActionCount; // / 100
+inline constexpr int kGlobalLegalPlacements = kGlobalLegalMeeple + kMeepleActionCount; // / 160
 inline constexpr int kGlobalIsPlayer0 = kGlobalLegalPlacements + 1;
-// The part of the pending scores that fields score, clip(/40).
+// The part of the pending scores that fields score, clip(/80).
 inline constexpr int kGlobalMyFieldPending = kGlobalIsPlayer0 + 1;
 inline constexpr int kGlobalOpponentFieldPending = kGlobalMyFieldPending + 1;
 // Meeples on the board as farmers, the big meeple not included, / 7. They

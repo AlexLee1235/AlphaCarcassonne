@@ -225,7 +225,7 @@ void ObservationTensorSmokeTest() {
   SPIEL_CHECK_EQ(PlaneValue(initial_obs, kFeatureOpensPlane + 2, c, c), 0.0f);
   for (int side : {0, 1, 3}) {
     SPIEL_CHECK_TRUE(Near(PlaneValue(initial_obs, kFeatureScorePlane + side, c, c),
-                          1.0f / 30));
+                          1.0f / 40));
   }
   SPIEL_CHECK_EQ(PlaneValue(initial_obs, kFeatureScorePlane + 2, c, c), 0.0f);
   CheckZeroPlanes(initial_obs, kFeatureMyMeeplesPlane, 12);
@@ -240,14 +240,14 @@ void ObservationTensorSmokeTest() {
     const bool on_field = half_edge >= 2;
     const bool north = half_edge == 2 || half_edge == 7;
     SPIEL_CHECK_TRUE(Near(PlaneSum(initial_obs, kFieldSizePlane + half_edge),
-                          on_field ? 1.0f / 60 : 0.0f));
+                          on_field ? 1.0f / 80 : 0.0f));
     SPIEL_CHECK_TRUE(Near(PlaneValue(initial_obs, kFieldSizePlane + half_edge, c, c),
-                          on_field ? 1.0f / 60 : 0.0f));
+                          on_field ? 1.0f / 80 : 0.0f));
     SPIEL_CHECK_TRUE(Near(PlaneSum(initial_obs, kFieldOpenCitiesPlane + half_edge),
-                          north ? 1.0f / 10 : 0.0f));
+                          north ? 1.0f / 12 : 0.0f));
     SPIEL_CHECK_TRUE(
         Near(PlaneValue(initial_obs, kFieldOpenCitiesPlane + half_edge, c, c),
-             north ? 1.0f / 10 : 0.0f));
+             north ? 1.0f / 12 : 0.0f));
   }
   CheckZeroPlanes(initial_obs, kInnerFieldMyFarmersPlane,
                   kInnerFieldOpenCitiesPlane + 1 - kInnerFieldMyFarmersPlane);
@@ -313,7 +313,7 @@ void ObservationTensorSmokeTest() {
                    1.0f);
   }
   SPIEL_CHECK_TRUE(Near(GlobalValue(tile_phase_obs, kGlobalLegalPlacements),
-                        tile_actions.size() / 100.0f));
+                        tile_actions.size() / 160.0f));
 
   // The view follows the tiles, so the placed tile is found by its board cell.
   const TileMove placed = chance_done->TileActionMove(tile_actions[0]);
@@ -401,17 +401,17 @@ void RelativePerspectiveTest() {
     const std::vector<float>& obs = *views[player];
     const int opponent = 1 - player;
     SPIEL_CHECK_TRUE(Near(GlobalValue(obs, kGlobalMyScore),
-                          std::min(1.0f, core.player_scores[player] / 100.0f)));
+                          std::min(1.0f, core.player_scores[player] / 170.0f)));
     SPIEL_CHECK_TRUE(Near(GlobalValue(obs, kGlobalOpponentScore),
-                          std::min(1.0f, core.player_scores[opponent] / 100.0f)));
+                          std::min(1.0f, core.player_scores[opponent] / 170.0f)));
     SPIEL_CHECK_TRUE(Near(GlobalValue(obs, kGlobalMyPending),
-                          std::min(1.0f, pending[player] / 70.0f)));
+                          std::min(1.0f, pending[player] / 130.0f)));
     SPIEL_CHECK_TRUE(Near(GlobalValue(obs, kGlobalOpponentPending),
-                          std::min(1.0f, pending[opponent] / 70.0f)));
+                          std::min(1.0f, pending[opponent] / 130.0f)));
     SPIEL_CHECK_TRUE(Near(GlobalValue(obs, kGlobalMyFieldPending),
-                          std::min(1.0f, field_pending[player] / 40.0f)));
+                          std::min(1.0f, field_pending[player] / 80.0f)));
     SPIEL_CHECK_TRUE(Near(GlobalValue(obs, kGlobalOpponentFieldPending),
-                          std::min(1.0f, field_pending[opponent] / 40.0f)));
+                          std::min(1.0f, field_pending[opponent] / 80.0f)));
     SPIEL_CHECK_TRUE(Near(GlobalValue(obs, kGlobalMyMeeples),
                           core.holding_meeples[player] / 7.0f));
     SPIEL_CHECK_TRUE(Near(GlobalValue(obs, kGlobalOpponentMeeples),
@@ -1263,7 +1263,7 @@ void CheckInnCathedralPlanes(const State& state, int* inn_sides,
         SPIEL_CHECK_EQ(flag, marked ? 1.0f : 0.0f);
         SPIEL_CHECK_TRUE(
             Near(BoardPlaneValue(obs, core, kFeatureScorePlane + side, tx, ty),
-                 std::min(feature.getBaseScore() / 30.0f, 1.0f)));
+                 std::min(feature.getBaseScore() / 40.0f, 1.0f)));
         if (!marked) {
           SPIEL_CHECK_EQ(feature.getScore(), feature.getBaseScore());
         } else if (feature.opens > 0) {
@@ -1310,10 +1310,10 @@ void InnCathedralTest() {
           SPIEL_CHECK_EQ(BoardPlaneValue(obs, game, kFeatureInnCathedralPlane + side, c, c),
                          ruled ? 1.0f : 0.0f);
           SPIEL_CHECK_TRUE(
-              Near(BoardPlaneValue(obs, game, kFeatureScorePlane + side, c, c), 3.0f / 30));
+              Near(BoardPlaneValue(obs, game, kFeatureScorePlane + side, c, c), 3.0f / 40));
           SPIEL_CHECK_TRUE(
               Near(BoardPlaneValue(obs, game, kFeatureSignedScorePlane + side, c, c),
-                   ruled ? 0.0f : 3.0f / 30));
+                   ruled ? 0.0f : 3.0f / 40));
         }
         // The city has no cathedral.
         SPIEL_CHECK_EQ(BoardPlaneValue(obs, game, kFeatureInnCathedralPlane + 0, c, c), 0.0f);

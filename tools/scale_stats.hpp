@@ -13,11 +13,13 @@ namespace scale {
 // kPendingNormalization、kFieldPendingNormalization、static_diff 的尺度)。
 // 量的就是觀測寫進 global 的值:getPendingScore()(總 pending)、
 // getPendingFieldScore()(其中農田的部分)與 player_scores(已入袋)。每個決策點都取。
+// 另外 kLegalPlacementNormalization:放磚決策的合法落點數(沒有「最後一手」,看全程)。
 struct ScoreSamples {
     std::vector<int> per, diff, last_per, last_diff;                      // 總 pending
     std::vector<int> field_per, last_field_per;                           // 農田 pending
     std::vector<int> banked, banked_diff, last_banked, last_banked_diff;  // 已入袋
     std::vector<int> static_diff, last_static_diff;                       // 已入袋分差 + pending 分差
+    std::vector<int> legal_placements;                                    // 放磚決策的合法落點數
 
     // 取一個決策點,並把它記成這局目前的最後一手。
     void Decision(const Carcassonne &game) {
@@ -36,6 +38,12 @@ struct ScoreSamples {
         banked_diff.push_back(game.player_scores[0] - game.player_scores[1]);
         last_static_ = game.player_scores[0] - game.player_scores[1] + pending[0] - pending[1];
         static_diff.push_back(last_static_);
+        if (game.current_phase == PHASE_TILE) {
+            std::vector<TileMove> moves(BOARD_SIZE * BOARD_SIZE * 4);
+            int count = 0;
+            game.getLegalTileMoves(moves.data(), count);
+            legal_placements.push_back(count);
+        }
     }
 
     void EndGame() {
@@ -55,16 +63,19 @@ struct ScoreSamples {
 
 // 空間平面(kMaxOpens、kFeatureScoreNormalization、kFieldScoreNormalization、
 // kFieldSizeNormalization、kFieldOpenCitiesNormalization)。照觀測的寫法逐格取值:
-// 每張已放磚的每個非草地邊(城/路元件的 opens 與 getScore()),每個半邊(所屬農田的
-// 磚數、相鄰未完成城數、3 × 相鄰已完成城數)。一個決策點就有上百個值。
+// 每張已放磚的每個非草地邊(城/路元件的 opens、getBaseScore() 與 getScore()),每個半邊
+// (所屬農田的磚數、相鄰未完成城數、3 × 相鄰已完成城數)。一個決策點就有上百個值。
+// 元件的分數平面寫 getBaseScore()(不含旅館、大教堂),有號分數平面寫 getScore(),兩者同一個分母。
 struct PlaneSamples {
-    std::vector<int> opens, feature_score, field_size, field_open, field_score;
-    std::vector<int> last_opens, last_feature_score, last_field_size, last_field_open, last_field_score;
+    std::vector<int> opens, feature_score, feature_base_score, field_size, field_open, field_score;
+    std::vector<int> last_opens, last_feature_score, last_feature_base_score, last_field_size, last_field_open,
+        last_field_score;
 
     // last 為真時取進「最後一手」那組,否則取進全程那組。
     void Sample(const Carcassonne &game, bool last) {
         std::vector<int> &o = last ? last_opens : opens;
         std::vector<int> &fs = last ? last_feature_score : feature_score;
+        std::vector<int> &base = last ? last_feature_base_score : feature_base_score;
         std::vector<int> &size = last ? last_field_size : field_size;
         std::vector<int> &open = last ? last_field_open : field_open;
         std::vector<int> &score = last ? last_field_score : field_score;
@@ -78,6 +89,7 @@ struct PlaneSamples {
                     const Feature &feature = game.featureAt(p.id, side);
                     o.push_back(feature.opens);
                     fs.push_back(feature.getScore());
+                    base.push_back(feature.getBaseScore());
                 }
                 for (int e = 0; e < HALF_EDGE_COUNT; ++e) {
                     if (tile.field[e] == -1) continue;
@@ -171,11 +183,14 @@ inline void ReportScores(const ScoreSamples &s) {
     Report(s.last_field_per, "  最後一手");
     Report(s.static_diff, "static_diff");
     Report(s.last_static_diff, "  最後一手");
+    Report(s.legal_placements, "合法落點數(放磚決策)");
 }
 
 inline void ReportPlanes(const PlaneSamples &s) {
     Report(s.opens, "城/路 opens(每個非草地邊)");
     Report(s.last_opens, "  最後一手");
+    Report(s.feature_base_score, "城/路 getBaseScore()");
+    Report(s.last_feature_base_score, "  最後一手");
     Report(s.feature_score, "城/路 getScore()");
     Report(s.last_feature_score, "  最後一手");
     Report(s.field_size, "田的磚數(每個半邊)");

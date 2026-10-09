@@ -30,35 +30,41 @@ constexpr std::array<float, GOODS_KINDS> kGoodsNormalization = {
 // The remaining tiles are counted against the deck this game deals, and the
 // completed turns against the tiles drawn after the start tile: completed_turns
 // counts the turns of both players, one per tile.
-// The measured scales below give the p99 at the last decision as random /
-// greedy / self-play games, and the largest value seen; section 4 of
-// CLAUDE.md says how to measure them again. All are clipped.
-// Points a player has scored: 20 / 85 / 93, max 120 (tools/diag_pending_scale,
-// tools/diag_replay_scale).
-constexpr float kScoreNormalization = 100.0f;
-// The difference in them: 18 / 66 / 54, max 85.
-constexpr float kScoreDiffNormalization = 70.0f;
-// Pending points of a player: 33 / 62 / 69, max 76.
-constexpr float kPendingNormalization = 70.0f;
-// The fields' part of it: 15 / 36 / 36, max 45.
-constexpr float kFieldPendingNormalization = 40.0f;
-// Banked plus pending difference: 28 / 60 / 49, max 75. The /3 and /10 scales
+// The measured scales below cover every deck: each gives the p99 at the last
+// decision of random / greedy games in the deck where it is largest, and the
+// largest value seen there. That deck is inns_cathedrals, traders_builders and
+// river on with the princess_dragon tiles: the most tiles and no dragon, which
+// eats meeples (every expansion on scores less). Section 4 of CLAUDE.md says
+// how to measure them again; base self-play stays below all of them. All are
+// clipped.
+// Points a player has scored: 24 / 168, max 190 (tools/diag_pending_scale).
+constexpr float kScoreNormalization = 170.0f;
+// The difference in them: 21 / 94, max 128.
+constexpr float kScoreDiffNormalization = 90.0f;
+// Pending points of a player: 51 / 128, max 162.
+constexpr float kPendingNormalization = 130.0f;
+// The fields' part of it: 23 / 83, max 102.
+constexpr float kFieldPendingNormalization = 80.0f;
+// Banked plus pending difference: 42 / 119, max 163. The /3 and /10 scales
 // tell close games apart.
-constexpr std::array<float, kStaticDiffScales> kStaticDiffNormalizations = {3.0f, 10.0f, 60.0f};
-constexpr float kLegalPlacementNormalization = 100.0f;
+constexpr std::array<float, kStaticDiffScales> kStaticDiffNormalizations = {3.0f, 10.0f, 120.0f};
+// Legal placements, over every tile decision and not clipped: largest with
+// every expansion on, 98 / 156, max 228.
+constexpr float kLegalPlacementNormalization = 160.0f;
+// A road's or city's opens: 5 / 6, max 10.
 constexpr int kMaxOpens = 6;
 // The spatial planes, per side or half-edge (tools/diag_plane_scale). The
 // observation codec needs their denominators to be integers up to 127.
-// A feature's getScore(): 12 / 26 / 26, max 52 (the base game, where it is
-// getBaseScore(); a cathedral's city scores 3x, not measured yet).
-constexpr float kFeatureScoreNormalization = 30.0f;
+// A feature's getBaseScore(): 13 / 38, max 70; its getScore(), on the signed
+// plane: 12 / 38, max 78 (a cathedral's city scores 3x).
+constexpr float kFeatureScoreNormalization = 40.0f;
 constexpr float kMonasteryCoverageNormalization = 9.0f;
-// 3 x the completed cities next to a field: 9 / 30 / 30, max 36.
-constexpr float kFieldScoreNormalization = 30.0f;
-// Tiles in a field: 30 / 56 / 60, max 65.
-constexpr float kFieldSizeNormalization = 60.0f;
-// Open cities next to a field: 10 / 9 / 8, max 19.
-constexpr float kFieldOpenCitiesNormalization = 10.0f;
+// 3 x the completed cities next to a field: 9 / 51, max 60.
+constexpr float kFieldScoreNormalization = 50.0f;
+// Tiles in a field: 35 / 81, max 111.
+constexpr float kFieldSizeNormalization = 80.0f;
+// Open cities next to a field: largest with every expansion on, 12 / 7, max 19.
+constexpr float kFieldOpenCitiesNormalization = 12.0f;
 
 // The planes one field is written to: a half-edge's or an inner field's.
 struct FieldPlanes {

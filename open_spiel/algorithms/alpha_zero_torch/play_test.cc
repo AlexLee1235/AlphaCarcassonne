@@ -1,5 +1,6 @@
 #include "open_spiel/algorithms/alpha_zero_torch/alpha_zero.h"
 
+#include <algorithm>
 #include <cmath>
 #include <memory>
 #include <random>
@@ -95,6 +96,46 @@ void PlayerTerminalAndCutoffTest() {
   }
 }
 
+// temperature_drop counts decisions: before it the move is sampled from the
+// visit counts, from it on it is the most visited one. The chance draws in
+// between do not count; when they did, a base game stopped sampling after
+// about two thirds as many decisions.
+void TemperatureDropCountsDecisionsTest() {
+  NoopLogger logger;
+  auto game = LoadGame("carcassonne(max_turns=6)");
+  // Decisions alternate tile, meeple: the last one sampled is the third tile.
+  constexpr int kDrop = 5;
+  int last_sampled_off_best = 0;
+  for (int seed = 0; seed < 20; ++seed) {
+    std::mt19937 rng(seed);
+    auto evaluator = std::make_shared<RandomRolloutEvaluator>(1, seed);
+    std::vector<std::unique_ptr<MCTSBot>> bots;
+    for (int player = 0; player < 2; ++player) {
+      bots.push_back(std::make_unique<MCTSBot>(
+          *game, evaluator, 2.0, 16, 10, false, 2 * seed + player, false,
+          ChildSelectionPolicy::PUCT, 0.0, 0.0, true));
+    }
+    const auto trajectory = PlayGame(&logger, 0, *game, &bots, &rng,
+                                     1.0, kDrop, 2.0);
+    SPIEL_CHECK_GT(trajectory.states.size(), kDrop);
+    for (int i = 0; i < trajectory.states.size(); ++i) {
+      const Trajectory::State& sample = trajectory.states[i];
+      double best = 0.0;
+      double chosen = 0.0;
+      for (const auto& [action, probability] : sample.policy) {
+        best = std::max(best, probability);
+        if (action == sample.action) chosen = probability;
+      }
+      if (i >= kDrop) {
+        SPIEL_CHECK_EQ(chosen, best);
+      } else if (i == kDrop - 1 && chosen < best) {
+        ++last_sampled_off_best;
+      }
+    }
+  }
+  SPIEL_CHECK_GT(last_sampled_off_best, 0);
+}
+
 }  // namespace
 }  // namespace torch_az
 }  // namespace algorithms
@@ -103,4 +144,5 @@ void PlayerTerminalAndCutoffTest() {
 int main() {
   open_spiel::algorithms::torch_az::ChanceTerminalTest();
   open_spiel::algorithms::torch_az::PlayerTerminalAndCutoffTest();
+  open_spiel::algorithms::torch_az::TemperatureDropCountsDecisionsTest();
 }

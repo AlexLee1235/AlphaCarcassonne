@@ -15,6 +15,7 @@
 #include "open_spiel/algorithms/mcts.h"
 
 #include <cmath>
+#include <map>
 #include <memory>
 #include <utility>
 
@@ -208,6 +209,45 @@ void MCTSTest_NoNoiseWhenTooFewActions() {
   SPIEL_CHECK_TRUE(priors_untouched(*search(*state)));
 }
 
+// With dirichlet_alpha_total the root's alpha is the total over its legal
+// actions: a total of 9 over nine actions draws the same noise as alpha 1,
+// and so does a total of 7 over seven, while 9 over seven does not.
+void MCTSTest_NoiseAlphaPerLegalAction() {
+  auto game = LoadGame("tic_tac_toe");
+  auto priors = [&](const State& state, double alpha, double alpha_total) {
+    algorithms::MCTSBot bot(*game,
+                            std::make_shared<RandomRolloutEvaluator>(1, 42),
+                            UCT_C,
+                            /*max_simulations=*/20,
+                            /*max_memory_mb=*/5,
+                            /*solve=*/false,
+                            /*seed=*/42,
+                            /*verbose=*/false,
+                            algorithms::ChildSelectionPolicy::UCT,
+                            /*dirichlet_alpha=*/alpha,
+                            /*dirichlet_epsilon=*/0.25,
+                            /*dont_return_chance_node=*/false,
+                            /*dirichlet_alpha_total=*/alpha_total);
+    std::unique_ptr<algorithms::SearchNode> root = bot.MCTSearch(state);
+    std::map<Action, double> result;
+    for (const algorithms::SearchNode& child : root->children) {
+      result[child.action] = child.prior;
+    }
+    return result;
+  };
+
+  std::unique_ptr<State> state = game->NewInitialState();
+  SPIEL_CHECK_TRUE(priors(*state, 0, 9.0) == priors(*state, 1.0, 0));
+  for (Action action : {0, 1}) {
+    state->ApplyAction(action);
+  }
+  SPIEL_CHECK_EQ(state->LegalActions().size(), 7);
+  SPIEL_CHECK_TRUE(priors(*state, 0, 7.0) == priors(*state, 1.0, 0));
+  SPIEL_CHECK_FALSE(priors(*state, 0, 9.0) == priors(*state, 1.0, 0));
+  // The total takes over from a fixed alpha.
+  SPIEL_CHECK_TRUE(priors(*state, 0.3, 7.0) == priors(*state, 1.0, 0));
+}
+
 }  // namespace
 }  // namespace open_spiel
 
@@ -215,11 +255,17 @@ int main(int argc, char** argv) {
   open_spiel::MCTSTest_CanPlayTicTacToe();
   open_spiel::MCTSTest_CanPlayTicTacToe_LowSimulations();
   open_spiel::MCTSTest_CanPlayBothSides();
-  open_spiel::MCTSTest_CanPlaySinglePlayer();
-  open_spiel::MCTSTest_CanPlayThreePlayerStochasticGames();
+  // This fork builds neither catch nor pig.
+  if (open_spiel::IsGameRegistered("catch")) {
+    open_spiel::MCTSTest_CanPlaySinglePlayer();
+  }
+  if (open_spiel::IsGameRegistered("pig")) {
+    open_spiel::MCTSTest_CanPlayThreePlayerStochasticGames();
+  }
   open_spiel::MCTSTest_SolveDraw();
   open_spiel::MCTSTest_SolveLoss();
   open_spiel::MCTSTest_SolveWin();
   open_spiel::MCTSTest_GarbageCollect();
   open_spiel::MCTSTest_NoNoiseWhenTooFewActions();
+  open_spiel::MCTSTest_NoiseAlphaPerLegalAction();
 }

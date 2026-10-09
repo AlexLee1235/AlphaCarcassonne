@@ -188,10 +188,12 @@ Action SearchNode::SampleFromPrior(const State& state,
 // Dirichlet noise buys exploration: it lifts moves the network would not
 // have tried often enough to find out. A node this small has nothing left to
 // buy, because the simulations reach every child hundreds of times whatever
-// the prior says (Carcassonne's meeple nodes average 1.63 legal actions, and
-// it searches them with the same 800 simulations as a tile placement). What
-// the noise does do there is move the visit counts away from what the search
-// believes, and those visit counts are the policy target.
+// the prior says (Carcassonne's base-game meeple nodes average 1.63 legal
+// actions, and it searches them with the same 800 simulations as a tile
+// placement). What the noise does do there is move the visit counts away from
+// what the search believes, and those visit counts are the policy target.
+// Kept with dirichlet_alpha_total too, which no longer needs it to keep a
+// fixed alpha off small nodes: whether small nodes want noise is untested.
 constexpr int kNoiseMinActions = 6;
 
 std::vector<double> dirichlet_noise(int count, double alpha,
@@ -216,7 +218,7 @@ MCTSBot::MCTSBot(const Game& game, std::shared_ptr<Evaluator> evaluator,
                  bool solve, int seed, bool verbose,
                  ChildSelectionPolicy child_selection_policy,
                  double dirichlet_alpha, double dirichlet_epsilon,
-                 bool dont_return_chance_node)
+                 bool dont_return_chance_node, double dirichlet_alpha_total)
     : uct_c_{uct_c},
       max_simulations_{max_simulations},
       max_nodes_((max_memory_mb << 20) / sizeof(SearchNode) + 1),
@@ -228,6 +230,7 @@ MCTSBot::MCTSBot(const Game& game, std::shared_ptr<Evaluator> evaluator,
       dirichlet_alpha_(dirichlet_alpha),
       dirichlet_epsilon_(dirichlet_epsilon),
       dont_return_chance_node_(dont_return_chance_node),
+      dirichlet_alpha_total_(dirichlet_alpha_total),
       rng_(seed),
       child_selection_policy_(child_selection_policy),
       evaluator_(evaluator) {
@@ -289,10 +292,14 @@ std::unique_ptr<State> MCTSBot::ApplyTreePolicy(
     if (current_node->children.empty()) {
       // For a new node, initialize its state, then choose a child as normal.
       ActionsAndProbs legal_actions = evaluator_->Prior(*working_state);
-      if (current_node == root && dirichlet_alpha_ > 0 &&
-          static_cast<int>(legal_actions.size()) >= kNoiseMinActions) {
+      const int num_actions = static_cast<int>(legal_actions.size());
+      const double alpha = dirichlet_alpha_total_ > 0
+                               ? dirichlet_alpha_total_ / num_actions
+                               : dirichlet_alpha_;
+      if (current_node == root && alpha > 0 &&
+          num_actions >= kNoiseMinActions) {
         std::vector<double> noise =
-            dirichlet_noise(legal_actions.size(), dirichlet_alpha_, &rng_);
+            dirichlet_noise(num_actions, alpha, &rng_);
         for (int i = 0; i < legal_actions.size(); i++) {
           legal_actions[i].second =
               (1 - dirichlet_epsilon_) * legal_actions[i].second +

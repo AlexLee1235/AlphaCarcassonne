@@ -142,7 +142,9 @@ Trajectory PlayGame(Logger* logger, int game_num, const open_spiel::Game& game,
       }
       NormalizePolicy(&policy);
       open_spiel::Action action;
-      if (history.size() >= temperature_drop) {
+      // temperature_drop counts this game's decisions so far, not the chance
+      // outcomes that history also holds.
+      if (static_cast<int>(trajectory.states.size()) >= temperature_drop) {
         action = root->BestChild().action;
       } else {
         action = open_spiel::SampleAction(policy, *rng).first;
@@ -199,7 +201,8 @@ std::unique_ptr<MCTSBot> InitAZBot(const AlphaZeroConfig& config,
       /*verbose=*/false, ChildSelectionPolicy::PUCT,
       evaluation ? 0 : config.policy_alpha,
       evaluation ? 0 : config.policy_epsilon,
-      /*dont_return_chance_node*/ true);
+      /*dont_return_chance_node*/ true,
+      evaluation ? 0 : config.policy_alpha_total);
 }
 
 int SearchSeed(int worker, int game_num, int player) {

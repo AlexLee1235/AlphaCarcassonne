@@ -67,6 +67,11 @@ add_library(algorithms OBJECT
 
 target_include_directories(algorithms PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 
+# The root noise of alpha_zero's search (Dirichlet alpha, kNoiseMinActions).
+add_executable(mcts_test mcts_test.cc ${OPEN_SPIEL_OBJECTS}
+               $<TARGET_OBJECTS:tests>)
+add_test(mcts_test mcts_test)
+
 if (OPEN_SPIEL_BUILD_WITH_LIBTORCH)
   if(NOT OPEN_SPIEL_BUILD_WITH_LIBNOP)
     message(FATAL_ERROR

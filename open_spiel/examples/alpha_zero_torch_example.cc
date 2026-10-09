@@ -42,7 +42,8 @@ ABSL_FLAG(double, uct_c, 2, "UCT exploration constant.");
 ABSL_FLAG(double, temperature, 1,
           "Temperature for final move selection for early moves in training.");
 ABSL_FLAG(double, temperature_drop, 10,  // Smaller than AZ due to short games.
-          "Drop the temperature to 0 after this many moves.");
+          "Drop the temperature to 0 after this many decisions (chance "
+          "outcomes not counted).");
 ABSL_FLAG(double, cutoff_probability, 0.8,
           ("Cut off rollouts early when above the cutoff value with this "
            "probability."));
@@ -56,6 +57,9 @@ ABSL_FLAG(bool, augment_rotations, false,
 ABSL_FLAG(double, learning_rate, 0.0001, "Learning rate.");
 ABSL_FLAG(double, weight_decay, 0.0001, "Weight decay.");
 ABSL_FLAG(double, policy_alpha, 1, "What dirichlet noise alpha to use.");
+ABSL_FLAG(double, policy_alpha_total, 0,
+          "If positive, each root's dirichlet alpha is this divided by its "
+          "legal actions, instead of policy_alpha.");
 ABSL_FLAG(double, policy_epsilon, 0.25, "What dirichlet noise epsilon to use.");
 ABSL_FLAG(int, replay_buffer_size, 1 << 16,
           "How many states to store in the replay buffer.");
@@ -163,6 +167,7 @@ int main(int argc, char** argv) {
     config.inference_threads = absl::GetFlag(FLAGS_inference_threads);
     config.inference_cache = absl::GetFlag(FLAGS_inference_cache);
     config.policy_alpha = absl::GetFlag(FLAGS_policy_alpha);
+    config.policy_alpha_total = absl::GetFlag(FLAGS_policy_alpha_total);
     config.policy_epsilon = absl::GetFlag(FLAGS_policy_epsilon);
     config.temperature = absl::GetFlag(FLAGS_temperature);
     config.temperature_drop = absl::GetFlag(FLAGS_temperature_drop);

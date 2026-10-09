@@ -166,7 +166,11 @@ class MCTSBot : public Bot {
       int seed, bool verbose,
       ChildSelectionPolicy child_selection_policy = ChildSelectionPolicy::UCT,
       double dirichlet_alpha = 0, double dirichlet_epsilon = 0,
-      bool dont_return_chance_node = false);
+      bool dont_return_chance_node = false,
+      // When positive, the root's noise uses alpha = dirichlet_alpha_total /
+      // its legal actions instead of dirichlet_alpha, so the noise is as
+      // concentrated at a root with 5 actions as at one with 150.
+      double dirichlet_alpha_total = 0);
   ~MCTSBot() = default;
 
   void Restart() override {}
@@ -213,6 +217,7 @@ class MCTSBot : public Bot {
   double dirichlet_alpha_;
   double dirichlet_epsilon_;
   bool dont_return_chance_node_;
+  double dirichlet_alpha_total_;
   std::mt19937 rng_;
   const ChildSelectionPolicy child_selection_policy_;
   std::shared_ptr<Evaluator> evaluator_;

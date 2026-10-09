@@ -86,6 +86,9 @@ struct AlphaZeroConfig {
   int max_simulations;
   int max_memory_mb;
   double policy_alpha;
+  // When positive, each root's alpha is this over its legal actions instead
+  // of policy_alpha (MCTSBot's dirichlet_alpha_total).
+  double policy_alpha_total = 0;
   double policy_epsilon;
   double temperature;
   double temperature_drop;
@@ -125,6 +128,7 @@ struct AlphaZeroConfig {
         {"max_simulations", max_simulations},
         {"max_memory_mb", max_memory_mb},
         {"policy_alpha", policy_alpha},
+        {"policy_alpha_total", policy_alpha_total},
         {"policy_epsilon", policy_epsilon},
         {"temperature", temperature},
         {"temperature_drop", temperature_drop},
@@ -171,6 +175,11 @@ struct AlphaZeroConfig {
                         ? 1000
                         : max_memory_mb_it->second.GetInt();
     policy_alpha = config_json.at("policy_alpha").GetDouble();
+    // Older configs predate it: a fixed alpha.
+    const auto policy_alpha_total_it = config_json.find("policy_alpha_total");
+    policy_alpha_total = policy_alpha_total_it == config_json.end()
+                             ? 0
+                             : policy_alpha_total_it->second.GetDouble();
     policy_epsilon = config_json.at("policy_epsilon").GetDouble();
     temperature = config_json.at("temperature").GetDouble();
     temperature_drop = config_json.at("temperature_drop").GetDouble();

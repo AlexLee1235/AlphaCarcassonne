@@ -190,7 +190,7 @@ KL 0.075 → 0.32，而 eval 從 −1.0 升到 −0.21。原因有四個，都�
   都至少被訓練過一次。
 
 兩批用同一組權重、同一個 BN 模式、同樣的旋轉增強，所以兩者之差只剩「看過 vs 沒看過」。
-只寫進 `learner.jsonl`，`log-learner` 完全不變：
+完整欄位寫進 `learner.jsonl`：
 
 ```json
 "held_out": {"states": 2048, "fresh": {...}, "trained": {...}}
@@ -198,6 +198,14 @@ KL 0.075 → 0.32，而 eval 從 −1.0 升到 −0.21。原因有四個，都�
 ```
 
 欄位與 `"loss"` 相同（`policy` / `value` / `policy_kl` / `policy_target_entropy` / …）。
+`log-learner` 每步也印一行 value／policy／kl（2026-10-10 起，同時多印一行 eval；`Timing` 只剩 collect 與 learn，細項看 jsonl 的 `timing`）：
+
+```
+Held-out: fresh value: 1.1170, policy: 1.5639, kl: 0.3857 | trained value: 0.1844, policy: 1.5465, kl: 0.3657
+Eval vs MCTS: 800 sims: +0.18, 2529 sims: -0.10 (132 games per level, window 50)
+```
+
+第一步 buffer 是空的，沒有 `trained` 那半。1008（`nn_width 64`）就是 value 這一欄 fresh 比 trained 高 0.9：value head 把 buffer 背起來了。
 判讀照 §6.7 的表：`fresh.policy_kl` ≈ `trained.policy_kl` → 到了容量或噪音底線，
 調 lr 或 reuse 都沒用；`fresh` 明顯大於 `trained` → overfit，降 reuse、加正則。
 

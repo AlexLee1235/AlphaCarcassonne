@@ -684,7 +684,7 @@ void learner(const GameMix& games, const AlphaZeroConfig& config,
       // trained on, next to what it scores on states it has. Same weights,
       // same batch-norm mode, no gradients either way, so what is left
       // between the two is generalization rather than the weights moving
-      // during the step. Reported in learner.jsonl only.
+      // during the step.
       absl::Time held_out_start = absl::Now();
       // Each is a training batch's worth of states, decoded only here and
       // given back before the updates start.
@@ -741,12 +741,13 @@ void learner(const GameMix& games, const AlphaZeroConfig& config,
     }
     double checkpoint_s = absl::ToDoubleSeconds(absl::Now() - phase_start);
     logger.Print("Checkpoint saved: %s", checkpoint_path);
-    logger.Print(
-        "Timing: collect: %.1fs, buffer save: %.1fs, learn: %.1fs "
-        "(%d batches: sample %.1fs, decode %.1fs, train %.1fs), "
-        "checkpoint: %.1fs",
-        collect_s, buffer_save_s, learn_s, num_batches, sample_s, decode_s,
-        train_s, checkpoint_s);
+    // The full breakdown is in learner.jsonl.
+    logger.Print("Timing: collect: %.1fs, learn: %.1fs", collect_s, learn_s);
+
+    // Read once so the log and learner.jsonl agree: evaluators keep adding.
+    // Each level is the average over its last evaluation_window games.
+    const std::vector<double> eval_avgs = eval_results->AvgResults();
+    const int eval_count = eval_results->EvalCount();
 
     DataLogger::Record record = {
         {"step", step},
@@ -772,8 +773,8 @@ void learner(const GameMix& games, const AlphaZeroConfig& config,
          json::TransformToArray(raw_value_predictions,
                                 [](auto v) { return v.ToJson(); })},
         {"eval", json::Object({
-                     {"count", eval_results->EvalCount()},
-                     {"results", json::CastToArray(eval_results->AvgResults())},
+                     {"count", eval_count},
+                     {"results", json::CastToArray(eval_avgs)},
                  })},
         {"timing", json::Object({
                        {"collect", collect_s},
@@ -804,9 +805,8 @@ void learner(const GameMix& games, const AlphaZeroConfig& config,
       record.emplace("mix", mix_record);
     }
 
-    // Held-out loss: learner.jsonl only, nothing printed to the log. A
-    // default-constructed LossInfo averages over zero batches, so leave a
-    // half out entirely rather than writing NaN into the file.
+    // A default-constructed LossInfo averages over zero batches, so leave a
+    // half out entirely rather than writing NaN into the file or the log.
     json::Object held_out_record({{"states", held_out_states}});
     if (held_out_states > 0) {
       held_out_record.emplace("fresh", LossJson(fresh_losses));
@@ -821,6 +821,30 @@ void learner(const GameMix& games, const AlphaZeroConfig& config,
         "target_entropy: %.4f, pred_entropy: %.4f, kl: %.4f",
         losses.Policy(), losses.Value(), losses.L2(), losses.Total(),
         losses.TargetEntropy(), losses.PredEntropy(), losses.KL());
+    // fresh well above trained means the network is memorizing the buffer
+    // (docs/carcassonne_throughput.md §5.1).
+    if (held_out_states > 0) {
+      std::string held_out_line = absl::StrFormat(
+          "Held-out: fresh value: %.4f, policy: %.4f, kl: %.4f",
+          fresh_losses.Value(), fresh_losses.Policy(), fresh_losses.KL());
+      if (trained_states > 0) {
+        absl::StrAppendFormat(
+            &held_out_line, " | trained value: %.4f, policy: %.4f, kl: %.4f",
+            trained_losses.Value(), trained_losses.Policy(),
+            trained_losses.KL());
+      }
+      logger.Print(held_out_line);
+    }
+    std::string eval_line = "Eval vs MCTS:";
+    for (int i = 0; i < static_cast<int>(eval_avgs.size()); ++i) {
+      absl::StrAppendFormat(
+          &eval_line, "%s %d sims: %+.2f", i == 0 ? "" : ",",
+          static_cast<int>(config.max_simulations * std::pow(10, i / 2.0)),
+          eval_avgs[i]);
+    }
+    absl::StrAppendFormat(&eval_line, " (%d games per level, window %d)",
+                          eval_count, config.evaluation_window);
+    logger.Print(eval_line);
 
     LRUCacheInfo cache_info = eval->CacheInfo();
     if (cache_info.size > 0) {
